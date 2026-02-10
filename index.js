@@ -13,7 +13,11 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // ==================== CONFIGURAÇÕES ====================
 const GOOGLE_SHEETS_API_KEY = process.env.GOOGLE_SHEETS_API_KEY;
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
-const SUPERVISORS = (process.env.SUPERVISOR_NUMBER || '').split(',').map(num => num.trim() + '@s.whatsapp.net');
+
+// LISTA DE SUPERVISORES (Apenas Números Limpos)
+const SUPERVISOR_NUMBERS = (process.env.SUPERVISOR_NUMBER || '')
+  .split(',')
+  .map(num => num.trim().replace(/\D/g, '')); // Remove tudo que não for número
 
 // Preçários
 const PRECOS_NETFLIX = `🎬 *TABELA NETFLIX*\n👤 Individual: 5.000 Kz\n👥 Partilha: 9.000 Kz\n👨‍👩‍👧 Família: 13.500 Kz`;
@@ -23,10 +27,15 @@ const COORDENADAS = `🏦 *DADOS PARA PAGAMENTO*\n📱 IBAN (BAI): AO06.0040.000
 // ==================== ESTADOS & MEMÓRIA ====================
 const chatHistories = {};
 const clientStates = {}; 
-const pendingVerifications = {}; // Guarda quem está à espera de aprovação
+const pendingVerifications = {}; 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-// ==================== FUNÇÕES GOOGLE SHEETS ====================
+// ==================== FUNÇÕES AUXILIARES ====================
+
+// Função para limpar número (remove @s.whatsapp.net, +, espaços)
+function cleanNumber(jid) {
+  return jid ? jid.replace(/\D/g, '') : '';
+}
 
 async function fetchBestProfile(plataforma, clientNumber) {
   try {
@@ -37,9 +46,9 @@ async function fetchBestProfile(plataforma, clientNumber) {
     if (!data.values || data.values.length <= 1) return null;
 
     const rows = data.values.slice(1);
-    const cleanClientNum = clientNumber.replace('@s.whatsapp.net', '').trim();
+    const cleanClientNum = cleanNumber(clientNumber);
 
-    // 1. Tenta encontrar conta JÁ atribuída a este cliente (Renovação - Coluna G)
+    // 1. Tenta encontrar conta JÁ atribuída a este cliente (Renovação)
     const existingProfile = rows.map((row, index) => ({
         rowIndex: index + 2,
         plataforma: row[0] || '',
@@ -48,8 +57,8 @@ async function fetchBestProfile(plataforma, clientNumber) {
         nomePerfil: row[3] || '',
         pin: row[4] || '',
         status: row[5] || '',
-        dono: row[6] || ''
-    })).find(p => p.plataforma.toLowerCase().includes(plataforma.toLowerCase()) && p.dono.includes(cleanClientNum));
+        dono: row[6] ? cleanNumber(row[6]) : ''
+    })).find(p => p.plataforma.toLowerCase().includes(plataforma.toLowerCase()) && p.dono === cleanClientNum);
 
     if (existingProfile) {
         console.log(`[RENOVAÇÃO] Conta encontrada para ${cleanClientNum}`);
@@ -76,27 +85,15 @@ async function fetchBestProfile(plataforma, clientNumber) {
   }
 }
 
-async function updateProfileStatus(rowIndex, newStatus) {
-    // Simulação de atualização (aqui apenas logamos)
-    console.log(`[VENDA] Linha ${rowIndex} atualizada.`);
-    return true;
-}
-
-// ==================== WHATSAPP ====================
-
 async function sendWhatsAppMessage(number, text) {
   try {
+    // Garante que o número tem o sufixo correto para envio
+    const formattedNumber = cleanNumber(number) + '@s.whatsapp.net';
     await axios.post(`${process.env.EVOLUTION_API_URL}/message/sendText/${process.env.EVOLUTION_INSTANCE_NAME}`, {
-      number: number, text: text, delay: 1200
+      number: formattedNumber, text: text, delay: 1200
     }, { headers: { 'apikey': process.env.EVOLUTION_API_KEY }, httpsAgent: httpsAgent });
     return true;
   } catch (e) { console.error('Erro envio:', e.message); return false; }
-}
-
-function extractClientNumber(text) {
-  const match = text.match(/(\d{9,})/); 
-  if (match) return match[0] + '@s.whatsapp.net';
-  return null;
 }
 
 // ==================== SERVIDOR ====================
@@ -109,153 +106,158 @@ app.post('/', async (req, res) => {
     if (messageData.key.fromMe) return res.status(200).send('Ignore self');
 
     const remoteJid = messageData.key.remoteJid;
+    const senderNum = cleanNumber(remoteJid); // Número limpo de quem enviou
     const textMessage = messageData.message?.conversation || messageData.message?.extendedTextMessage?.text || '';
     const isImage = !!messageData.message?.imageMessage;
     const isDoc = !!messageData.message?.documentMessage;
 
-    console.log(`Msg de ${remoteJid}: ${textMessage}`);
+    console.log(`📩 Mensagem de: ${senderNum} | Texto: ${textMessage}`);
 
-    // --- 👮‍♂️ LÓGICA DO SUPERVISOR (SIMPLIFICADA) ---
-    if (SUPERVISORS.includes(remoteJid)) {
+    // ============================================================
+    // 👮‍♂️ LÓGICA DO SUPERVISOR (PRIORIDADE MÁXIMA)
+    // ============================================================
+    if (SUPERVISOR_NUMBERS.includes(senderNum)) {
+      console.log('👑 Supervisor detectado!');
+      
       const lower = textMessage.toLowerCase().trim();
       const parts = lower.split(' ');
-      const command = parts[0]; // sim, s, ok...
+      const command = parts[0];
 
-      // Verifica se é comando de Aprovação ou Rejeição
-      let action = null; // 'approve' | 'reject'
-      if (['sim', 's', 'ok', 'y', 'yes', 'aprovado', 'confirmado'].includes(command)) action = 'approve';
-      if (['nao', 'n', 'no', 'rejeitado', 'negado'].includes(command)) action = 'reject';
+      // Definição de Comandos
+      let action = null; 
+      if (['sim', 's', 'ok', 'y', 'yes', 'aprovado'].includes(command)) action = 'approve';
+      if (['nao', 'n', 'no', 'rejeitado'].includes(command)) action = 'reject';
 
       if (action) {
-        // Tenta achar o número na mensagem (ex: "sim 923...")
-        let targetClient = extractClientNumber(textMessage);
+        // Tenta achar o número do cliente na mensagem do supervisor
+        let targetClientNum = textMessage.match(/\d{9,}/) ? textMessage.match(/\d{9,}/)[0] : null;
 
-        // Se não escreveu número, vê se há APENAS UM pendente
-        if (!targetClient) {
+        // Se não escreveu número, tenta pegar o ÚNICO pendente
+        if (!targetClientNum) {
             const pendingList = Object.keys(pendingVerifications);
             if (pendingList.length === 1) {
-                targetClient = pendingList[0]; // Assume o único que existe
+                targetClientNum = pendingList[0];
             } else if (pendingList.length > 1) {
-                await sendWhatsAppMessage(remoteJid, `⚠️ Tenho ${pendingList.length} pedidos pendentes. Por favor diga "sim 9xxxx" para eu saber qual é.`);
+                await sendWhatsAppMessage(remoteJid, `⚠️ Tenho ${pendingList.length} pedidos. Digite "sim 9xxxx" para confirmar qual.`);
                 return res.status(200).send('OK');
             } else {
-                await sendWhatsAppMessage(remoteJid, `✅ Nenhum pedido pendente de momento.`);
+                await sendWhatsAppMessage(remoteJid, `✅ Nenhum pedido pendente.`);
                 return res.status(200).send('OK');
             }
         }
 
-        const pedido = pendingVerifications[targetClient];
+        // Recupera dados do pedido
+        const pedido = pendingVerifications[targetClientNum];
         if (!pedido) {
-            await sendWhatsAppMessage(remoteJid, "⚠️ Esse cliente não está na lista de pendentes.");
+            await sendWhatsAppMessage(remoteJid, "⚠️ Cliente não encontrado nos pendentes.");
             return res.status(200).send('OK');
         }
 
         if (action === 'approve') {
-            // APROVAR
-            const profile = await fetchBestProfile(pedido.plataforma, targetClient);
+            await sendWhatsAppMessage(remoteJid, "🔄 A processar entrega...");
+            
+            const profile = await fetchBestProfile(pedido.plataforma, targetClientNum);
 
             if (profile) {
-                // SUCESSO - Envia conta
-                const entrega = `✅ *PAGAMENTO APROVADO!*\n\nAqui estão os seus dados:\n\n📺 *${profile.plataforma}*\n📧 *Email:* ${profile.email}\n🔑 *Senha:* ${profile.senha}\n👤 *Perfil:* ${profile.nomePerfil}\n🔢 *Pin:* ${profile.pin}\n\nObrigado pela preferência!`;
-                await sendWhatsAppMessage(targetClient, entrega);
+                const entrega = `✅ *PAGAMENTO APROVADO!*\n\nAqui estão os seus dados:\n\n📺 *${profile.plataforma}*\n📧 *Email:* ${profile.email}\n🔑 *Senha:* ${profile.senha}\n👤 *Perfil:* ${profile.nomePerfil}\n🔢 *Pin:* ${profile.pin}\n\nBom filme! 🍿`;
+                await sendWhatsAppMessage(targetClientNum, entrega);
                 
-                // Limpa
-                delete pendingVerifications[targetClient];
-                delete clientStates[targetClient];
+                delete pendingVerifications[targetClientNum];
+                delete clientStates[targetClientNum];
 
-                // Avisa Super
-                await sendWhatsAppMessage(remoteJid, `✅ Entregue ao cliente ${targetClient.replace('@s.whatsapp.net','')}.`);
+                await sendWhatsAppMessage(remoteJid, `✅ Conta enviada para ${targetClientNum}.`);
             } else {
-                // STOCK ZERO - Avisa cliente e Super
-                await sendWhatsAppMessage(targetClient, "✅ Pagamento recebido! O supervisor está a finalizar a sua conta e enviará em breve.");
+                await sendWhatsAppMessage(targetClientNum, "✅ Pagamento recebido! O supervisor enviará a conta manualmente em breve.");
+                await sendWhatsAppMessage(remoteJid, `⚠️ *SEM STOCK AUTOMÁTICO*\n\nO cliente ${targetClientNum} pagou ${pedido.plataforma}. Envie manualmente!`);
                 
-                await sendWhatsAppMessage(remoteJid, `⚠️ *ALERTA DE STOCK ZERO*\n\nO cliente ${targetClient.replace('@s.whatsapp.net','')} pagou por *${pedido.plataforma}*, mas a planilha está vazia para ele.\n👉 Por favor, envie uma conta manualmente.`);
-                
-                // Limpa estado para o bot não bloquear, mas o supervisor tem de resolver
-                delete pendingVerifications[targetClient];
-                delete clientStates[targetClient]; 
+                delete pendingVerifications[targetClientNum];
+                delete clientStates[targetClientNum]; 
             }
         } else {
-            // REJEITAR
-            await sendWhatsAppMessage(targetClient, "❌ O seu comprovativo não foi validado. Verifique se enviou o ficheiro correto.");
-            delete pendingVerifications[targetClient];
-            delete clientStates[targetClient]; // Liberta o cliente para tentar de novo
-            await sendWhatsAppMessage(remoteJid, "❌ Rejeitado.");
+            await sendWhatsAppMessage(targetClientNum, "❌ Comprovativo inválido ou não legível.");
+            delete pendingVerifications[targetClientNum];
+            delete clientStates[targetClientNum]; // Desbloqueia
+            await sendWhatsAppMessage(remoteJid, "❌ Pedido rejeitado.");
         }
-        return res.status(200).send('OK');
+      } else {
+          // Se o supervisor falar algo que não é comando, o bot avisa em vez de tentar vender
+          await sendWhatsAppMessage(remoteJid, "🤖 Sou o Bot. Comandos: 'sim' para aprovar, 'não' para rejeitar.");
       }
+      return res.status(200).send('OK'); // IMPEDE QUE O CÓDIGO DO CLIENTE CORRA
     }
 
-    // --- 👤 LÓGICA DO CLIENTE ---
-    if (!SUPERVISORS.includes(remoteJid)) {
-        
-        if (!clientStates[remoteJid]) clientStates[remoteJid] = { step: 'inicio' };
-        if (!chatHistories[remoteJid]) chatHistories[remoteJid] = [];
+    // ============================================================
+    // 👤 LÓGICA DO CLIENTE
+    // ============================================================
+    
+    // (O código só chega aqui se NÃO for supervisor)
+    
+    // Inicializa
+    if (!clientStates[senderNum]) clientStates[senderNum] = { step: 'inicio' };
+    if (!chatHistories[senderNum]) chatHistories[senderNum] = [];
 
-        // 🛑 BLOQUEIO DE ESPERA (Impede reinício do chat)
-        if (clientStates[remoteJid].step === 'esperando_supervisor') {
-            // Se o cliente falar enquanto espera, só dizemos para aguardar
-            // Não processamos a mensagem como comando
-            return res.status(200).send('OK');
-        }
-
-        let response = '';
-        let shouldUseAI = true;
-
-        // 1. Receber PDF
-        if (clientStates[remoteJid].step === 'aguardando_comprovativo') {
-            if (isDoc && messageData.message.documentMessage.mimetype === 'application/pdf') {
-                const plat = clientStates[remoteJid].plataforma;
-                
-                // Guarda pedido
-                pendingVerifications[remoteJid] = { plataforma: plat, timestamp: Date.now() };
-                clientStates[remoteJid].step = 'esperando_supervisor'; // BLOQUEIA O CHAT
-
-                // Avisa Super
-                const cleanNum = remoteJid.replace('@s.whatsapp.net', '');
-                const msgSuper = `📩 *NOVO PDF*\n👤 ${cleanNum}\n📦 ${plat}\n\nResponda:\n👍 *"sim"* para aprovar\n👎 *"não"* para rejeitar`;
-                
-                for (const s of SUPERVISORS) await sendWhatsAppMessage(s, msgSuper);
-                
-                response = '📄 Recebido! Aguarde, estamos a validar. ⏳';
-                shouldUseAI = false;
-            } else if (textMessage || isImage) {
-                response = '⚠️ Por favor envie o comprovativo em **PDF** (Documento). Não aceitamos fotos.';
-                shouldUseAI = false;
-            }
-        }
-
-        // 2. Comandos de Venda
-        else if (textMessage.toLowerCase().includes('netflix')) {
-            clientStates[remoteJid].plataforma = 'Netflix';
-            response = `${PRECOS_NETFLIX}\n\n✅ Disponível!\n\n${COORDENADAS}`;
-            clientStates[remoteJid].step = 'aguardando_comprovativo';
-            shouldUseAI = false;
-        }
-        else if (textMessage.toLowerCase().includes('prime')) {
-            clientStates[remoteJid].plataforma = 'Prime Video';
-            response = `${PRECOS_PRIME}\n\n✅ Disponível!\n\n${COORDENADAS}`;
-            clientStates[remoteJid].step = 'aguardando_comprovativo';
-            shouldUseAI = false;
-        }
-
-        // 3. IA
-        if (shouldUseAI && clientStates[remoteJid].step !== 'esperando_supervisor') {
-             try {
-                const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash", systemInstruction: { parts: [{ text: "Vendedor de streaming. Curto. Netflix e Prime." }] } });
-                const chat = model.startChat({ history: chatHistories[remoteJid] });
-                const resAI = await chat.sendMessage(textMessage);
-                response = resAI.response.text();
-                chatHistories[remoteJid].push({ role: "user", parts: [{ text: textMessage }] });
-                chatHistories[remoteJid].push({ role: "model", parts: [{ text: response }] });
-            } catch (e) {
-                if (!response) response = "Olá! Temos Netflix e Prime. Qual deseja?";
-            }
-        }
-
-        if (response) await sendWhatsAppMessage(remoteJid, response);
+    // 🛑 BLOQUEIO: Se estiver à espera, ignora mensagens (exceto se demorar muito, aqui simplificado)
+    if (clientStates[senderNum].step === 'esperando_supervisor') {
+        return res.status(200).send('OK');
     }
 
+    let response = '';
+    let shouldUseAI = true;
+
+    // 1. Receber PDF
+    if (clientStates[senderNum].step === 'aguardando_comprovativo') {
+        if (isDoc && messageData.message.documentMessage.mimetype === 'application/pdf') {
+            const plat = clientStates[senderNum].plataforma;
+            
+            // Grava na memória usando o número LIMPO como chave
+            pendingVerifications[senderNum] = { plataforma: plat, timestamp: Date.now() };
+            clientStates[senderNum].step = 'esperando_supervisor';
+
+            // Avisa Super
+            const msgSuper = `📩 *NOVO PDF*\n👤 Cliente: ${senderNum}\n📦 Produto: ${plat}\n\nResponda:\n👍 *"sim"* para aprovar\n👎 *"não"* para rejeitar`;
+            
+            for (const sNum of SUPERVISOR_NUMBERS) {
+                await sendWhatsAppMessage(sNum, msgSuper);
+            }
+            
+            response = '📄 Recebido! Aguarde a verificação. ⏳';
+            shouldUseAI = false;
+        } else if (textMessage || isImage) {
+            response = '⚠️ Por favor envie o comprovativo em **PDF**. Não aceitamos fotos.';
+            shouldUseAI = false;
+        }
+    }
+
+    // 2. Comandos de Venda
+    else if (textMessage.toLowerCase().includes('netflix')) {
+        clientStates[senderNum].plataforma = 'Netflix';
+        response = `${PRECOS_NETFLIX}\n\n✅ Disponível!\n\n${COORDENADAS}`;
+        clientStates[senderNum].step = 'aguardando_comprovativo';
+        shouldUseAI = false;
+    }
+    else if (textMessage.toLowerCase().includes('prime')) {
+        clientStates[senderNum].plataforma = 'Prime Video';
+        response = `${PRECOS_PRIME}\n\n✅ Disponível!\n\n${COORDENADAS}`;
+        clientStates[senderNum].step = 'aguardando_comprovativo';
+        shouldUseAI = false;
+    }
+
+    // 3. IA
+    if (shouldUseAI) {
+            try {
+            const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash", systemInstruction: { parts: [{ text: "Vendedor de streaming. Curto. Netflix e Prime." }] } });
+            const chat = model.startChat({ history: chatHistories[senderNum] });
+            const resAI = await chat.sendMessage(textMessage);
+            response = resAI.response.text();
+            chatHistories[senderNum].push({ role: "user", parts: [{ text: textMessage }] });
+            chatHistories[senderNum].push({ role: "model", parts: [{ text: response }] });
+        } catch (e) {
+            if (!response) response = "Olá! Temos Netflix e Prime. Qual deseja?";
+        }
+    }
+
+    if (response) await sendWhatsAppMessage(senderNum, response);
+    
     res.status(200).send('OK');
 
   } catch (error) {
@@ -264,4 +266,4 @@ app.post('/', async (req, res) => {
   }
 });
 
-app.listen(port, '0.0.0.0', () => console.log(`Bot Rápido rodando na porta ${port}`));
+app.listen(port, '0.0.0.0', () => console.log(`Bot Blindado rodando na porta ${port}`));
