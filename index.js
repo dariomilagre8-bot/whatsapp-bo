@@ -14,7 +14,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const GOOGLE_SHEETS_API_KEY = process.env.GOOGLE_SHEETS_API_KEY;
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
 
-// 1. Limpa a lista de números
+// 1. Limpa a lista de números e prepara a hierarquia
 const RAW_SUPERVISORS = (process.env.SUPERVISOR_NUMBER || '').split(',').map(n => n.trim().replace(/\D/g, ''));
 
 // 2. Separa quem é TELEFONE REAL de quem é ID DE COMPUTADOR (LID)
@@ -22,12 +22,12 @@ const RAW_SUPERVISORS = (process.env.SUPERVISOR_NUMBER || '').split(',').map(n =
 const REAL_PHONES = RAW_SUPERVISORS.filter(n => n.length < 15);
 const ALL_SUPERVISORS = RAW_SUPERVISORS;
 
-// O Chefe Principal é o primeiro número real da lista
+// O Chefe Principal é o primeiro número real da lista (para onde vão as respostas do PC)
 const MAIN_BOSS = REAL_PHONES.length > 0 ? REAL_PHONES[0] : null;
 
 console.log('📱 Telefones Reais:', REAL_PHONES);
-console.log('🖥️ Todos os IDs:', ALL_SUPERVISORS);
-console.log('👑 Chefe Principal (Para onde vão os alertas):', MAIN_BOSS);
+console.log('🖥️ Todos os IDs aceites:', ALL_SUPERVISORS);
+console.log('👑 Chefe Principal (Destino das respostas):', MAIN_BOSS);
 
 // Preçários
 const PRECOS_NETFLIX = `🎬 *TABELA NETFLIX*\n👤 Individual: 5.000 Kz\n👥 Partilha: 9.000 Kz\n👨‍👩‍👧 Família: 13.500 Kz`;
@@ -87,7 +87,7 @@ async function sendWhatsAppMessage(number, text) {
             cleanTarget = MAIN_BOSS;
         } else {
             console.log('❌ Erro: Nenhum número real configurado para receber avisos.');
-            return false;
+            return false; // Aborta para não dar erro 400
         }
     }
 
@@ -156,7 +156,7 @@ app.post('/', async (req, res) => {
         }
 
         if (action === 'approve') {
-            await sendWhatsAppMessage(senderNum, "🔄 Aprovado! A processar..."); // O Bot vai mandar isto para o TELEFONE REAL
+            await sendWhatsAppMessage(senderNum, "🔄 Aprovado! A processar..."); // Tenta enviar feedback (se for PC, vai para o tlm)
             
             const profile = await fetchBestProfile(pedido.plataforma, targetClient);
             if (profile) {
