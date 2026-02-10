@@ -13,48 +13,40 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // ==================== CONFIGURAÇÕES ====================
 const GOOGLE_SHEETS_API_KEY = process.env.GOOGLE_SHEETS_API_KEY;
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
-
-// Lógica para Múltiplos Supervisores
 const SUPERVISORS = (process.env.SUPERVISOR_NUMBER || '').split(',').map(num => num.trim() + '@s.whatsapp.net');
 
-// Preçário Detalhado
-const PRECARIO = `
-💰 *TABELA DE PREÇOS OFICIAL*
+// === PREÇÁRIOS SEPARADOS (Para mandar apenas o respetivo) ===
 
-🎬 *NETFLIX (Mensal)*
+const PRECOS_NETFLIX = `
+🎬 *TABELA NETFLIX (Mensal)*
 👤 *Individual* (1 Tela): *5.000 Kz*
 👥 *Partilha* (2 Telas): *9.000 Kz*
 👨‍👩‍👧 *Família* (3 Telas): *13.500 Kz*
+`;
 
-📺 *PRIME VIDEO (Mensal - 4K HDR)*
+const PRECOS_PRIME = `
+📺 *TABELA PRIME VIDEO (4K HDR)*
 👤 *Individual* (1 Disp.): *3.000 Kz*
 👥 *Partilha* (2 Disp.): *5.500 Kz*
 👨‍👩‍👧 *Familiar* (3 Disp.): *8.000 Kz*
-✅ *Inclui Download e Alta Definição*
-
-⚡ Acesso imediato após confirmação!
+✅ *Inclui Download*
 `;
 
-// Coordenadas bancárias
+// === COORDENADAS (Sem o número Express antigo) ===
 const COORDENADAS_BANCARIAS = `
-🏦 *COORDENADAS BANCÁRIAS*
+🏦 *DADOS PARA PAGAMENTO*
 
-💳 *Multicaixa Express*
-• Número: 946014060
-
-📱 *Transferência Bancária*
-• Banco: BAI
-• IBAN: AO06.0040.0000.0000.0000.0000.0
+📱 *Transferência / IBAN (BAI)*
+• AO06.0040.0000.0000.0000.0000.0
 • Titular: Nome do Titular
 
-⚠️ Após o pagamento, envie o comprovativo aqui!
+⚠️ *Assim que transferir, envie a FOTO do comprovativo aqui!* 👇
 `;
 
 // ==================== ARMAZENAMENTO ====================
 const chatHistories = {};
 const clientStates = {}; 
 const pendingVerifications = {}; 
-
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 // ==================== FUNÇÕES AUXILIARES ====================
@@ -126,16 +118,6 @@ async function forwardToSupervisor(clientNumber, message, isPaymentProof = false
   }
 }
 
-function isAboutStreaming(text) {
-  const keywords = ['netflix', 'prime', 'video', 'perfil', 'perfis', 'streaming', 'conta', 'contas', 'comprar', 'preço', 'vaga', 'disponível', 'tabela', 'pacote'];
-  return keywords.some(keyword => text.toLowerCase().includes(keyword));
-}
-
-function wantsBankDetails(text) {
-  const keywords = ['coordenada', 'iban', 'banco', 'pagar', 'pagamento', 'transferir', 'multicaixa', 'express', 'dados bancários'];
-  return keywords.some(keyword => text.toLowerCase().includes(keyword));
-}
-
 function isPaymentProof(messageData) {
   if (messageData.message?.imageMessage || messageData.message?.documentMessage) return true;
   const text = messageData.message?.conversation || messageData.message?.extendedTextMessage?.text || '';
@@ -175,7 +157,7 @@ app.post('/', async (req, res) => {
             const profiles = await fetchAvailableProfiles(plataforma);
             if (profiles.length > 0) {
               const p = profiles[0];
-              const msg = `✅ *PAGAMENTO VERIFICADO!*\n\n📺 *Plataforma:* ${p.plataforma}\n📧 *Email:* ${p.email}\n🔑 *Senha:* ${p.senha}\n👤 *Perfil:* ${p.nomePerfil}\n🔢 *PIN:* ${p.pin}\n\n⚠️ Não altere os dados!`;
+              const msg = `✅ *PAGAMENTO CONFIRMADO!*\n\n📺 *Plataforma:* ${p.plataforma}\n📧 *Email:* ${p.email}\n🔑 *Senha:* ${p.senha}\n👤 *Perfil:* ${p.nomePerfil}\n🔢 *PIN:* ${p.pin}\n\n⚠️ Não altere os dados!`;
               await sendWhatsAppMessage(clientNumber, msg);
               await updateProfileStatus(p.rowIndex, 'Vendido');
               delete pendingVerifications[clientNumber];
@@ -185,11 +167,11 @@ app.post('/', async (req, res) => {
                   await sendWhatsAppMessage(s, `✅ Cliente ${clientNumber.replace('@s.whatsapp.net','')} atendido com sucesso.`);
               }
             } else {
-              await sendWhatsAppMessage(clientNumber, '❌ Sem stock no momento. Aguarde.');
-              for (const s of SUPERVISORS) await sendWhatsAppMessage(s, `⚠️ Sem stock de ${plataforma}.`);
+              await sendWhatsAppMessage(clientNumber, '❌ Sem stock no momento. O valor será devolvido ou aguarde reposição.');
+              for (const s of SUPERVISORS) await sendWhatsAppMessage(s, `⚠️ Sem stock de ${plataforma} para entrega imediata.`);
             }
           } else {
-            await sendWhatsAppMessage(clientNumber, '❌ Comprovativo rejeitado.');
+            await sendWhatsAppMessage(clientNumber, '❌ Comprovativo não aceite. Verifique o envio.');
             delete pendingVerifications[clientNumber];
           }
         }
@@ -205,45 +187,52 @@ app.post('/', async (req, res) => {
         let responseText = '';
         let shouldUseAI = true;
 
+        // 1. Receber Comprovativo
         if (isPaymentProof(messageData) && clientStates[remoteJid].step === 'aguardando_comprovativo') {
             const plataforma = clientStates[remoteJid].plataforma;
             pendingVerifications[remoteJid] = { plataforma: plataforma, timestamp: Date.now() };
             await forwardToSupervisor(remoteJid, `Comprovativo para ${plataforma}`, true);
-            responseText = '📨 Comprovativo recebido! Aguarde a verificação. ⏳';
+            responseText = '📨 Recebi o seu comprovativo! Aguarde um momento enquanto verificamos. ⏳';
             shouldUseAI = false;
         }
-        else if (wantsBankDetails(textMessage)) {
-            responseText = COORDENADAS_BANCARIAS;
-            clientStates[remoteJid].step = 'aguardando_comprovativo';
-            shouldUseAI = false;
-        }
-        else if (isAboutStreaming(textMessage) || clientStates[remoteJid].step === 'perguntou_plataforma') {
+        // 2. Escolha de Plataforma (AGORA COM ENVIO IMEDIATO DE DADOS BANCÁRIOS)
+        else if (clientStates[remoteJid].step === 'perguntou_plataforma' || textMessage.toLowerCase().includes('netflix') || textMessage.toLowerCase().includes('prime')) {
             const lower = textMessage.toLowerCase();
+            
             if (lower.includes('netflix')) {
                 clientStates[remoteJid].plataforma = 'Netflix';
                 const profiles = await fetchAvailableProfiles('Netflix');
-                responseText = profiles.length > 0 ? `🎬 *NETFLIX*\n✅ Temos perfis disponíveis!\n${PRECARIO}\n📲 Peça as coordenadas para pagar!` : '😔 Sem vagas Netflix.';
-                if (profiles.length > 0) clientStates[remoteJid].step = 'informou_vagas';
+                
+                if (profiles.length > 0) {
+                    // MANDA O PREÇO ESPECÍFICO + DADOS BANCÁRIOS IMEDIATAMENTE
+                    responseText = `${PRECOS_NETFLIX}\n\n✅ Temos vagas disponíveis!\n\n${COORDENADAS_BANCARIAS}`;
+                    clientStates[remoteJid].step = 'aguardando_comprovativo'; // Já fica à espera do pagamento
+                } else {
+                    responseText = '😔 Esgotaram as vagas de Netflix. Quer tentar Prime Video?';
+                }
                 shouldUseAI = false;
-            } else if (lower.includes('prime') || lower.includes('amazon')) {
+            } 
+            else if (lower.includes('prime') || lower.includes('amazon')) {
                 clientStates[remoteJid].plataforma = 'Prime Video';
                 const profiles = await fetchAvailableProfiles('Prime');
-                responseText = profiles.length > 0 ? `📺 *PRIME VIDEO*\n✅ Temos perfis disponíveis!\n${PRECARIO}\n📲 Peça as coordenadas para pagar!` : '😔 Sem vagas Prime.';
-                if (profiles.length > 0) clientStates[remoteJid].step = 'informou_vagas';
-                shouldUseAI = false;
-            } else {
-                responseText = `👋 Bem-vindo!\n\n🎬 Temos perfis de:\n1️⃣ *Netflix*\n2️⃣ *Prime Video*\n\nQual deseja?`;
-                clientStates[remoteJid].step = 'perguntou_plataforma';
+                
+                if (profiles.length > 0) {
+                    // MANDA O PREÇO ESPECÍFICO + DADOS BANCÁRIOS IMEDIATAMENTE
+                    responseText = `${PRECOS_PRIME}\n\n✅ Temos vagas disponíveis!\n\n${COORDENADAS_BANCARIAS}`;
+                    clientStates[remoteJid].step = 'aguardando_comprovativo'; // Já fica à espera do pagamento
+                } else {
+                    responseText = '😔 Esgotaram as vagas de Prime Video. Quer tentar Netflix?';
+                }
                 shouldUseAI = false;
             }
         }
 
+        // 3. IA (Para dúvidas gerais)
         if (shouldUseAI) {
-            // AQUI ESTÁ A MÁGICA: Gemini 2.5 Flash COM a correção do erro 400
             const model = genAI.getGenerativeModel({ 
                 model: "gemini-2.5-flash", 
                 systemInstruction: {
-                    parts: [{ text: "Você é um assistente de vendas de streaming. Preços: Netflix 5000/9000/13500. Prime 3000/5500/8000. Seja breve." }]
+                    parts: [{ text: "Você é um assistente de vendas. O cliente quer comprar streaming. Se ele disser 'Netflix' ou 'Prime', ele recebe os preços e o IBAN automaticamente. Seja curto." }]
                 }
             });
             
@@ -259,7 +248,8 @@ app.post('/', async (req, res) => {
                 chatHistories[remoteJid].push({ role: "model", parts: [{ text: responseText }] });
             } catch (aiError) {
                 console.error("Erro na IA:", aiError);
-                responseText = "Desculpe, estou a reiniciar o meu cérebro. Pode repetir?";
+                // Se der erro na IA, tenta forçar o menu
+                if (!responseText) responseText = "Olá! 👋 Temos *Netflix* e *Prime Video*. Qual deseja?";
             }
         }
 
@@ -274,4 +264,4 @@ app.post('/', async (req, res) => {
   }
 });
 
-app.listen(port, '0.0.0.0', () => console.log(`Bot de Vendas (Gemini 2.5) rodando na porta ${port}`));
+app.listen(port, '0.0.0.0', () => console.log(`Bot de Vendas Rápido rodando na porta ${port}`));
