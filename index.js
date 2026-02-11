@@ -2,9 +2,12 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const https = require('https');
-const path = require('path');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const { google } = require('googleapis');
+const {
+  cleanNumber, todayDate,
+  updateSheetCell, markProfileSold, markProfileAvailable,
+  checkClientInSheet, findAvailableProfile, hasAnyStock,
+} = require('./googleSheets');
 
 const app = express();
 app.use(express.json());
@@ -13,17 +16,6 @@ const port = process.env.PORT || 80;
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // ==================== CONFIGURAÇÕES ====================
-const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
-const SHEET_NAME = 'Página1';
-
-// Google Sheets Auth (Service Account)
-const auth = new google.auth.GoogleAuth({
-  keyFile: path.join(__dirname, 'credentials.json'),
-  scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-});
-const sheetsAPI = google.sheets({ version: 'v4', auth });
-
-// Supervisores
 const RAW_SUPERVISORS = (process.env.SUPERVISOR_NUMBER || '').split(',').map(n => n.trim().replace(/\D/g, ''));
 const REAL_PHONES = RAW_SUPERVISORS.filter(n => n.length < 15);
 const ALL_SUPERVISORS = RAW_SUPERVISORS;
@@ -47,8 +39,16 @@ const CATALOGO = {
   }
 };
 
+const PLAN_SLOTS = { individual: 1, partilha: 2, familia: 3 };
 const IBAN = 'AO06.0040.0000.0000.0000.0000.0';
 
+const SUPPORT_KEYWORDS = [
+  'não entra', 'nao entra', 'senha errada', 'ajuda', 'travou',
+  'não funciona', 'nao funciona', 'problema', 'erro',
+  'não consigo', 'nao consigo', 'não abre', 'nao abre'
+];
+
+// ==================== FUNÇÕES PURAS ====================
 function formatPriceTable(serviceKey) {
   const svc = CATALOGO[serviceKey];
   if (!svc) return '';
@@ -77,130 +77,22 @@ function detectService(text) {
   return null;
 }
 
-// ==================== GOOGLE SHEETS ====================
-async function fetchAllRows() {
-  try {
-    const res = await sheetsAPI.spreadsheets.values.get({
-      spreadsheetId: GOOGLE_SHEET_ID,
-      range: `${SHEET_NAME}!A:G`,
-    });
-    return res.data.values || [];
-  } catch (error) {
-    console.error('Erro fetchAllRows:', error.message);
-    return [];
-  }
-}
-
-async function updateSheetCell(row, column, value) {
-  try {
-    await sheetsAPI.spreadsheets.values.update({
-      spreadsheetId: GOOGLE_SHEET_ID,
-      range: `${SHEET_NAME}!${column}${row}`,
-      valueInputOption: 'RAW',
-      requestBody: { values: [[value]] },
-    });
-    return true;
-  } catch (error) {
-    console.error('Erro updateSheetCell:', error.message);
-    return false;
-  }
-}
-
-async function markProfileSold(rowIndex, clientNumber, pushName) {
-  const label = pushName ? `${clientNumber} - ${pushName}` : clientNumber;
-  await updateSheetCell(rowIndex, 'F', 'Indisponivel');
-  await updateSheetCell(rowIndex, 'G', label);
-}
-
-async function markProfileAvailable(rowIndex) {
-  await updateSheetCell(rowIndex, 'F', 'Disponivel');
-  await updateSheetCell(rowIndex, 'G', '');
-}
-
-async function checkClientRenewal(clientNumber) {
-  const rows = await fetchAllRows();
-  if (rows.length <= 1) return null;
-  const cleanNum = cleanNumber(clientNumber);
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    const dono = row[6] ? cleanNumber(row[6]) : '';
-    if (dono === cleanNum) {
-      return {
-        rowIndex: i + 1,
-        plataforma: row[0] || '',
-        email: row[1] || '',
-        senha: row[2] || '',
-        nomePerfil: row[3] || '',
-        pin: row[4] || '',
-        status: row[5] || '',
-        dono: row[6] || '',
-        donoNome: (row[6] || '').split(' - ')[1] || ''
-      };
-    }
-  }
-  return null;
-}
-
-async function countAvailableStock(plataforma) {
-  const rows = await fetchAllRows();
-  if (rows.length <= 1) return 0;
-  let count = 0;
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    if ((row[0] || '').toLowerCase().includes(plataforma.toLowerCase()) &&
-        (row[5] || '').toLowerCase().includes('dispon')) {
-      count++;
-    }
-  }
-  return count;
-}
-
-async function fetchBestProfile(plataforma, clientNumber) {
-  try {
-    const rows = await fetchAllRows();
-    if (rows.length <= 1) return null;
-    const dataRows = rows.slice(1);
-    const cleanClientNum = cleanNumber(clientNumber);
-
-    // Renovação - perfil já atribuído ao cliente
-    const existing = dataRows.map((row, index) => ({
-      rowIndex: index + 2,
-      plataforma: row[0] || '', email: row[1] || '', senha: row[2] || '',
-      nomePerfil: row[3] || '', pin: row[4] || '', status: row[5] || '',
-      dono: row[6] ? cleanNumber(row[6]) : '', donoRaw: row[6] || '',
-      isRenewal: true
-    })).find(p => p.plataforma.toLowerCase().includes(plataforma.toLowerCase()) && p.dono === cleanClientNum);
-
-    if (existing) return existing;
-
-    // Novo - perfil disponível
-    const free = dataRows.map((row, index) => ({
-      rowIndex: index + 2,
-      plataforma: row[0] || '', email: row[1] || '', senha: row[2] || '',
-      nomePerfil: row[3] || '', pin: row[4] || '', status: row[5] || '',
-      dono: row[6] || '', donoRaw: row[6] || '',
-      isRenewal: false
-    })).find(p => p.plataforma.toLowerCase().includes(plataforma.toLowerCase()) && p.status.toLowerCase().includes('dispon'));
-
-    return free || null;
-  } catch (error) {
-    console.error('Erro fetchBestProfile:', error.message);
-    return null;
-  }
+function detectSupportIssue(text) {
+  const lower = text.toLowerCase();
+  return SUPPORT_KEYWORDS.some(kw => lower.includes(kw));
 }
 
 // ==================== PROMPT GEMINI ====================
 const SYSTEM_PROMPT = `Tu és o assistente virtual da StreamZone, uma loja de contas de streaming (Netflix e Prime Video) em Angola.
 
-REGRAS IMPORTANTES:
+REGRAS:
 - NUNCA reveles o IBAN ou dados de pagamento antes do cliente escolher um plano
-- NUNCA menciones comprovativos ou PDFs antes do cliente ter feito o pagamento
-- Guia a conversa para o cliente escolher entre Netflix ou Prime Video
-- Depois de escolher o serviço, ajuda a escolher o plano (Individual, Partilha ou Família)
+- NUNCA menciones comprovativos ou PDFs antes do pagamento
+- Guia a conversa para escolher Netflix ou Prime Video
 - Sê caloroso, simpático e profissional
 - Responde sempre em Português
 - Máximo 3 frases por resposta
-- Se o cliente perguntar algo fora do tema, redireciona educadamente para os nossos serviços`;
+- Redireciona temas fora do contexto para os nossos serviços`;
 
 // ==================== ESTADOS ====================
 const chatHistories = {};
@@ -209,26 +101,15 @@ const pendingVerifications = {};
 const pausedClients = {};
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-// ==================== FUNÇÕES AUXILIARES ====================
-function cleanNumber(jid) {
-  return jid ? jid.replace(/\D/g, '') : '';
-}
-
+// ==================== WHATSAPP ====================
 async function sendWhatsAppMessage(number, text) {
   try {
     let cleanTarget = cleanNumber(number);
-
-    // Proteção anti-erro 400: LIDs redirecionam para telefone principal
     if (cleanTarget.length > 14) {
       console.log(`⚠️ Envio para PC (${cleanTarget}) -> redirecionar para ${MAIN_BOSS}`);
-      if (MAIN_BOSS) {
-        cleanTarget = MAIN_BOSS;
-      } else {
-        console.log('❌ Nenhum número real configurado.');
-        return false;
-      }
+      if (MAIN_BOSS) cleanTarget = MAIN_BOSS;
+      else { console.log('❌ Nenhum número real configurado.'); return false; }
     }
-
     const finalAddress = cleanTarget + '@s.whatsapp.net';
     await axios.post(`${process.env.EVOLUTION_API_URL}/message/sendText/${process.env.EVOLUTION_INSTANCE_NAME}`, {
       number: finalAddress, text: text, delay: 1200
@@ -263,7 +144,7 @@ app.post('/', async (req, res) => {
       const parts = lower.split(/\s+/);
       const command = parts[0];
 
-      // --- Assumir cliente ---
+      // --- Assumir ---
       if (command === 'assumir' && parts[1]) {
         const targetNum = parts[1].replace(/\D/g, '');
         pausedClients[targetNum] = true;
@@ -271,7 +152,7 @@ app.post('/', async (req, res) => {
         return res.status(200).send('OK');
       }
 
-      // --- Retomar cliente ---
+      // --- Retomar ---
       if (command === 'retomar' && parts[1]) {
         const targetNum = parts[1].replace(/\D/g, '');
         delete pausedClients[targetNum];
@@ -279,17 +160,17 @@ app.post('/', async (req, res) => {
         return res.status(200).send('OK');
       }
 
-      // --- Liberar perfil (desistência) ---
+      // --- Liberar ---
       if (command === 'liberar' && parts[1]) {
         const targetNum = parts[1].replace(/\D/g, '');
-        const renewal = await checkClientRenewal(targetNum);
-        if (renewal) {
-          await markProfileAvailable(renewal.rowIndex);
+        const existing = await checkClientInSheet(targetNum);
+        if (existing) {
+          await markProfileAvailable(existing.rowIndex);
           delete clientStates[targetNum];
           delete pendingVerifications[targetNum];
           delete chatHistories[targetNum];
           delete pausedClients[targetNum];
-          await sendWhatsAppMessage(senderNum, `🔓 Perfil de ${targetNum} libertado (${renewal.plataforma}).`);
+          await sendWhatsAppMessage(senderNum, `🔓 Perfil de ${targetNum} libertado (${existing.plataforma}).`);
         } else {
           await sendWhatsAppMessage(senderNum, `⚠️ Nenhum perfil encontrado para ${targetNum}.`);
         }
@@ -311,7 +192,7 @@ app.post('/', async (req, res) => {
             await sendWhatsAppMessage(senderNum, `⚠️ Tenho ${pendingList.length} pedidos. Especifique o número.`);
             return res.status(200).send('OK');
           } else {
-            await sendWhatsAppMessage(senderNum, `✅ Nada pendente.`);
+            await sendWhatsAppMessage(senderNum, '✅ Nada pendente.');
             return res.status(200).send('OK');
           }
         }
@@ -325,28 +206,50 @@ app.post('/', async (req, res) => {
         if (action === 'approve') {
           await sendWhatsAppMessage(senderNum, '🔄 Aprovado! A processar...');
 
-          const profile = await fetchBestProfile(pedido.plataforma, targetClient);
+          const slotsNeeded = PLAN_SLOTS[pedido.plano.toLowerCase()] || 1;
+          let profile = null;
+
+          if (pedido.isRenewal) {
+            const existing = await checkClientInSheet(targetClient);
+            if (existing) {
+              profile = {
+                rowIndex: existing.rowIndex,
+                plataforma: existing.plataforma,
+                email: existing.email,
+                senha: existing.senha,
+                nomePerfil: existing.nomePerfil,
+                pin: existing.pin,
+                isRenewal: true
+              };
+            }
+          } else {
+            const found = await findAvailableProfile(pedido.plataforma, slotsNeeded);
+            if (found) {
+              profile = { ...found, isRenewal: false };
+            }
+          }
+
           if (profile) {
             const entrega = `✅ *PAGAMENTO APROVADO!*\n\nAqui estão os seus dados:\n\n📺 *${profile.plataforma}*\n📧 *Email:* ${profile.email}\n🔑 *Senha:* ${profile.senha}\n👤 *Perfil:* ${profile.nomePerfil}\n🔢 *Pin:* ${profile.pin}\n\nObrigado por escolher a StreamZone! 🎉`;
             await sendWhatsAppMessage(targetClient, entrega);
 
-            // Escrever na planilha (só para novos, renovações já estão marcadas)
-            if (!profile.isRenewal) {
-              await markProfileSold(profile.rowIndex, targetClient, pedido.pushName || '');
+            if (profile.isRenewal) {
+              await updateSheetCell(profile.rowIndex, 'I', todayDate());
+            } else {
+              await markProfileSold(profile.rowIndex, pedido.clientName || '', targetClient, slotsNeeded);
             }
 
             delete pendingVerifications[targetClient];
             delete clientStates[targetClient];
             delete chatHistories[targetClient];
-            await sendWhatsAppMessage(senderNum, `✅ Conta entregue + planilha atualizada!`);
+            await sendWhatsAppMessage(senderNum, `✅ Conta entregue + planilha atualizada! (${slotsNeeded} slot${slotsNeeded > 1 ? 's' : ''})`);
           } else {
             await sendWhatsAppMessage(targetClient, '✅ Pagamento recebido! O supervisor enviará a conta manualmente.');
-            await sendWhatsAppMessage(senderNum, `⚠️ *SEM STOCK AUTOMÁTICO* para ${targetClient}. Envie manualmente!`);
+            await sendWhatsAppMessage(senderNum, `⚠️ *SEM STOCK* para ${pedido.plataforma} (${pedido.plano}, ${slotsNeeded} slots). Envie manualmente!`);
             delete pendingVerifications[targetClient];
             delete clientStates[targetClient];
           }
         } else {
-          // Rejeição - cliente volta a poder reenviar PDF
           await sendWhatsAppMessage(targetClient, '❌ Comprovativo inválido. Por favor, envie novamente o PDF correto.');
           if (clientStates[targetClient]) {
             clientStates[targetClient].step = 'aguardando_comprovativo';
@@ -359,42 +262,43 @@ app.post('/', async (req, res) => {
     }
 
     // ==================== CLIENTE ====================
-    // Ignora PCs estranhos que não sejam supervisores
     if (senderNum.length > 13) return res.status(200).send('OK');
 
-    // Cliente pausado pelo supervisor (takeover)
     if (pausedClients[senderNum]) {
-      console.log(`⏸️ ${senderNum} está pausado (supervisor assumiu).`);
+      console.log(`⏸️ ${senderNum} está pausado.`);
       return res.status(200).send('OK');
     }
 
-    // Inicializar estado
-    if (!clientStates[senderNum]) clientStates[senderNum] = { step: 'inicio', pushName };
+    if (!clientStates[senderNum]) clientStates[senderNum] = { step: 'inicio' };
     if (!chatHistories[senderNum]) chatHistories[senderNum] = [];
 
-    // Guardar pushName
-    if (pushName && !clientStates[senderNum].pushName) {
-      clientStates[senderNum].pushName = pushName;
-    }
-
     const state = clientStates[senderNum];
-    let response = '';
+
+    // ---- INTERCETADOR GLOBAL: Questão técnica (NLP) ----
+    if (textMessage && state.step !== 'esperando_supervisor' && state.step !== 'captura_nome' && detectSupportIssue(textMessage)) {
+      pausedClients[senderNum] = true;
+      await sendWhatsAppMessage(senderNum, 'Entendi que é uma questão técnica. Vou chamar o suporte humano. 🛠️');
+      if (MAIN_BOSS) {
+        await sendWhatsAppMessage(MAIN_BOSS, `🛠️ *SUPORTE TÉCNICO*\n👤 Cliente: ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n💬 "${textMessage}"\n\nBot pausado. Use *retomar ${senderNum}* quando resolver.`);
+      }
+      return res.status(200).send('OK');
+    }
 
     // ---- STEP: esperando_supervisor ----
     if (state.step === 'esperando_supervisor') {
-      response = '⏳ O seu comprovativo está a ser verificado. Por favor aguarde um momento!';
-      await sendWhatsAppMessage(senderNum, response);
+      await sendWhatsAppMessage(senderNum, '⏳ O seu comprovativo está a ser verificado. Por favor aguarde!');
       return res.status(200).send('OK');
     }
 
     // ---- STEP: aguardando_comprovativo ----
     if (state.step === 'aguardando_comprovativo') {
       if (isDoc && messageData.message.documentMessage.mimetype === 'application/pdf') {
+        const slotsNeeded = PLAN_SLOTS[state.plano.toLowerCase()] || 1;
         pendingVerifications[senderNum] = {
           plataforma: state.plataforma,
           plano: state.plano,
           valor: state.valor,
-          pushName: state.pushName,
+          clientName: state.clientName || '',
           isRenewal: state.isRenewal || false,
           timestamp: Date.now()
         };
@@ -402,63 +306,50 @@ app.post('/', async (req, res) => {
 
         if (MAIN_BOSS) {
           const renewTag = state.isRenewal ? ' (RENOVAÇÃO)' : '';
-          const msgSuper = `📩 *NOVO COMPROVATIVO*${renewTag}\n👤 Cliente: ${senderNum}${state.pushName ? ' (' + state.pushName + ')' : ''}\n📦 ${state.plataforma} - ${state.plano}\n💰 ${state.valor ? state.valor.toLocaleString('pt') + ' Kz' : 'N/A'}\n\nResponda: *sim* ou *nao*`;
+          const msgSuper = `📩 *NOVO COMPROVATIVO*${renewTag}\n👤 Cliente: ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n📦 ${state.plataforma} - ${state.plano} (${slotsNeeded} slot${slotsNeeded > 1 ? 's' : ''})\n💰 ${state.valor ? state.valor.toLocaleString('pt') + ' Kz' : 'N/A'}\n\nResponda: *sim* ou *nao*`;
           await sendWhatsAppMessage(MAIN_BOSS, msgSuper);
         }
-
-        response = '📄 Comprovativo recebido! Estamos a verificar o seu pagamento. ⏳';
+        await sendWhatsAppMessage(senderNum, '📄 Comprovativo recebido! Estamos a verificar o seu pagamento. ⏳');
       } else if (textMessage || messageData.message?.imageMessage) {
-        response = '⚠️ Por favor, envie o comprovativo em formato *PDF*.';
+        await sendWhatsAppMessage(senderNum, '⚠️ Por favor, envie o comprovativo em formato *PDF*.');
       }
-      if (response) await sendWhatsAppMessage(senderNum, response);
       return res.status(200).send('OK');
     }
 
     // ---- STEP: inicio ----
     if (state.step === 'inicio') {
-      // Verificar renovação primeiro
-      const renewal = await checkClientRenewal(senderNum);
-      if (renewal) {
-        const svcKey = renewal.plataforma.toLowerCase().includes('netflix') ? 'netflix' : 'prime';
-        const nome = renewal.donoNome || state.pushName || '';
-        state.plataforma = renewal.plataforma;
+      const existing = await checkClientInSheet(senderNum);
+      if (existing) {
+        const svcKey = existing.plataforma.toLowerCase().includes('netflix') ? 'netflix' : 'prime';
+        const nome = existing.clienteName || pushName || '';
+        state.clientName = nome;
         state.serviceKey = svcKey;
+        state.plataforma = existing.plataforma;
         state.isRenewal = true;
         state.step = 'escolha_plano';
 
         const saudacao = nome ? `Olá ${nome}! 👋` : 'Olá! 👋';
-        response = `${saudacao}\n\nVejo que já é nosso cliente de *${renewal.plataforma}*! Quer renovar?\n\n${formatPriceTable(svcKey)}\n\nQual plano deseja? (Individual / Partilha / Família)`;
-        await sendWhatsAppMessage(senderNum, response);
+        await sendWhatsAppMessage(senderNum, `${saudacao}\n\nVejo que já é nosso cliente de *${existing.plataforma}*! Quer renovar?\n\n${formatPriceTable(svcKey)}\n\nQual plano deseja? (Individual / Partilha / Família)`);
         return res.status(200).send('OK');
       }
 
-      // Detetar serviço na mensagem
-      const svc = detectService(textMessage);
-      if (svc) {
-        state.serviceKey = svc;
-        state.plataforma = CATALOGO[svc].nome;
+      state.step = 'captura_nome';
+      await sendWhatsAppMessage(senderNum, 'Olá! Bem-vindo à StreamZone. 👋\nCom quem tenho o prazer de falar?');
+      return res.status(200).send('OK');
+    }
 
-        // Verificar stock
-        const stock = await countAvailableStock(state.plataforma);
-        if (stock === 0) {
-          response = `😔 De momento não temos *${state.plataforma}* disponível. Vamos notificá-lo assim que houver stock!`;
-          if (MAIN_BOSS) {
-            await sendWhatsAppMessage(MAIN_BOSS, `⚠️ *STOCK ESGOTADO* de ${state.plataforma}!\nCliente ${senderNum} (${state.pushName || 'sem nome'}) ficou sem atendimento.`);
-          }
-          state.step = 'inicio';
-          await sendWhatsAppMessage(senderNum, response);
-          return res.status(200).send('OK');
-        }
-
-        state.step = 'escolha_plano';
-        response = `${formatPriceTable(svc)}\n\nQual plano deseja? (Individual / Partilha / Família)`;
-        await sendWhatsAppMessage(senderNum, response);
+    // ---- STEP: captura_nome ----
+    if (state.step === 'captura_nome') {
+      const name = textMessage.trim();
+      if (name.length < 2) {
+        await sendWhatsAppMessage(senderNum, 'Por favor, diga-me o seu nome para continuarmos. 😊');
         return res.status(200).send('OK');
       }
-
-      // Sem keyword - AI guia conversa, avançar para escolha_servico
+      state.clientName = name;
       state.step = 'escolha_servico';
-      // Falls through to AI below
+
+      await sendWhatsAppMessage(senderNum, `Prazer, ${name}! 😊\n\nTemos os seguintes serviços:\n\n🎬 *Netflix*\n📺 *Prime Video*\n\nQual te interessa?`);
+      return res.status(200).send('OK');
     }
 
     // ---- STEP: escolha_servico ----
@@ -468,25 +359,20 @@ app.post('/', async (req, res) => {
         state.serviceKey = svc;
         state.plataforma = CATALOGO[svc].nome;
 
-        // Verificar stock
-        const stock = await countAvailableStock(state.plataforma);
-        if (stock === 0) {
-          response = `😔 De momento não temos *${state.plataforma}* disponível. Vamos notificá-lo assim que houver stock!`;
+        const stock = await hasAnyStock(state.plataforma);
+        if (!stock) {
+          await sendWhatsAppMessage(senderNum, `😔 De momento não temos *${state.plataforma}* disponível. Vamos notificá-lo assim que houver stock!`);
           if (MAIN_BOSS) {
-            await sendWhatsAppMessage(MAIN_BOSS, `⚠️ *STOCK ESGOTADO* de ${state.plataforma}!\nCliente ${senderNum} (${state.pushName || 'sem nome'}) ficou sem atendimento.`);
+            await sendWhatsAppMessage(MAIN_BOSS, `⚠️ *STOCK ESGOTADO* de ${state.plataforma}!\nCliente: ${senderNum} (${state.clientName || 'sem nome'})`);
           }
-          // Fica em escolha_servico para tentar outro serviço
-          await sendWhatsAppMessage(senderNum, response);
           return res.status(200).send('OK');
         }
 
         state.step = 'escolha_plano';
-        response = `${formatPriceTable(svc)}\n\nQual plano deseja? (Individual / Partilha / Família)`;
-        await sendWhatsAppMessage(senderNum, response);
+        await sendWhatsAppMessage(senderNum, `${formatPriceTable(svc)}\n\nQual plano deseja? (Individual / Partilha / Família)`);
         return res.status(200).send('OK');
       }
 
-      // Sem keyword - usar AI para guiar
       try {
         const model = genAI.getGenerativeModel({
           model: 'gemini-2.5-flash',
@@ -494,14 +380,14 @@ app.post('/', async (req, res) => {
         });
         const chat = model.startChat({ history: chatHistories[senderNum] });
         const resAI = await chat.sendMessage(textMessage || 'Olá');
-        response = resAI.response.text();
+        const aiText = resAI.response.text();
         chatHistories[senderNum].push({ role: 'user', parts: [{ text: textMessage || 'Olá' }] });
-        chatHistories[senderNum].push({ role: 'model', parts: [{ text: response }] });
+        chatHistories[senderNum].push({ role: 'model', parts: [{ text: aiText }] });
+        await sendWhatsAppMessage(senderNum, aiText);
       } catch (e) {
         console.error('Erro AI:', e.message);
-        response = 'Olá! 👋 Bem-vindo à StreamZone! Temos *Netflix* e *Prime Video*. Qual te interessa?';
+        await sendWhatsAppMessage(senderNum, `${state.clientName || ''}, temos *Netflix* e *Prime Video*. Qual te interessa?`);
       }
-      if (response) await sendWhatsAppMessage(senderNum, response);
       return res.status(200).send('OK');
     }
 
@@ -509,15 +395,30 @@ app.post('/', async (req, res) => {
     if (state.step === 'escolha_plano') {
       const chosen = findPlan(state.serviceKey, textMessage);
       if (chosen) {
+        const slotsNeeded = PLAN_SLOTS[chosen.plan] || 1;
+
+        if (!state.isRenewal) {
+          const profile = await findAvailableProfile(state.plataforma, slotsNeeded);
+
+          if (!profile) {
+            pausedClients[senderNum] = true;
+            await sendWhatsAppMessage(senderNum, `😔 De momento não conseguimos processar o plano *${chosen.plan.charAt(0).toUpperCase() + chosen.plan.slice(1)}* automaticamente. O nosso suporte vai tratar do seu pedido!`);
+            if (MAIN_BOSS) {
+              await sendWhatsAppMessage(MAIN_BOSS, `⚠️ *SLOTS INSUFICIENTES*\n👤 Cliente: ${senderNum} (${state.clientName || 'sem nome'})\n📦 ${state.plataforma} - ${chosen.plan} (precisa ${slotsNeeded} slot${slotsNeeded > 1 ? 's' : ''})\n\nCliente quer plano maior que o stock disponível neste email. Assuma a gestão.\nUse *retomar ${senderNum}* quando resolver.`);
+            }
+            return res.status(200).send('OK');
+          }
+        }
+
         state.plano = chosen.plan.charAt(0).toUpperCase() + chosen.plan.slice(1);
         state.valor = chosen.price;
         state.step = 'aguardando_comprovativo';
 
-        response = `Excelente escolha! 🎉\n\n📦 *${state.plataforma} - ${state.plano}*\n💰 *Valor: ${chosen.price.toLocaleString('pt')} Kz*\n\n🏦 *DADOS PARA PAGAMENTO*\n📱 IBAN (BAI): ${IBAN}\n\nApós o pagamento, envie o comprovativo em *PDF* aqui! 📄`;
-      } else {
-        response = `Por favor, escolha um dos planos disponíveis:\n👤 *Individual*\n👥 *Partilha*\n👨‍👩‍👧 *Família*`;
+        await sendWhatsAppMessage(senderNum, `Excelente escolha! 🎉\n\n📦 *${state.plataforma} - ${state.plano}*\n💰 *Valor: ${chosen.price.toLocaleString('pt')} Kz*\n\n🏦 *DADOS PARA PAGAMENTO*\n📱 IBAN (BAI): ${IBAN}\n\nApós o pagamento, envie o comprovativo em *PDF* aqui! 📄`);
+        return res.status(200).send('OK');
       }
-      await sendWhatsAppMessage(senderNum, response);
+
+      await sendWhatsAppMessage(senderNum, 'Por favor, escolha um dos planos:\n👤 *Individual*\n👥 *Partilha*\n👨‍👩‍👧 *Família*');
       return res.status(200).send('OK');
     }
 
@@ -528,4 +429,4 @@ app.post('/', async (req, res) => {
   }
 });
 
-app.listen(port, '0.0.0.0', () => console.log(`Bot v7.0 (StreamZone) rodando na porta ${port}`));
+app.listen(port, '0.0.0.0', () => console.log(`Bot v8.0 (StreamZone - NLP + Slots) rodando na porta ${port}`));
