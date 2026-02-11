@@ -104,16 +104,20 @@ const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 // ==================== WHATSAPP ====================
 async function sendWhatsAppMessage(number, text) {
   try {
-    let cleanTarget = cleanNumber(number);
-    if (cleanTarget.length > 14) {
-      console.log(`⚠️ Envio para PC (${cleanTarget}) -> redirecionar para ${MAIN_BOSS}`);
-      if (MAIN_BOSS) cleanTarget = MAIN_BOSS;
-      else { console.log('❌ Nenhum número real configurado.'); return false; }
+    const cleanTarget = cleanNumber(number);
+    console.log(`📤 SEND: cleanTarget="${cleanTarget}" length=${cleanTarget.length}`);
+    if (cleanTarget.length < 9 || cleanTarget.length > 15) {
+      console.log(`❌ SEND: Número inválido, não enviar.`);
+      return false;
     }
     const finalAddress = cleanTarget + '@s.whatsapp.net';
-    await axios.post(`${process.env.EVOLUTION_API_URL}/message/sendText/${process.env.EVOLUTION_INSTANCE_NAME}`, {
+    const url = `${process.env.EVOLUTION_API_URL}/message/sendText/${process.env.EVOLUTION_INSTANCE_NAME}`;
+    console.log(`📤 SEND: URL=${url}`);
+    console.log(`📤 SEND: Para=${finalAddress} | Texto=${text.substring(0, 60)}...`);
+    await axios.post(url, {
       number: finalAddress, text: text, delay: 1200
     }, { headers: { 'apikey': process.env.EVOLUTION_API_KEY }, httpsAgent });
+    console.log(`✅ SEND: Mensagem enviada com sucesso para ${finalAddress}`);
     return true;
   } catch (e) {
     console.error(`❌ FALHA ENVIO para ${number}:`, e.response ? JSON.stringify(e.response.data) : e.message);
@@ -130,12 +134,17 @@ app.post('/', async (req, res) => {
     if (messageData.key.fromMe) return res.status(200).send('Ignore self');
 
     const remoteJid = messageData.key.remoteJid;
-    const senderNum = cleanNumber(remoteJid);
+    const senderPn = messageData.key.senderPn || '';  // Número real (ex: 244923977621@s.whatsapp.net)
+    const rawJid = cleanNumber(remoteJid);
+    const realPhone = senderPn ? cleanNumber(senderPn) : rawJid;
+    const senderNum = realPhone;  // SEMPRE o número real do telefone
+    const lidId = remoteJid.includes('@lid') ? rawJid : null;  // Guardar o LID para envio se necessário
+
     const pushName = messageData.pushName || '';
     const textMessage = messageData.message?.conversation || messageData.message?.extendedTextMessage?.text || '';
     const isDoc = !!messageData.message?.documentMessage;
 
-    console.log(`📩 De: ${senderNum} (${pushName}) | Msg: ${textMessage}`);
+    console.log(`📩 De: ${senderNum} (${pushName}) | Msg: ${textMessage}${lidId ? ` [LID: ${lidId}]` : ''}`);
 
     // ==================== SUPERVISOR ====================
     if (ALL_SUPERVISORS.includes(senderNum)) {
@@ -262,7 +271,11 @@ app.post('/', async (req, res) => {
     }
 
     // ==================== CLIENTE ====================
-    if (senderNum.length > 13) return res.status(200).send('OK');
+    console.log(`🔍 DEBUG: senderNum="${senderNum}" length=${senderNum.length}`);
+    if (senderNum.length < 9 || senderNum.length > 15) {
+      console.log(`🚫 DEBUG: Número inválido (length=${senderNum.length})`);
+      return res.status(200).send('OK');
+    }
 
     if (pausedClients[senderNum]) {
       console.log(`⏸️ ${senderNum} está pausado.`);
@@ -273,6 +286,7 @@ app.post('/', async (req, res) => {
     if (!chatHistories[senderNum]) chatHistories[senderNum] = [];
 
     const state = clientStates[senderNum];
+    console.log(`🔍 DEBUG: step="${state.step}" para ${senderNum}`);
 
     // ---- INTERCETADOR GLOBAL: Questão técnica (NLP) ----
     if (textMessage && state.step !== 'esperando_supervisor' && state.step !== 'captura_nome' && detectSupportIssue(textMessage)) {
@@ -318,7 +332,9 @@ app.post('/', async (req, res) => {
 
     // ---- STEP: inicio ----
     if (state.step === 'inicio') {
+      console.log(`🔍 DEBUG: Entrando no step INICIO para ${senderNum}`);
       const existing = await checkClientInSheet(senderNum);
+      console.log(`🔍 DEBUG: checkClientInSheet resultado:`, existing ? 'ENCONTRADO' : 'NAO ENCONTRADO');
       if (existing) {
         const svcKey = existing.plataforma.toLowerCase().includes('netflix') ? 'netflix' : 'prime';
         const nome = existing.clienteName || pushName || '';
@@ -329,11 +345,13 @@ app.post('/', async (req, res) => {
         state.step = 'escolha_plano';
 
         const saudacao = nome ? `Olá ${nome}! 👋` : 'Olá! 👋';
+        console.log(`📤 DEBUG: A enviar saudação de renovação para ${senderNum}`);
         await sendWhatsAppMessage(senderNum, `${saudacao}\n\nVejo que já é nosso cliente de *${existing.plataforma}*! Quer renovar?\n\n${formatPriceTable(svcKey)}\n\nQual plano deseja? (Individual / Partilha / Família)`);
         return res.status(200).send('OK');
       }
 
       state.step = 'captura_nome';
+      console.log(`📤 DEBUG: A enviar saudação inicial para ${senderNum}`);
       await sendWhatsAppMessage(senderNum, 'Olá! Bem-vindo à StreamZone. 👋\nCom quem tenho o prazer de falar?');
       return res.status(200).send('OK');
     }
@@ -424,7 +442,7 @@ app.post('/', async (req, res) => {
 
     res.status(200).send('OK');
   } catch (error) {
-    console.error('ERRO:', error);
+    console.error('❌ ERRO GLOBAL:', error);
     res.status(200).send('Erro');
   }
 });
