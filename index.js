@@ -102,7 +102,7 @@ function detectSupportIssue(text) {
 }
 
 // ==================== PROMPTS GEMINI ====================
-const SYSTEM_PROMPT = `Tu és o assistente virtual da StreamZone, uma loja de contas de streaming (Netflix e Prime Video) em Angola.
+const SYSTEM_PROMPT = `Tu és o Assistente de IA da StreamZone 🤖, uma loja de contas de streaming (Netflix e Prime Video) em Angola.
 
 REGRAS:
 - NUNCA reveles o IBAN ou dados de pagamento antes do cliente escolher um plano
@@ -110,17 +110,18 @@ REGRAS:
 - Guia a conversa para escolher Netflix ou Prime Video
 - Sê caloroso, simpático e profissional
 - Responde sempre em Português
-- Máximo 3 frases por resposta
-- Redireciona temas fora do contexto para os nossos serviços`;
+- Máximo 2-3 frases por resposta, curtas e diretas
+- Redireciona temas fora do contexto para os nossos serviços
+- Se o cliente tiver um problema técnico com uma conta existente, responde com empatia e diz que vais verificar`;
 
-const SYSTEM_PROMPT_COMPROVATIVO = `Tu és o assistente da StreamZone. O cliente já escolheu um plano e está na fase de pagamento.
+const SYSTEM_PROMPT_COMPROVATIVO = `Tu és o Assistente de IA da StreamZone 🤖. O cliente já escolheu um plano e está na fase de pagamento.
 
-CONTEXTO:
-- O cliente deve enviar o comprovativo de pagamento (APENAS PDF)
-- Podes responder a perguntas sobre preço, método de pagamento, como funciona
-- Sê breve (2-3 frases máximo)
-- Termina SEMPRE com um lembrete gentil para enviar o comprovativo
-- NUNCA inventes dados de pagamento, o cliente já os recebeu`;
+REGRAS:
+- Responde a QUALQUER pergunta do cliente de forma curta, simpática e útil (máximo 2 frases)
+- Exemplos: "Quantos perfis?", "Como funciona?", "Posso partilhar?", "É seguro?" — responde sempre!
+- NUNCA inventes dados de pagamento (IBAN, Multicaixa) — o cliente já os recebeu
+- Termina SEMPRE a tua resposta com: "Espero ter esclarecido! 😊 Assim que puderes, envia o PDF do comprovativo para finalizarmos."
+- Se não souberes a resposta, diz honestamente que vais verificar com a equipa`;
 
 // ==================== ESTADOS ====================
 const chatHistories = {};
@@ -488,32 +489,22 @@ app.post('/', async (req, res) => {
     state.lastActivity = Date.now();
     console.log(`🔍 DEBUG: step="${state.step}" para ${senderNum}`);
 
-    // ---- DETEÇÃO DE LOOP: mensagem repetida ----
+    // ---- DETEÇÃO DE LOOP: 3 mensagens iguais seguidas → suporte humano ----
     if (textMessage && state.step !== 'esperando_supervisor') {
       const normalizedMsg = textMessage.trim().toLowerCase();
       if (state.repeatTracker && normalizedMsg === state.repeatTracker.lastMsg) {
         state.repeatTracker.count++;
-        if (state.repeatTracker.count >= 2) {
+        if (state.repeatTracker.count >= 3) {
           pausedClients[senderNum] = true;
           await sendWhatsAppMessage(senderNum, 'Parece que estou com dificuldades em entender. Vou chamar um suporte humano para te ajudar! 🛠️');
           if (MAIN_BOSS) {
-            await sendWhatsAppMessage(MAIN_BOSS, `🔁 *LOOP DETETADO*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n💬 "${textMessage}" (repetido ${state.repeatTracker.count + 1}x)\n📍 Step: ${state.step}\n\nBot pausado. Use *retomar ${senderNum}* quando resolver.`);
+            await sendWhatsAppMessage(MAIN_BOSS, `🔁 *LOOP DETETADO*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n💬 "${textMessage}" (repetido ${state.repeatTracker.count}x)\n📍 Step: ${state.step}\n\nBot pausado. Use *retomar ${senderNum}* quando resolver.`);
           }
           return res.status(200).send('OK');
         }
       } else {
         state.repeatTracker = { lastMsg: normalizedMsg, count: 1 };
       }
-    }
-
-    // ---- INTERCETADOR GLOBAL: Questão técnica (NLP) ----
-    if (textMessage && state.step !== 'esperando_supervisor' && state.step !== 'captura_nome' && detectSupportIssue(textMessage)) {
-      pausedClients[senderNum] = true;
-      await sendWhatsAppMessage(senderNum, 'Entendi que é uma questão técnica. Vou chamar o suporte humano. 🛠️');
-      if (MAIN_BOSS) {
-        await sendWhatsAppMessage(MAIN_BOSS, `🛠️ *SUPORTE TÉCNICO*\n👤 Cliente: ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n💬 "${textMessage}"\n\nBot pausado. Use *retomar ${senderNum}* quando resolver.`);
-      }
-      return res.status(200).send('OK');
     }
 
     // ---- STEP: esperando_supervisor ----
@@ -524,12 +515,12 @@ app.post('/', async (req, res) => {
 
     // ---- STEP: aguardando_comprovativo ----
     if (state.step === 'aguardando_comprovativo') {
-      // --- ANÁLISE DE TEXTO ANTES DE FICHEIROS ---
+      // --- 1. ANÁLISE DE TEXTO (prioridade sobre ficheiros) ---
       if (textMessage) {
         const normalizedText = removeAccents(textMessage.toLowerCase());
 
-        // 1. Cancelamento direto
-        if (/\b(cancelar|cancela|sair|desistir|voltar|menu|inicio)\b/i.test(normalizedText)) {
+        // Cancelamento EXPLÍCITO — só com palavras inequívocas
+        if (/\b(cancelar|cancela|sair|desistir)\b/i.test(normalizedText)) {
           logLostSale(senderNum, state.clientName, state.interestStack || [], state.step, 'Cliente cancelou');
           const nome = state.clientName;
           clientStates[senderNum] = initClientState({ clientName: nome });
@@ -538,11 +529,11 @@ app.post('/', async (req, res) => {
           return res.status(200).send('OK');
         }
 
-        // 2. Mudança de ideia — palavras-chave expandidas
-        const changeMindPattern = /\b(netflix|prime|outro plano|quero outro|outro|mudar|trocar|corrigir|nao|não)\b/i;
-        if (changeMindPattern.test(normalizedText)) {
+        // Mudança de serviço — só com intenção clara (mantém nome)
+        const changeMindPattern = /\b(outro plano|quero outro|mudar de plano|trocar|corrigir)\b/i;
+        const services = detectServices(textMessage);
+        if (changeMindPattern.test(normalizedText) || services.length > 0) {
           const nome = state.clientName;
-          const services = detectServices(textMessage);
           clientStates[senderNum] = initClientState({ clientName: nome });
           const newState = clientStates[senderNum];
 
@@ -564,15 +555,36 @@ app.post('/', async (req, res) => {
           }
           return res.status(200).send('OK');
         }
+
+        // Qualquer outra pergunta/texto → IA responde + lembrete do PDF
+        try {
+          const cartInfo = state.cart.map(i => `${i.plataforma} ${i.plan} (${i.price} Kz)`).join(', ');
+          const contextPrompt = `${SYSTEM_PROMPT_COMPROVATIVO}\n\nPedido atual do cliente: ${cartInfo}. Total: ${state.totalValor} Kz.`;
+          const model = genAI.getGenerativeModel({
+            model: 'gemini-2.5-flash',
+            systemInstruction: { parts: [{ text: contextPrompt }] }
+          });
+          const chat = model.startChat({ history: chatHistories[senderNum] || [] });
+          const resAI = await chat.sendMessage(textMessage);
+          const aiText = resAI.response.text();
+          chatHistories[senderNum] = chatHistories[senderNum] || [];
+          chatHistories[senderNum].push({ role: 'user', parts: [{ text: textMessage }] });
+          chatHistories[senderNum].push({ role: 'model', parts: [{ text: aiText }] });
+          await sendWhatsAppMessage(senderNum, aiText);
+        } catch (e) {
+          console.error('Erro AI comprovativo:', e.message);
+          await sendWhatsAppMessage(senderNum, 'Espero ter esclarecido! 😊 Assim que puderes, envia o PDF do comprovativo para finalizarmos.');
+        }
+        return res.status(200).send('OK');
       }
 
-      // --- FICHEIROS: Aceitar PDF, rejeitar imagens com feedback inteligente ---
+      // --- 2. FICHEIROS ---
       if (isImage) {
         if (!state.paymentReminderSent) {
           state.paymentReminderSent = true;
           await sendWhatsAppMessage(senderNum, '⚠️ Não aceitamos imagens como comprovativo.\nDeseja enviar o comprovativo em PDF ou quer alterar o seu pedido?');
         } else {
-          await sendWhatsAppMessage(senderNum, 'Por favor, envie o comprovativo de pagamento APENAS em formato PDF. 📄\nOu escreva *cancelar* / *mudar* para alterar o pedido.');
+          await sendWhatsAppMessage(senderNum, 'Por favor, envie o comprovativo em formato *PDF*. 📄\nOu escreva *cancelar* para alterar o pedido.');
         }
         return res.status(200).send('OK');
       }
@@ -600,30 +612,6 @@ app.post('/', async (req, res) => {
         return res.status(200).send('OK');
       }
 
-      // --- TEXTO SEM INTENÇÃO DE MUDANÇA: feedback inteligente (1x) ---
-      if (textMessage) {
-        const infoPatterns = /pre[çc]o|quanto|custa|como funciona|m[ée]todo|pagamento|iban|transfer[êe]ncia|multicaixa|refer[êe]ncia|dados|conta|banco/i;
-        if (infoPatterns.test(textMessage)) {
-          try {
-            const model = genAI.getGenerativeModel({
-              model: 'gemini-2.5-flash',
-              systemInstruction: { parts: [{ text: SYSTEM_PROMPT_COMPROVATIVO }] }
-            });
-            const chat = model.startChat({ history: [] });
-            const resAI = await chat.sendMessage(textMessage);
-            const aiText = resAI.response.text();
-            await sendWhatsAppMessage(senderNum, aiText);
-          } catch (e) {
-            console.error('Erro AI comprovativo:', e.message);
-            await sendWhatsAppMessage(senderNum, 'Deseja enviar o comprovativo em PDF ou quer alterar o seu pedido?');
-          }
-        } else if (!state.paymentReminderSent) {
-          state.paymentReminderSent = true;
-          await sendWhatsAppMessage(senderNum, 'Deseja enviar o comprovativo em PDF ou quer alterar o seu pedido?');
-        } else {
-          await sendWhatsAppMessage(senderNum, 'Envie o comprovativo em *PDF* ou escreva *cancelar* / *mudar* para alterar o pedido. 📄');
-        }
-      }
       return res.status(200).send('OK');
     }
 
@@ -804,7 +792,20 @@ app.post('/', async (req, res) => {
         return res.status(200).send('OK');
       }
 
-      await sendWhatsAppMessage(senderNum, 'Por favor, escolha um dos planos:\n👤 *Individual*\n👥 *Partilha*\n👨‍👩‍👧 *Família*');
+      // Texto não é um plano — verificar se é uma pergunta
+      try {
+        const planContext = `Tu és o Assistente de IA da StreamZone 🤖. O cliente está a escolher um plano de ${state.plataforma}.\n\nPlanos disponíveis:\n- Individual: 1 perfil\n- Partilha: 2 perfis\n- Família: 3 perfis\n\nResponde à pergunta do cliente em 1-2 frases curtas e termina SEMPRE com: "Qual plano preferes? (Individual / Partilha / Família)"`;
+        const model = genAI.getGenerativeModel({
+          model: 'gemini-2.5-flash',
+          systemInstruction: { parts: [{ text: planContext }] }
+        });
+        const chat = model.startChat({ history: [] });
+        const resAI = await chat.sendMessage(textMessage);
+        await sendWhatsAppMessage(senderNum, resAI.response.text());
+      } catch (e) {
+        console.error('Erro AI plano:', e.message);
+        await sendWhatsAppMessage(senderNum, 'Por favor, escolha um dos planos:\n👤 *Individual*\n👥 *Partilha*\n👨‍👩‍👧 *Família*');
+      }
       return res.status(200).send('OK');
     }
 
@@ -834,4 +835,4 @@ app.post('/', async (req, res) => {
   }
 });
 
-app.listen(port, '0.0.0.0', () => console.log(`Bot v10.0 (StreamZone - IA Identity + PDF-Only + Anti-Zombie + Loop Detection) rodando na porta ${port}`));
+app.listen(port, '0.0.0.0', () => console.log(`Bot v11.0 (StreamZone - Assistente Consciente) rodando na porta ${port}`));
