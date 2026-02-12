@@ -243,6 +243,7 @@ function initClientState(extra) {
     totalValor: 0,
     lastActivity: Date.now(),
     repeatTracker: { lastMsg: '', count: 0 },
+    paymentReminderSent: false,
     ...extra
   };
 }
@@ -523,20 +524,23 @@ app.post('/', async (req, res) => {
 
     // ---- STEP: aguardando_comprovativo ----
     if (state.step === 'aguardando_comprovativo') {
-      // Comandos de saída / cancelamento
-      if (textMessage && /\b(cancelar|cancela|sair|desistir|voltar|menu|inicio|início)\b/i.test(removeAccents(textMessage))) {
-        logLostSale(senderNum, state.clientName, state.interestStack || [], state.step, 'Cliente cancelou');
-        const nome = state.clientName;
-        clientStates[senderNum] = initClientState({ clientName: nome });
-        clientStates[senderNum].step = 'escolha_servico';
-        await sendWhatsAppMessage(senderNum, 'Pedido cancelado. Como posso ajudar?\n\n🎬 *Netflix*\n📺 *Prime Video*');
-        return res.status(200).send('OK');
-      }
-
-      // Detetar mudança de ideia — cliente quer outro serviço/plano
+      // --- ANÁLISE DE TEXTO ANTES DE FICHEIROS ---
       if (textMessage) {
-        const changeMindPattern = /\b(netflix|prime|outro plano|quero outro|mudar|trocar)\b/i;
-        if (changeMindPattern.test(removeAccents(textMessage.toLowerCase()))) {
+        const normalizedText = removeAccents(textMessage.toLowerCase());
+
+        // 1. Cancelamento direto
+        if (/\b(cancelar|cancela|sair|desistir|voltar|menu|inicio)\b/i.test(normalizedText)) {
+          logLostSale(senderNum, state.clientName, state.interestStack || [], state.step, 'Cliente cancelou');
+          const nome = state.clientName;
+          clientStates[senderNum] = initClientState({ clientName: nome });
+          clientStates[senderNum].step = 'escolha_servico';
+          await sendWhatsAppMessage(senderNum, 'Pedido cancelado. Como posso ajudar?\n\n🎬 *Netflix*\n📺 *Prime Video*');
+          return res.status(200).send('OK');
+        }
+
+        // 2. Mudança de ideia — palavras-chave expandidas
+        const changeMindPattern = /\b(netflix|prime|outro plano|quero outro|outro|mudar|trocar|corrigir|nao|não)\b/i;
+        if (changeMindPattern.test(normalizedText)) {
           const nome = state.clientName;
           const services = detectServices(textMessage);
           clientStates[senderNum] = initClientState({ clientName: nome });
@@ -562,14 +566,18 @@ app.post('/', async (req, res) => {
         }
       }
 
-      // Rejeitar imagens — só aceitar PDF/documento
+      // --- FICHEIROS: Aceitar PDF, rejeitar imagens com feedback inteligente ---
       if (isImage) {
-        await sendWhatsAppMessage(senderNum, '⚠️ Não aceitamos imagens como comprovativo.\nPor favor, envie o comprovativo de pagamento APENAS em formato PDF. 📄');
+        if (!state.paymentReminderSent) {
+          state.paymentReminderSent = true;
+          await sendWhatsAppMessage(senderNum, '⚠️ Não aceitamos imagens como comprovativo.\nDeseja enviar o comprovativo em PDF ou quer alterar o seu pedido?');
+        } else {
+          await sendWhatsAppMessage(senderNum, 'Por favor, envie o comprovativo de pagamento APENAS em formato PDF. 📄\nOu escreva *cancelar* / *mudar* para alterar o pedido.');
+        }
         return res.status(200).send('OK');
       }
 
       if (isDoc) {
-        // Aceitar documentos (PDF) como comprovativo
         pendingVerifications[senderNum] = {
           cart: state.cart,
           clientName: state.clientName || '',
@@ -589,11 +597,13 @@ app.post('/', async (req, res) => {
           await sendWhatsAppMessage(MAIN_BOSS, msgSuper);
         }
         await sendWhatsAppMessage(senderNum, '📄 Comprovativo recebido! Estamos a verificar o seu pagamento. ⏳');
-      } else if (textMessage) {
-        // Classificação de intenção
+        return res.status(200).send('OK');
+      }
+
+      // --- TEXTO SEM INTENÇÃO DE MUDANÇA: feedback inteligente (1x) ---
+      if (textMessage) {
         const infoPatterns = /pre[çc]o|quanto|custa|como funciona|m[ée]todo|pagamento|iban|transfer[êe]ncia|multicaixa|refer[êe]ncia|dados|conta|banco/i;
         if (infoPatterns.test(textMessage)) {
-          // Pergunta informativa — responder via Gemini + lembrete
           try {
             const model = genAI.getGenerativeModel({
               model: 'gemini-2.5-flash',
@@ -605,11 +615,13 @@ app.post('/', async (req, res) => {
             await sendWhatsAppMessage(senderNum, aiText);
           } catch (e) {
             console.error('Erro AI comprovativo:', e.message);
-            await sendWhatsAppMessage(senderNum, 'Por favor, envie o comprovativo de pagamento APENAS em formato PDF. 📄');
+            await sendWhatsAppMessage(senderNum, 'Deseja enviar o comprovativo em PDF ou quer alterar o seu pedido?');
           }
+        } else if (!state.paymentReminderSent) {
+          state.paymentReminderSent = true;
+          await sendWhatsAppMessage(senderNum, 'Deseja enviar o comprovativo em PDF ou quer alterar o seu pedido?');
         } else {
-          // Texto genérico — lembrete gentil
-          await sendWhatsAppMessage(senderNum, 'Por favor, envie o comprovativo de pagamento APENAS em formato PDF. 📄');
+          await sendWhatsAppMessage(senderNum, 'Envie o comprovativo em *PDF* ou escreva *cancelar* / *mudar* para alterar o pedido. 📄');
         }
       }
       return res.status(200).send('OK');
@@ -631,7 +643,9 @@ app.post('/', async (req, res) => {
         state.currentItemIndex = 0;
         state.step = 'escolha_plano';
 
-        const saudacao = nome ? `Olá ${nome}! 👋` : 'Olá! 👋';
+        const saudacao = nome
+          ? `Olá ${nome}! Sou o Assistente de IA da StreamZone 🤖.`
+          : 'Olá! Sou o Assistente de IA da StreamZone 🤖.';
         console.log(`📤 DEBUG: A enviar saudação de renovação para ${senderNum}`);
         await sendWhatsAppMessage(senderNum, `${saudacao}\n\nVejo que já é nosso cliente de *${existing.plataforma}*! Quer renovar?\n\n${formatPriceTable(svcKey)}\n\nQual plano deseja? (Individual / Partilha / Família)`);
         return res.status(200).send('OK');
