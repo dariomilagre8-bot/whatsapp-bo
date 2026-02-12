@@ -116,7 +116,7 @@ REGRAS:
 const SYSTEM_PROMPT_COMPROVATIVO = `Tu és o assistente da StreamZone. O cliente já escolheu um plano e está na fase de pagamento.
 
 CONTEXTO:
-- O cliente deve enviar o comprovativo de pagamento (PDF ou foto)
+- O cliente deve enviar o comprovativo de pagamento (APENAS PDF)
 - Podes responder a perguntas sobre preço, método de pagamento, como funciona
 - Sê breve (2-3 frases máximo)
 - Termina SEMPRE com um lembrete gentil para enviar o comprovativo
@@ -224,7 +224,7 @@ async function sendPaymentMessages(number, state) {
   await sendWhatsAppMessage(number, `👤 *Titular:* ${PAYMENT.titular}`);
 
   // MSG6: Instrução para enviar comprovativo
-  await sendWhatsAppMessage(number, 'Após o pagamento, envie o comprovativo aqui (PDF ou foto)! 📄');
+  await sendWhatsAppMessage(number, 'Após o pagamento, envie o comprovativo de pagamento APENAS em formato PDF. 📄');
 }
 
 // ==================== INICIALIZAR ESTADO DO CLIENTE ====================
@@ -242,6 +242,7 @@ function initClientState(extra) {
     valor: null,
     totalValor: 0,
     lastActivity: Date.now(),
+    repeatTracker: { lastMsg: '', count: 0 },
     ...extra
   };
 }
@@ -456,7 +457,7 @@ app.post('/', async (req, res) => {
           delete chatHistories[targetClient];
         } else {
           // Rejeitar
-          await sendWhatsAppMessage(targetClient, '❌ Comprovativo inválido. Por favor, envie novamente (PDF ou foto).');
+          await sendWhatsAppMessage(targetClient, '❌ Comprovativo inválido. Por favor, envie o comprovativo de pagamento APENAS em formato PDF. 📄');
           if (clientStates[targetClient]) {
             clientStates[targetClient].step = 'aguardando_comprovativo';
           }
@@ -486,6 +487,24 @@ app.post('/', async (req, res) => {
     state.lastActivity = Date.now();
     console.log(`🔍 DEBUG: step="${state.step}" para ${senderNum}`);
 
+    // ---- DETEÇÃO DE LOOP: mensagem repetida ----
+    if (textMessage && state.step !== 'esperando_supervisor') {
+      const normalizedMsg = textMessage.trim().toLowerCase();
+      if (state.repeatTracker && normalizedMsg === state.repeatTracker.lastMsg) {
+        state.repeatTracker.count++;
+        if (state.repeatTracker.count >= 2) {
+          pausedClients[senderNum] = true;
+          await sendWhatsAppMessage(senderNum, 'Parece que estou com dificuldades em entender. Vou chamar um suporte humano para te ajudar! 🛠️');
+          if (MAIN_BOSS) {
+            await sendWhatsAppMessage(MAIN_BOSS, `🔁 *LOOP DETETADO*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n💬 "${textMessage}" (repetido ${state.repeatTracker.count + 1}x)\n📍 Step: ${state.step}\n\nBot pausado. Use *retomar ${senderNum}* quando resolver.`);
+          }
+          return res.status(200).send('OK');
+        }
+      } else {
+        state.repeatTracker = { lastMsg: normalizedMsg, count: 1 };
+      }
+    }
+
     // ---- INTERCETADOR GLOBAL: Questão técnica (NLP) ----
     if (textMessage && state.step !== 'esperando_supervisor' && state.step !== 'captura_nome' && detectSupportIssue(textMessage)) {
       pausedClients[senderNum] = true;
@@ -514,8 +533,43 @@ app.post('/', async (req, res) => {
         return res.status(200).send('OK');
       }
 
-      if (isImage || isDoc) {
-        // Aceitar imagens e documentos como comprovativo
+      // Detetar mudança de ideia — cliente quer outro serviço/plano
+      if (textMessage) {
+        const changeMindPattern = /\b(netflix|prime|outro plano|quero outro|mudar|trocar)\b/i;
+        if (changeMindPattern.test(removeAccents(textMessage.toLowerCase()))) {
+          const nome = state.clientName;
+          const services = detectServices(textMessage);
+          clientStates[senderNum] = initClientState({ clientName: nome });
+          const newState = clientStates[senderNum];
+
+          if (services.length > 0) {
+            newState.interestStack = services;
+            newState.currentItemIndex = 0;
+            newState.serviceKey = services[0];
+            newState.plataforma = CATALOGO[services[0]].nome;
+            newState.step = 'escolha_plano';
+
+            let msg = services.length > 1
+              ? `Sem problema! Vamos configurar os dois serviços.\n\nVamos começar com o ${CATALOGO[services[0]].nome}:\n\n`
+              : 'Sem problema! ';
+            msg += `${formatPriceTable(services[0])}\n\nQual plano deseja? (Individual / Partilha / Família)`;
+            await sendWhatsAppMessage(senderNum, msg);
+          } else {
+            newState.step = 'escolha_servico';
+            await sendWhatsAppMessage(senderNum, `Sem problema${nome ? ', ' + nome : ''}! Vamos recomeçar.\n\n🎬 *Netflix*\n📺 *Prime Video*\n\nQual te interessa?`);
+          }
+          return res.status(200).send('OK');
+        }
+      }
+
+      // Rejeitar imagens — só aceitar PDF/documento
+      if (isImage) {
+        await sendWhatsAppMessage(senderNum, '⚠️ Não aceitamos imagens como comprovativo.\nPor favor, envie o comprovativo de pagamento APENAS em formato PDF. 📄');
+        return res.status(200).send('OK');
+      }
+
+      if (isDoc) {
+        // Aceitar documentos (PDF) como comprovativo
         pendingVerifications[senderNum] = {
           cart: state.cart,
           clientName: state.clientName || '',
@@ -531,8 +585,7 @@ app.post('/', async (req, res) => {
             `  ${i + 1}. ${item.plataforma} - ${item.plan} (${item.slotsNeeded} slot${item.slotsNeeded > 1 ? 's' : ''})`
           ).join('\n');
           const totalStr = state.totalValor ? state.totalValor.toLocaleString('pt') + ' Kz' : 'N/A';
-          const mediaType = isImage ? '📷 Foto' : '📄 Documento';
-          const msgSuper = `📩 *NOVO COMPROVATIVO*${renewTag} (${mediaType})\n👤 Cliente: ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n📦 Pedido:\n${items}\n💰 Total: ${totalStr}\n\nResponda: *sim* ou *nao*`;
+          const msgSuper = `📩 *NOVO COMPROVATIVO*${renewTag} (📄 PDF)\n👤 Cliente: ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n📦 Pedido:\n${items}\n💰 Total: ${totalStr}\n\nResponda: *sim* ou *nao*`;
           await sendWhatsAppMessage(MAIN_BOSS, msgSuper);
         }
         await sendWhatsAppMessage(senderNum, '📄 Comprovativo recebido! Estamos a verificar o seu pagamento. ⏳');
@@ -552,11 +605,11 @@ app.post('/', async (req, res) => {
             await sendWhatsAppMessage(senderNum, aiText);
           } catch (e) {
             console.error('Erro AI comprovativo:', e.message);
-            await sendWhatsAppMessage(senderNum, 'Estamos a aguardar o seu comprovativo de pagamento (PDF ou foto). 📄');
+            await sendWhatsAppMessage(senderNum, 'Por favor, envie o comprovativo de pagamento APENAS em formato PDF. 📄');
           }
         } else {
-          // Texto genérico — lembrete gentil (não loop agressivo)
-          await sendWhatsAppMessage(senderNum, '📄 Estamos a aguardar o seu comprovativo de pagamento.\nPode enviar em formato *PDF* ou *foto*. 😊');
+          // Texto genérico — lembrete gentil
+          await sendWhatsAppMessage(senderNum, 'Por favor, envie o comprovativo de pagamento APENAS em formato PDF. 📄');
         }
       }
       return res.status(200).send('OK');
@@ -586,7 +639,7 @@ app.post('/', async (req, res) => {
 
       state.step = 'captura_nome';
       console.log(`📤 DEBUG: A enviar saudação inicial para ${senderNum}`);
-      await sendWhatsAppMessage(senderNum, 'Olá! Bem-vindo à StreamZone. 👋\nCom quem tenho o prazer de falar?');
+      await sendWhatsAppMessage(senderNum, 'Olá! Sou o Assistente de IA da StreamZone 🤖. Com quem tenho o prazer de falar?');
       return res.status(200).send('OK');
     }
 
@@ -767,4 +820,4 @@ app.post('/', async (req, res) => {
   }
 });
 
-app.listen(port, '0.0.0.0', () => console.log(`Bot v9.0 (StreamZone - Multi-Serviço + Carrinho) rodando na porta ${port}`));
+app.listen(port, '0.0.0.0', () => console.log(`Bot v10.0 (StreamZone - IA Identity + PDF-Only + Anti-Zombie + Loop Detection) rodando na porta ${port}`));
