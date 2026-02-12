@@ -22,7 +22,7 @@ function todayDate() {
 }
 
 // ==================== LEITURA / ESCRITA ====================
-// Colunas: A=Plataforma B=Email C=Senha D=NomePerfil E=Pin F=Status G=Cliente H=QNTD_PERFIS I=Data_Venda J=Tipo_Conta
+// Colunas: A=Plataforma B=Email C=Senha D=NomePerfil E=Pin F=Status G=Cliente H=Data_Venda I=QNTD_PERFIS J=Tipo_Conta
 async function fetchAllRows() {
   try {
     const res = await sheetsAPI.spreadsheets.values.get({
@@ -55,15 +55,15 @@ async function markProfileSold(rowIndex, clientName, clientNumber, planSlots) {
   const clientLabel = clientName ? `${clientName} - ${clientNumber}` : clientNumber;
   await updateSheetCell(rowIndex, 'F', 'Indisponivel');
   await updateSheetCell(rowIndex, 'G', clientLabel);
-  await updateSheetCell(rowIndex, 'H', planSlots);
-  await updateSheetCell(rowIndex, 'I', todayDate());
+  await updateSheetCell(rowIndex, 'H', todayDate());
+  await updateSheetCell(rowIndex, 'I', planSlots);
 }
 
 async function markProfileAvailable(rowIndex) {
   await updateSheetCell(rowIndex, 'F', 'Disponivel');
   await updateSheetCell(rowIndex, 'G', '');
-  await updateSheetCell(rowIndex, 'H', '');
-  await updateSheetCell(rowIndex, 'I', '');
+  await updateSheetCell(rowIndex, 'H', '');  // Data_Venda
+  await updateSheetCell(rowIndex, 'I', '');  // QNTD_PERFIS
 }
 
 // ==================== CONSULTAS ====================
@@ -76,7 +76,7 @@ function getEmailSlotUsage(rows, email) {
     const rowEmail = (row[1] || '').toLowerCase().trim();
     const status = (row[5] || '').toLowerCase();
     if (rowEmail === email.toLowerCase().trim() && status.includes('indispon')) {
-      const qntd = parseInt(row[7] || '0', 10);
+      const qntd = parseInt(row[8] || '0', 10);
       used += qntd > 0 ? qntd : 1;
     }
   }
@@ -103,8 +103,8 @@ async function checkClientInSheet(clientNumber) {
         status: row[5] || '',
         cliente: cliente,
         clienteName: namePart.trim(),
-        qntdPerfis: row[7] || '',
-        dataVenda: row[8] || '',
+        dataVenda: row[7] || '',
+        qntdPerfis: row[8] || '',
         tipoConta: row[9] || ''
       };
     }

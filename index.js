@@ -57,6 +57,10 @@ const SUPPORT_KEYWORDS = [
 ];
 
 // ==================== FUNCOES PURAS ====================
+function removeAccents(str) {
+  return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
 function formatPriceTable(serviceKey) {
   const svc = CATALOGO[serviceKey];
   if (!svc) return '';
@@ -69,7 +73,7 @@ function formatPriceTable(serviceKey) {
 }
 
 function findPlan(serviceKey, text) {
-  const lower = text.toLowerCase();
+  const lower = removeAccents(text.toLowerCase());
   const svc = CATALOGO[serviceKey];
   if (!svc) return null;
   for (const [plan, price] of Object.entries(svc.planos)) {
@@ -422,7 +426,7 @@ app.post('/', async (req, res) => {
                 await sendWhatsAppMessage(targetClient, entrega);
 
                 if (p.isRenewal) {
-                  await updateSheetCell(p.rowIndex, 'I', todayDate());
+                  await updateSheetCell(p.rowIndex, 'H', todayDate());
                 } else {
                   await markProfileSold(p.rowIndex, pedido.clientName || '', targetClient, result.item.slotsNeeded);
                 }
@@ -500,6 +504,16 @@ app.post('/', async (req, res) => {
 
     // ---- STEP: aguardando_comprovativo ----
     if (state.step === 'aguardando_comprovativo') {
+      // Comandos de saída / cancelamento
+      if (textMessage && /\b(cancelar|cancela|sair|desistir|voltar|menu|inicio|início)\b/i.test(removeAccents(textMessage))) {
+        logLostSale(senderNum, state.clientName, state.interestStack || [], state.step, 'Cliente cancelou');
+        const nome = state.clientName;
+        clientStates[senderNum] = initClientState({ clientName: nome });
+        clientStates[senderNum].step = 'escolha_servico';
+        await sendWhatsAppMessage(senderNum, 'Pedido cancelado. Como posso ajudar?\n\n🎬 *Netflix*\n📺 *Prime Video*');
+        return res.status(200).send('OK');
+      }
+
       if (isImage || isDoc) {
         // Aceitar imagens e documentos como comprovativo
         pendingVerifications[senderNum] = {
