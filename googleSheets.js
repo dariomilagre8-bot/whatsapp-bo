@@ -22,12 +22,12 @@ function todayDate() {
 }
 
 // ==================== LEITURA / ESCRITA ====================
-// Colunas: A=Plataforma B=Email C=Senha D=NomePerfil E=Pin F=Status G=Cliente H=QNTD_PERFIS I=Data_Venda
+// Colunas: A=Plataforma B=Email C=Senha D=NomePerfil E=Pin F=Status G=Cliente H=QNTD_PERFIS I=Data_Venda J=Tipo_Conta
 async function fetchAllRows() {
   try {
     const res = await sheetsAPI.spreadsheets.values.get({
       spreadsheetId: GOOGLE_SHEET_ID,
-      range: `${SHEET_NAME}!A:I`,
+      range: `${SHEET_NAME}!A:J`,
     });
     return res.data.values || [];
   } catch (error) {
@@ -77,7 +77,7 @@ function getEmailSlotUsage(rows, email) {
     const status = (row[5] || '').toLowerCase();
     if (rowEmail === email.toLowerCase().trim() && status.includes('indispon')) {
       const qntd = parseInt(row[7] || '0', 10);
-      used += qntd > 0 ? qntd : 1; // Default 1 para linhas antigas sem QNTD
+      used += qntd > 0 ? qntd : 1;
     }
   }
   return used;
@@ -104,15 +104,17 @@ async function checkClientInSheet(clientNumber) {
         cliente: cliente,
         clienteName: namePart.trim(),
         qntdPerfis: row[7] || '',
-        dataVenda: row[8] || ''
+        dataVenda: row[8] || '',
+        tipoConta: row[9] || ''
       };
     }
   }
   return null;
 }
 
-// Encontra perfil disponível com slots suficientes no email
-async function findAvailableProfile(plataforma, slotsNeeded) {
+// Encontra perfil disponível com slots suficientes
+// profileType: 'full_account' | 'shared_profile' | undefined (backward-compatible)
+async function findAvailableProfile(plataforma, slotsNeeded, profileType) {
   const rows = await fetchAllRows();
   if (rows.length <= 1) return null;
 
@@ -121,13 +123,16 @@ async function findAvailableProfile(plataforma, slotsNeeded) {
     const rowPlat = (row[0] || '').toLowerCase();
     const status = (row[5] || '').toLowerCase();
     const email = (row[1] || '');
+    const tipoConta = (row[9] || '').toLowerCase().trim();
+    const rowType = tipoConta || 'shared_profile'; // Linhas sem coluna J = shared_profile
 
     if (!rowPlat.includes(plataforma.toLowerCase()) || !status.includes('dispon')) continue;
 
-    const used = getEmailSlotUsage(rows, email);
-    const free = 5 - used;
+    // Se profileType foi especificado, filtrar por tipo
+    if (profileType && rowType !== profileType) continue;
 
-    if (free >= slotsNeeded) {
+    if (rowType === 'full_account') {
+      // full_account: 1 linha = 1 conta inteira, sem matemática de slots
       return {
         rowIndex: i + 1,
         plataforma: row[0] || '',
@@ -135,26 +140,74 @@ async function findAvailableProfile(plataforma, slotsNeeded) {
         senha: row[2] || '',
         nomePerfil: row[3] || '',
         pin: row[4] || '',
-        slotsUsed: used,
-        slotsFree: free
+        slotsUsed: 0,
+        slotsFree: 1
       };
+    } else {
+      // shared_profile: lógica existente (5 - used >= slotsNeeded)
+      const used = getEmailSlotUsage(rows, email);
+      const free = 5 - used;
+      if (free >= slotsNeeded) {
+        return {
+          rowIndex: i + 1,
+          plataforma: row[0] || '',
+          email: email,
+          senha: row[2] || '',
+          nomePerfil: row[3] || '',
+          pin: row[4] || '',
+          slotsUsed: used,
+          slotsFree: free
+        };
+      }
     }
   }
   return null;
 }
 
 // Verifica se existe QUALQUER perfil disponível para a plataforma
-async function hasAnyStock(plataforma) {
+// profileType opcional: filtra por tipo se fornecido
+async function hasAnyStock(plataforma, profileType) {
   const rows = await fetchAllRows();
   if (rows.length <= 1) return false;
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
+    const tipoConta = (row[9] || '').toLowerCase().trim();
+    const rowType = tipoConta || 'shared_profile';
+
     if ((row[0] || '').toLowerCase().includes(plataforma.toLowerCase()) &&
         (row[5] || '').toLowerCase().includes('dispon')) {
-      return true;
+      if (!profileType || rowType === profileType) {
+        return true;
+      }
     }
   }
   return false;
+}
+
+// ==================== VENDAS PERDIDAS ====================
+async function appendLostSale(sale) {
+  try {
+    await sheetsAPI.spreadsheets.values.append({
+      spreadsheetId: GOOGLE_SHEET_ID,
+      range: 'VendasPerdidas!A:G',
+      valueInputOption: 'RAW',
+      requestBody: {
+        values: [[
+          sale.id,
+          sale.phone,
+          sale.clientName,
+          sale.interests.join(', '),
+          sale.lastState,
+          sale.reason,
+          new Date(sale.timestamp).toLocaleString('pt-PT')
+        ]]
+      }
+    });
+    return true;
+  } catch (error) {
+    console.error('Erro appendLostSale:', error.message);
+    return false;
+  }
 }
 
 // ==================== EXPORTS ====================
@@ -168,4 +221,5 @@ module.exports = {
   checkClientInSheet,
   findAvailableProfile,
   hasAnyStock,
+  appendLostSale,
 };
