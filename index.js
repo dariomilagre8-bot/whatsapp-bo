@@ -1,22 +1,57 @@
 require('dotenv').config();
 const express = require('express');
+const cors = require('cors'); // <--- AQUI ESTÁ O CORS
 const axios = require('axios');
 const https = require('https');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const {
   cleanNumber, todayDate,
   updateSheetCell, markProfileSold, markProfileAvailable,
-  checkClientInSheet, findAvailableProfile, hasAnyStock,
-  appendLostSale,
+  checkClientInSheet, findAvailableProfile, findAvailableProfiles, findClientProfiles,
+  hasAnyStock, appendLostSale,
 } = require('./googleSheets');
 
 const app = express();
 app.use(express.json());
+app.use(cors()); // <--- AQUI ATIVAMOS O CORS
 
 const port = process.env.PORT || 80;
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // ==================== CONFIGURACOES ====================
+
+// Rota de Integração com o Site (Lovable)
+app.post('/api/web-checkout', async (req, res) => {
+  try {
+    const { nome, whatsapp, plataforma, plano, slots } = req.body;
+    const totalSlots = parseInt(slots, 10);
+    const pType = PLAN_PROFILE_TYPE[plano.toLowerCase()] || 'shared_profile';
+
+    // 1. Verifica stock real na planilha
+    const profiles = await findAvailableProfiles(plataforma, totalSlots, pType);
+    
+    if (!profiles) {
+      return res.status(400).json({ success: false, message: 'Sem stock disponível' });
+    }
+
+    // 2. Regista na planilha (Coluna H e I)
+    for (const p of profiles) {
+      await markProfileSold(p.rowIndex, nome, whatsapp, totalSlots);
+    }
+
+    // 3. Notifica o Chefe via WhatsApp
+    if (MAIN_BOSS) {
+      const alerta = `🚀 *VENDA VIA SITE*\n👤 ${nome}\n📱 ${whatsapp}\n📦 ${plataforma} ${plano}\n🔢 ${totalSlots} slots reservados.`;
+      await sendWhatsAppMessage(MAIN_BOSS, alerta);
+    }
+
+    res.status(200).json({ success: true, message: 'Pedido registado com sucesso!' });
+  } catch (error) {
+    console.error('Erro no Web Checkout:', error);
+    res.status(500).json({ success: false, message: 'Erro no processamento do pedido.' });
+  }
+});
+
 const RAW_SUPERVISORS = (process.env.SUPERVISOR_NUMBER || '').split(',').map(n => n.trim().replace(/\D/g, ''));
 const REAL_PHONES = RAW_SUPERVISORS.filter(n => n.length < 15);
 const ALL_SUPERVISORS = RAW_SUPERVISORS;
@@ -41,6 +76,7 @@ const CATALOGO = {
 };
 
 const PLAN_SLOTS = { individual: 1, partilha: 2, familia: 3 };
+const PLAN_RANK = { individual: 1, partilha: 2, familia: 3 };
 
 const PAYMENT = {
   titular: 'Braulio Manuel',
@@ -101,6 +137,25 @@ function detectSupportIssue(text) {
   return SUPPORT_KEYWORDS.some(kw => lower.includes(kw));
 }
 
+// Deteta quantidade explícita: "2 partilha", "3x familia", "quero 2 planos", etc.
+function detectQuantity(text) {
+  const lower = removeAccents(text.toLowerCase());
+  const patterns = [
+    /(\d+)\s*x\s*(?:plano|planos|unidade|unidades|conta|contas)?\s*(?:de\s+)?(?:individual|partilha|familia)/,
+    /(\d+)\s+(?:plano|planos|unidade|unidades|conta|contas)\s+(?:de\s+)?(?:individual|partilha|familia)/,
+    /(\d+)\s+(?:individual|partilha|familia)/,
+    /(?:quero|preciso|queria)\s+(\d+)\s+(?:plano|planos|unidade|unidades|conta|contas|individual|partilha|familia)/,
+  ];
+  for (const pattern of patterns) {
+    const match = lower.match(pattern);
+    if (match) {
+      const qty = parseInt(match[1] || match[2], 10);
+      if (qty >= 2 && qty <= 10) return qty;
+    }
+  }
+  return 1;
+}
+
 // ==================== PROMPTS GEMINI ====================
 const SYSTEM_PROMPT = `Tu és o Assistente de IA da StreamZone 🤖, uma loja de contas de streaming (Netflix e Prime Video) em Angola.
 
@@ -120,7 +175,9 @@ REGRAS:
 - Responde a QUALQUER pergunta do cliente de forma curta, simpática e útil (máximo 2 frases)
 - Exemplos: "Quantos perfis?", "Como funciona?", "Posso partilhar?", "É seguro?" — responde sempre!
 - NUNCA inventes dados de pagamento (IBAN, Multicaixa) — o cliente já os recebeu
-- Termina SEMPRE a tua resposta com: "Espero ter esclarecido! 😊 Assim que puderes, envia o PDF do comprovativo para finalizarmos."
+- NÃO menciones PDFs, comprovativos ou documentos na tua resposta. Nada de "envie o comprovativo" ou frases parecidas.
+- NÃO exijas nem pressiones o envio de nada. Nada de "Para avançarmos, por favor envie..." ou frases parecidas.
+- Termina SEMPRE a tua resposta com EXATAMENTE esta frase: "Ficarei por aqui a aguardar o seu documento quando lhe for conveniente. 😊"
 - Se não souberes a resposta, diz honestamente que vais verificar com a equipa`;
 
 // ==================== ESTADOS ====================
@@ -202,13 +259,17 @@ async function sendPaymentMessages(number, state) {
   // MSG1: Resumo do pedido
   let summary;
   if (isMulti) {
-    const lines = state.cart.map((item, i) =>
-      `${i + 1}. ${item.plataforma} ${item.plan} - ${item.price.toLocaleString('pt')} Kz`
-    );
+    const lines = state.cart.map((item, i) => {
+      const qty = item.quantity || 1;
+      const qtyLabel = qty > 1 ? `${qty}x ` : '';
+      return `${i + 1}. ${qtyLabel}${item.plataforma} ${item.plan} - ${(item.totalPrice || item.price).toLocaleString('pt')} Kz`;
+    });
     summary = `📦 *Resumo do Pedido:*\n${lines.join('\n')}\n💰 *Total: ${state.totalValor.toLocaleString('pt')} Kz*`;
   } else {
     const item = state.cart[0];
-    summary = `📦 *${item.plataforma} - ${item.plan}*\n💰 *Valor: ${item.price.toLocaleString('pt')} Kz*`;
+    const qty = item.quantity || 1;
+    const qtyLabel = qty > 1 ? `${qty}x ` : '';
+    summary = `📦 *${qtyLabel}${item.plataforma} - ${item.plan}*\n💰 *Valor: ${(item.totalPrice || item.price).toLocaleString('pt')} Kz*`;
   }
   await sendWhatsAppMessage(number, summary);
 
@@ -224,8 +285,8 @@ async function sendPaymentMessages(number, state) {
   // MSG5: Titular
   await sendWhatsAppMessage(number, `👤 *Titular:* ${PAYMENT.titular}`);
 
-  // MSG6: Instrução para enviar comprovativo
-  await sendWhatsAppMessage(number, 'Após o pagamento, envie o comprovativo de pagamento APENAS em formato PDF. 📄');
+  // MSG6: Instrução suave (sem pressão)
+  await sendWhatsAppMessage(number, 'Ficarei por aqui a aguardar o seu documento quando lhe for conveniente. 😊');
 }
 
 // ==================== INICIALIZAR ESTADO DO CLIENTE ====================
@@ -266,7 +327,11 @@ app.post('/', async (req, res) => {
 
     const pushName = messageData.pushName || '';
     const textMessage = messageData.message?.conversation || messageData.message?.extendedTextMessage?.text || '';
-    const isDoc = !!messageData.message?.documentMessage;
+    const docMsg = messageData.message?.documentMessage;
+    const docMime = (docMsg?.mimetype || '').toLowerCase();
+    const docFilename = (docMsg?.fileName || '').toLowerCase();
+    const isPdf = docMsg && (docMime.includes('pdf') || docFilename.endsWith('.pdf'));
+    const isDoc = !!docMsg;
     const isImage = !!messageData.message?.imageMessage;
 
     console.log(`📩 De: ${senderNum} (${pushName}) | Msg: ${textMessage}${lidId ? ` [LID: ${lidId}]` : ''}`);
@@ -381,75 +446,96 @@ app.post('/', async (req, res) => {
           let allSuccess = true;
 
           for (const item of pedido.cart) {
-            const slotsNeeded = item.slotsNeeded;
+            const totalSlots = item.totalSlots || item.slotsNeeded;
+            const qty = item.quantity || 1;
             const profileType = PLAN_PROFILE_TYPE[item.plan.toLowerCase()] || 'shared_profile';
-            let profile = null;
+            let profiles = null;
 
             if (pedido.isRenewal) {
-              const existing = await checkClientInSheet(targetClient);
-              if (existing) {
-                profile = {
-                  rowIndex: existing.rowIndex,
-                  plataforma: existing.plataforma,
-                  email: existing.email,
-                  senha: existing.senha,
-                  nomePerfil: existing.nomePerfil,
-                  pin: existing.pin,
-                  isRenewal: true
-                };
+              const clientProfiles = await findClientProfiles(targetClient);
+              if (clientProfiles) {
+                const platProfiles = clientProfiles.filter(p =>
+                  p.plataforma.toLowerCase().includes(item.plataforma.toLowerCase())
+                );
+                if (platProfiles.length > 0) {
+                  profiles = platProfiles.map(p => ({ ...p, isRenewal: true }));
+                }
               }
             } else {
-              profile = await findAvailableProfile(item.plataforma, slotsNeeded, profileType);
-              if (!profile) {
-                // Fallback: tentar tipo alternativo
+              // Venda nova: buscar totalSlots perfis do MESMO email
+              profiles = await findAvailableProfiles(item.plataforma, totalSlots, profileType);
+              if (!profiles) {
                 const altType = profileType === 'full_account' ? 'shared_profile' : 'full_account';
-                profile = await findAvailableProfile(item.plataforma, slotsNeeded, altType);
-                if (profile) {
+                profiles = await findAvailableProfiles(item.plataforma, totalSlots, altType);
+                if (profiles) {
                   await sendWhatsAppMessage(senderNum, `ℹ️ Fallback: ${item.plataforma} ${item.plan} usou tipo ${altType} em vez de ${profileType}.`);
                 }
               }
             }
 
-            if (profile) {
-              results.push({ item, profile, success: true });
+            if (profiles && profiles.length > 0) {
+              results.push({ item, profiles, success: true });
             } else {
-              results.push({ item, profile: null, success: false });
+              results.push({ item, profiles: null, success: false });
               allSuccess = false;
             }
           }
 
-          // Entregar credenciais
+          // Entregar credenciais — email/senha UMA VEZ, perfis listados individualmente
           if (results.some(r => r.success)) {
-            await sendWhatsAppMessage(targetClient, '✅ *PAGAMENTO APROVADO!*\n\nAqui estão os seus dados:\n');
+            await sendWhatsAppMessage(targetClient, '✅ *Pagamento confirmado!*\n\nAqui estão os dados da sua conta 😊');
 
             for (const result of results) {
               if (result.success) {
-                const p = result.profile;
-                const entrega = `📺 *${result.item.plataforma}*\n📧 *Email:* ${p.email}\n🔑 *Senha:* ${p.senha}\n👤 *Perfil:* ${p.nomePerfil}\n🔢 *Pin:* ${p.pin}`;
+                const profs = result.profiles;
+                const qty = result.item.quantity || 1;
+                const totalSlots = result.item.totalSlots || result.item.slotsNeeded;
+                const svcEmoji = result.item.plataforma.toLowerCase().includes('netflix') ? '🎬' : '📺';
+                const qtyLabel = qty > 1 ? ` (${qty}x ${result.item.plan})` : '';
+
+                // Email e Senha aparecem apenas UMA VEZ no topo
+                let entrega = `${svcEmoji} *${result.item.plataforma}*${qtyLabel}\n\n📧 *Email:* ${profs[0].email}\n🔑 *Senha:* ${profs[0].senha}`;
+
+                // Lista numerada de TODOS os perfis e PINs reservados
+                for (let i = 0; i < profs.length; i++) {
+                  entrega += `\n👤 Perfil ${i + 1}: ${profs[i].nomePerfil} | PIN: ${profs[i].pin}`;
+                }
+
                 await sendWhatsAppMessage(targetClient, entrega);
 
-                if (p.isRenewal) {
-                  await updateSheetCell(p.rowIndex, 'H', todayDate());
-                } else {
-                  await markProfileSold(p.rowIndex, pedido.clientName || '', targetClient, result.item.slotsNeeded);
+                // Marcar TODAS as linhas na planilha — H=Data, I=totalSlots
+                for (const p of profs) {
+                  if (p.isRenewal) {
+                    await updateSheetCell(p.rowIndex, 'H', todayDate());
+                  } else {
+                    await markProfileSold(p.rowIndex, pedido.clientName || '', targetClient, totalSlots);
+                  }
                 }
               }
             }
 
-            await sendWhatsAppMessage(targetClient, 'Obrigado por escolher a StreamZone! 🎉');
+            await sendWhatsAppMessage(targetClient, 'Obrigado por escolheres a StreamZone! 🎉\nQualquer dúvida, estamos aqui para ajudar. 😊');
           }
 
           // Notificar supervisor
           if (allSuccess) {
-            const totalSlots = pedido.cart.reduce((sum, item) => sum + item.slotsNeeded, 0);
-            await sendWhatsAppMessage(senderNum, `✅ Conta(s) entregue(s) + planilha atualizada! (${pedido.cart.length} serviço(s), ${totalSlots} slot(s))`);
+            const grandTotalSlots = pedido.cart.reduce((sum, item) => sum + (item.totalSlots || item.slotsNeeded), 0);
+            const totalProfiles = results.reduce((sum, r) => sum + (r.profiles ? r.profiles.length : 0), 0);
+            const cartDesc = pedido.cart.map(item => {
+              const q = item.quantity || 1;
+              return `${q > 1 ? q + 'x ' : ''}${item.plataforma} ${item.plan}`;
+            }).join(', ');
+            await sendWhatsAppMessage(senderNum, `✅ Entregue! ${cartDesc} (${grandTotalSlots} slot(s), ${totalProfiles} perfil(s) marcados).`);
           } else {
             const failed = results.filter(r => !r.success);
-            const failedNames = failed.map(r => `${r.item.plataforma} ${r.item.plan}`).join(', ');
+            const failedNames = failed.map(r => {
+              const q = r.item.quantity || 1;
+              return `${q > 1 ? q + 'x ' : ''}${r.item.plataforma} ${r.item.plan}`;
+            }).join(', ');
             if (results.some(r => r.success)) {
               await sendWhatsAppMessage(targetClient, `⚠️ Alguns serviços serão enviados manualmente: ${failedNames}`);
             } else {
-              await sendWhatsAppMessage(targetClient, '✅ Pagamento recebido! O supervisor enviará as contas manualmente.');
+              await sendWhatsAppMessage(targetClient, 'Pagamento recebido! A equipa vai enviar os dados em breve. 😊');
             }
             await sendWhatsAppMessage(senderNum, `⚠️ *SEM STOCK* para: ${failedNames}. Envie manualmente!`);
           }
@@ -529,11 +615,11 @@ app.post('/', async (req, res) => {
           return res.status(200).send('OK');
         }
 
-        // Mudança de serviço — só com intenção clara (mantém nome)
-        const changeMindPattern = /\b(outro plano|quero outro|mudar de plano|trocar|corrigir)\b/i;
-        const services = detectServices(textMessage);
-        if (changeMindPattern.test(normalizedText) || services.length > 0) {
+        // Mudança de serviço — SÓ com intenção explícita de trocar (nunca por simples menção)
+        const changeMindPattern = /\b(outro plano|quero outro|mudar de plano|trocar|corrigir|quero mudar)\b/i;
+        if (changeMindPattern.test(normalizedText)) {
           const nome = state.clientName;
+          const services = detectServices(textMessage);
           clientStates[senderNum] = initClientState({ clientName: nome });
           const newState = clientStates[senderNum];
 
@@ -551,14 +637,18 @@ app.post('/', async (req, res) => {
             await sendWhatsAppMessage(senderNum, msg);
           } else {
             newState.step = 'escolha_servico';
-            await sendWhatsAppMessage(senderNum, `Sem problema${nome ? ', ' + nome : ''}! Vamos recomeçar.\n\n🎬 *Netflix*\n📺 *Prime Video*\n\nQual te interessa?`);
+            await sendWhatsAppMessage(senderNum, `Sem problema${nome ? ', ' + nome : ''}! Qual serviço prefere?\n\n🎬 *Netflix*\n📺 *Prime Video*`);
           }
           return res.status(200).send('OK');
         }
 
         // Qualquer outra pergunta/texto → IA responde + lembrete do PDF
         try {
-          const cartInfo = state.cart.map(i => `${i.plataforma} ${i.plan} (${i.price} Kz)`).join(', ');
+          const cartInfo = state.cart.map(i => {
+            const qty = i.quantity || 1;
+            const qtyLabel = qty > 1 ? `${qty}x ` : '';
+            return `${qtyLabel}${i.plataforma} ${i.plan} (${(i.totalPrice || i.price)} Kz, ${i.totalSlots || i.slotsNeeded} perfis)`;
+          }).join(', ');
           const contextPrompt = `${SYSTEM_PROMPT_COMPROVATIVO}\n\nPedido atual do cliente: ${cartInfo}. Total: ${state.totalValor} Kz.`;
           const model = genAI.getGenerativeModel({
             model: 'gemini-2.5-flash',
@@ -573,7 +663,7 @@ app.post('/', async (req, res) => {
           await sendWhatsAppMessage(senderNum, aiText);
         } catch (e) {
           console.error('Erro AI comprovativo:', e.message);
-          await sendWhatsAppMessage(senderNum, 'Espero ter esclarecido! 😊 Assim que puderes, envia o PDF do comprovativo para finalizarmos.');
+          await sendWhatsAppMessage(senderNum, 'Ficarei por aqui a aguardar o seu documento quando lhe for conveniente. 😊');
         }
         return res.status(200).send('OK');
       }
@@ -590,6 +680,9 @@ app.post('/', async (req, res) => {
       }
 
       if (isDoc) {
+        // Aceitar qualquer documento (PDF ou variante) — nunca rejeitar por mimetype
+        const docTypeLabel = isPdf ? '📄 PDF' : `📎 Documento (${docMime || 'tipo desconhecido'})`;
+
         pendingVerifications[senderNum] = {
           cart: state.cart,
           clientName: state.clientName || '',
@@ -601,11 +694,14 @@ app.post('/', async (req, res) => {
 
         if (MAIN_BOSS) {
           const renewTag = state.isRenewal ? ' (RENOVAÇÃO)' : '';
-          const items = state.cart.map((item, i) =>
-            `  ${i + 1}. ${item.plataforma} - ${item.plan} (${item.slotsNeeded} slot${item.slotsNeeded > 1 ? 's' : ''})`
-          ).join('\n');
+          const items = state.cart.map((item, i) => {
+            const qty = item.quantity || 1;
+            const totalSlots = item.totalSlots || item.slotsNeeded;
+            const qtyLabel = qty > 1 ? `${qty}x ` : '';
+            return `  ${i + 1}. ${qtyLabel}${item.plataforma} - ${item.plan} (Total ${totalSlots} slot${totalSlots > 1 ? 's' : ''})`;
+          }).join('\n');
           const totalStr = state.totalValor ? state.totalValor.toLocaleString('pt') + ' Kz' : 'N/A';
-          const msgSuper = `📩 *NOVO COMPROVATIVO*${renewTag} (📄 PDF)\n👤 Cliente: ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n📦 Pedido:\n${items}\n💰 Total: ${totalStr}\n\nResponda: *sim* ou *nao*`;
+          const msgSuper = `📩 *NOVO COMPROVATIVO*${renewTag} (${docTypeLabel})\n👤 Cliente: ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n📦 Pedido:\n${items}\n💰 Total: ${totalStr}\n\nResponda: *sim* ou *nao*`;
           await sendWhatsAppMessage(MAIN_BOSS, msgSuper);
         }
         await sendWhatsAppMessage(senderNum, '📄 Comprovativo recebido! Estamos a verificar o seu pagamento. ⏳');
@@ -727,66 +823,86 @@ app.post('/', async (req, res) => {
     if (state.step === 'escolha_plano') {
       const chosen = findPlan(state.serviceKey, textMessage);
       if (chosen) {
-        const slotsNeeded = PLAN_SLOTS[chosen.plan] || 1;
+        // Regra de não-downgrade: impedir mudança para plano inferior na mesma sessão
+        const existingItem = state.cart.find(item => item.serviceKey === state.serviceKey);
+        if (existingItem) {
+          const existingRank = PLAN_RANK[existingItem.plan.toLowerCase()] || 0;
+          const chosenRank = PLAN_RANK[chosen.plan] || 0;
+          if (chosenRank < existingRank) {
+            await sendWhatsAppMessage(senderNum, `Já tens o plano *${existingItem.plan}* selecionado. 😊 Para mudar para um plano inferior, o nosso suporte humano pode ajudar. Desejas continuar com o plano atual ou aguardar?`);
+            return res.status(200).send('OK');
+          }
+        }
+
+        const quantity = detectQuantity(textMessage);
+        const slotsPerUnit = PLAN_SLOTS[chosen.plan] || 1;
+        const totalSlots = slotsPerUnit * quantity;
+        const totalPrice = chosen.price * quantity;
         const profileType = PLAN_PROFILE_TYPE[chosen.plan] || 'shared_profile';
 
-        // Verificar stock (não para renovações)
+        // Verificar stock real (não para renovações)
         if (!state.isRenewal) {
-          let profile = await findAvailableProfile(state.plataforma, slotsNeeded, profileType);
+          let stockProfiles = await findAvailableProfiles(state.plataforma, totalSlots, profileType);
 
-          if (!profile) {
+          if (!stockProfiles) {
             // Fallback: tentar tipo alternativo
             const altType = profileType === 'full_account' ? 'shared_profile' : 'full_account';
-            profile = await findAvailableProfile(state.plataforma, slotsNeeded, altType);
+            stockProfiles = await findAvailableProfiles(state.plataforma, totalSlots, altType);
 
-            if (profile && MAIN_BOSS) {
-              await sendWhatsAppMessage(MAIN_BOSS, `ℹ️ *FALLBACK*: ${senderNum} pediu ${state.plataforma} ${chosen.plan} (${profileType}) mas usou ${altType}.`);
+            if (stockProfiles && MAIN_BOSS) {
+              await sendWhatsAppMessage(MAIN_BOSS, `ℹ️ *FALLBACK*: ${senderNum} pediu ${quantity > 1 ? quantity + 'x ' : ''}${state.plataforma} ${chosen.plan} (${profileType}) mas usou ${altType}.`);
             }
           }
 
-          if (!profile) {
-            // Ambos os tipos esgotados
-            logLostSale(senderNum, state.clientName, [state.serviceKey], 'escolha_plano', `Sem stock: ${state.plataforma} ${chosen.plan}`);
+          if (!stockProfiles) {
+            const planLabel = chosen.plan.charAt(0).toUpperCase() + chosen.plan.slice(1);
+            logLostSale(senderNum, state.clientName, [state.serviceKey], 'escolha_plano', `Sem stock: ${quantity > 1 ? quantity + 'x ' : ''}${state.plataforma} ${planLabel} (${totalSlots} slots)`);
             pausedClients[senderNum] = true;
-            await sendWhatsAppMessage(senderNum, `😔 De momento não temos stock para *${chosen.plan.charAt(0).toUpperCase() + chosen.plan.slice(1)}* de ${state.plataforma}. O nosso suporte vai tratar do seu pedido!`);
+            await sendWhatsAppMessage(senderNum, `😔 De momento não temos stock suficiente para ${quantity > 1 ? quantity + 'x ' : ''}*${planLabel}* de ${state.plataforma}. O nosso suporte vai tratar do seu pedido!`);
             if (MAIN_BOSS) {
-              await sendWhatsAppMessage(MAIN_BOSS, `⚠️ *SEM STOCK*\n👤 ${senderNum} (${state.clientName || ''})\n📦 ${state.plataforma} - ${chosen.plan} (${profileType})\n\nUse *retomar ${senderNum}* quando resolver.`);
+              await sendWhatsAppMessage(MAIN_BOSS, `⚠️ *SEM STOCK*\n👤 ${senderNum} (${state.clientName || ''})\n📦 ${quantity > 1 ? quantity + 'x ' : ''}${state.plataforma} - ${chosen.plan} (${totalSlots} slots, tipo: ${profileType})\n\nUse *retomar ${senderNum}* quando resolver.`);
             }
             return res.status(200).send('OK');
           }
         }
 
-        // Adicionar ao carrinho
+        // Adicionar ao carrinho com quantidade
+        const planLabel = chosen.plan.charAt(0).toUpperCase() + chosen.plan.slice(1);
         state.cart.push({
           serviceKey: state.serviceKey,
           plataforma: state.plataforma,
-          plan: chosen.plan.charAt(0).toUpperCase() + chosen.plan.slice(1),
+          plan: planLabel,
           price: chosen.price,
-          slotsNeeded: slotsNeeded
+          quantity: quantity,
+          slotsNeeded: slotsPerUnit,
+          totalSlots: totalSlots,
+          totalPrice: totalPrice
         });
-        state.totalValor += chosen.price;
+        state.totalValor += totalPrice;
 
         // Verificar se há mais serviços na stack
+        const addedItem = state.cart[state.cart.length - 1];
+        const qtyLabel = quantity > 1 ? `${quantity}x ` : '';
+
         if (state.currentItemIndex < state.interestStack.length - 1) {
-          // Mais serviços para configurar
           state.currentItemIndex++;
           const nextSvc = state.interestStack[state.currentItemIndex];
           state.serviceKey = nextSvc;
           state.plataforma = CATALOGO[nextSvc].nome;
-          await sendWhatsAppMessage(senderNum, `✅ ${state.cart[state.cart.length - 1].plataforma} - ${state.cart[state.cart.length - 1].plan} adicionado!\n\nAgora vamos ao ${CATALOGO[nextSvc].nome}:\n\n${formatPriceTable(nextSvc)}\n\nQual plano deseja? (Individual / Partilha / Família)`);
+          await sendWhatsAppMessage(senderNum, `✅ ${qtyLabel}${addedItem.plataforma} - ${addedItem.plan} adicionado!\n\nAgora vamos ao ${CATALOGO[nextSvc].nome}:\n\n${formatPriceTable(nextSvc)}\n\nQual plano deseja? (Individual / Partilha / Família)`);
         } else if (state.cart.length === 1) {
-          // Item único — ir direto para pagamento
-          state.plano = state.cart[0].plan;
-          state.valor = state.cart[0].price;
+          state.plano = addedItem.plan;
+          state.valor = addedItem.totalPrice;
           state.step = 'aguardando_comprovativo';
           await sendWhatsAppMessage(senderNum, 'Excelente escolha! 🎉');
           await sendPaymentMessages(senderNum, state);
         } else {
-          // Multi-item — mostrar resumo para confirmação
           state.step = 'resumo_pedido';
-          const lines = state.cart.map((item, i) =>
-            `${i + 1}. ${item.plataforma} ${item.plan} - ${item.price.toLocaleString('pt')} Kz`
-          );
+          const lines = state.cart.map((item, i) => {
+            const q = item.quantity || 1;
+            const ql = q > 1 ? `${q}x ` : '';
+            return `${i + 1}. ${ql}${item.plataforma} ${item.plan} - ${item.totalPrice.toLocaleString('pt')} Kz`;
+          });
           await sendWhatsAppMessage(senderNum, `📋 *Resumo do Pedido:*\n\n${lines.join('\n')}\n\n💰 *Total: ${state.totalValor.toLocaleString('pt')} Kz*\n\nConfirma? (sim / não)`);
         }
         return res.status(200).send('OK');
@@ -835,4 +951,4 @@ app.post('/', async (req, res) => {
   }
 });
 
-app.listen(port, '0.0.0.0', () => console.log(`Bot v11.0 (StreamZone - Assistente Consciente) rodando na porta ${port}`));
+app.listen(port, '0.0.0.0', () => console.log(`Bot v13.0 (StreamZone - Multi-Slot Fix, Entrega Individual, Colunas Corretas) rodando na porta ${port}`));

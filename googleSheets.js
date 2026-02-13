@@ -18,7 +18,7 @@ function cleanNumber(jid) {
 
 function todayDate() {
   const d = new Date();
-  return `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}`;
+  return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
 }
 
 // ==================== LEITURA / ESCRITA ====================
@@ -68,7 +68,7 @@ async function markProfileAvailable(rowIndex) {
 
 // ==================== CONSULTAS ====================
 
-// Soma slots ocupados de um email (linhas Indisponivel)
+// Conta linhas Indisponivel de um email (cada linha = 1 slot ocupado)
 function getEmailSlotUsage(rows, email) {
   let used = 0;
   for (let i = 1; i < rows.length; i++) {
@@ -76,8 +76,7 @@ function getEmailSlotUsage(rows, email) {
     const rowEmail = (row[1] || '').toLowerCase().trim();
     const status = (row[5] || '').toLowerCase();
     if (rowEmail === email.toLowerCase().trim() && status.includes('indispon')) {
-      const qntd = parseInt(row[8] || '0', 10);
-      used += qntd > 0 ? qntd : 1;
+      used += 1;
     }
   }
   return used;
@@ -164,6 +163,107 @@ async function findAvailableProfile(plataforma, slotsNeeded, profileType) {
   return null;
 }
 
+// Encontra múltiplos perfis disponíveis do MESMO email (para planos multi-slot)
+// Individual=1, Partilha=2, Família=3
+async function findAvailableProfiles(plataforma, slotsNeeded, profileType) {
+  const rows = await fetchAllRows();
+  if (rows.length <= 1) return null;
+
+  // full_account: cada linha = 1 conta inteira, buscar slotsNeeded contas
+  if (profileType === 'full_account') {
+    const accounts = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const rowPlat = (row[0] || '').toLowerCase();
+      const status = (row[5] || '').toLowerCase();
+      const tipoConta = (row[9] || '').toLowerCase().trim();
+      const rowType = tipoConta || 'shared_profile';
+      if (!rowPlat.includes(plataforma.toLowerCase()) || !status.includes('dispon')) continue;
+      if (rowType !== 'full_account') continue;
+      accounts.push({
+        rowIndex: i + 1,
+        plataforma: row[0] || '',
+        email: row[1] || '',
+        senha: row[2] || '',
+        nomePerfil: row[3] || '',
+        pin: row[4] || '',
+      });
+      if (accounts.length >= slotsNeeded) return accounts;
+    }
+    return null;
+  }
+
+  // shared_profile: agrupar linhas disponíveis por email
+  const emailGroups = {};
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const rowPlat = (row[0] || '').toLowerCase();
+    const status = (row[5] || '').toLowerCase();
+    const email = (row[1] || '').trim();
+    const tipoConta = (row[9] || '').toLowerCase().trim();
+    const rowType = tipoConta || 'shared_profile';
+
+    if (!rowPlat.includes(plataforma.toLowerCase())) continue;
+    if (rowType !== 'shared_profile') continue;
+
+    const emailKey = email.toLowerCase();
+    if (!emailGroups[emailKey]) {
+      emailGroups[emailKey] = { email, availableRows: [] };
+    }
+    if (status.includes('dispon')) {
+      emailGroups[emailKey].availableRows.push({
+        rowIndex: i + 1,
+        plataforma: row[0] || '',
+        email: email,
+        senha: row[2] || '',
+        nomePerfil: row[3] || '',
+        pin: row[4] || '',
+      });
+    }
+  }
+
+  // Primeiro email com linhas disponíveis >= slotsNeeded E capacidade livre
+  for (const emailKey of Object.keys(emailGroups)) {
+    const group = emailGroups[emailKey];
+    if (group.availableRows.length >= slotsNeeded) {
+      const used = getEmailSlotUsage(rows, group.email);
+      const free = 5 - used;
+      if (free >= slotsNeeded) {
+        return group.availableRows.slice(0, slotsNeeded);
+      }
+    }
+  }
+  return null;
+}
+
+// Encontra todos os perfis existentes de um cliente (para renovações)
+async function findClientProfiles(clientNumber) {
+  const rows = await fetchAllRows();
+  if (rows.length <= 1) return null;
+  const cleanNum = cleanNumber(clientNumber);
+  const profiles = [];
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const cliente = row[6] || '';
+    if (cleanNumber(cliente) === cleanNum) {
+      profiles.push({
+        rowIndex: i + 1,
+        plataforma: row[0] || '',
+        email: row[1] || '',
+        senha: row[2] || '',
+        nomePerfil: row[3] || '',
+        pin: row[4] || '',
+        status: row[5] || '',
+        cliente: cliente,
+        dataVenda: row[7] || '',
+        qntdPerfis: row[8] || '',
+        tipoConta: row[9] || ''
+      });
+    }
+  }
+  return profiles.length > 0 ? profiles : null;
+}
+
 // Verifica se existe QUALQUER perfil disponível para a plataforma
 // profileType opcional: filtra por tipo se fornecido
 async function hasAnyStock(plataforma, profileType) {
@@ -220,6 +320,8 @@ module.exports = {
   markProfileAvailable,
   checkClientInSheet,
   findAvailableProfile,
+  findAvailableProfiles,
+  findClientProfiles,
   hasAnyStock,
   appendLostSale,
 };
