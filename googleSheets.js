@@ -51,12 +51,22 @@ async function updateSheetCell(row, column, value) {
   }
 }
 
+// FIX: Validacao de null/undefined antes de escrever; H=DD/MM/YYYY, I=inteiro de slots
 async function markProfileSold(rowIndex, clientName, clientNumber, planSlots) {
-  const clientLabel = clientName ? `${clientName} - ${clientNumber}` : clientNumber;
+  const clientLabel = clientName ? `${clientName} - ${clientNumber}` : (clientNumber || '');
+  const saleDate = todayDate(); // FIX: formato DD/MM/YYYY garantido
+  const slotsInt = parseInt(planSlots, 10) || 0; // FIX: garantir inteiro, nunca undefined
+
+  // FIX: validacao — so escreve se valores sao validos
+  if (!rowIndex || !clientLabel) {
+    console.error('markProfileSold: rowIndex ou clientLabel invalido', { rowIndex, clientLabel });
+    return;
+  }
+
   await updateSheetCell(rowIndex, 'F', 'Indisponivel');
   await updateSheetCell(rowIndex, 'G', clientLabel);
-  await updateSheetCell(rowIndex, 'H', todayDate());
-  await updateSheetCell(rowIndex, 'I', planSlots);
+  await updateSheetCell(rowIndex, 'H', saleDate);      // FIX: sempre DD/MM/YYYY
+  await updateSheetCell(rowIndex, 'I', slotsInt);       // FIX: sempre inteiro
 }
 
 async function markProfileAvailable(rowIndex) {
@@ -164,7 +174,7 @@ async function findAvailableProfile(plataforma, slotsNeeded, profileType) {
 }
 
 // Encontra múltiplos perfis disponíveis do MESMO email (para planos multi-slot)
-// Individual=1, Partilha=2, Família=3
+// Individual=1, Partilha=2
 async function findAvailableProfiles(plataforma, slotsNeeded, profileType) {
   const rows = await fetchAllRows();
   if (rows.length <= 1) return null;
@@ -222,18 +232,22 @@ async function findAvailableProfiles(plataforma, slotsNeeded, profileType) {
     }
   }
 
-  // Primeiro email com linhas disponíveis >= slotsNeeded E capacidade livre
+  // FIX: Recolher perfis de MULTIPLOS emails quando um so nao tem slots suficientes
+  // Isto resolve o problema de Qtd=2 Partilha (4 slots) quando nenhum email tem 4 livres
+  const collected = [];
   for (const emailKey of Object.keys(emailGroups)) {
     const group = emailGroups[emailKey];
-    if (group.availableRows.length >= slotsNeeded) {
-      const used = getEmailSlotUsage(rows, group.email);
-      const free = 5 - used;
-      if (free >= slotsNeeded) {
-        return group.availableRows.slice(0, slotsNeeded);
-      }
-    }
+    if (group.availableRows.length === 0) continue;
+    const used = getEmailSlotUsage(rows, group.email);
+    const free = 5 - used;
+    const canTake = Math.min(group.availableRows.length, free);
+    if (canTake <= 0) continue;
+    const needed = slotsNeeded - collected.length;
+    const take = Math.min(canTake, needed);
+    collected.push(...group.availableRows.slice(0, take));
+    if (collected.length >= slotsNeeded) return collected;
   }
-  return null;
+  return null; // Nao ha stock suficiente em nenhuma combinacao de emails
 }
 
 // Encontra todos os perfis existentes de um cliente (para renovações)
@@ -284,6 +298,54 @@ async function hasAnyStock(plataforma, profileType) {
   return false;
 }
 
+// FIX: Conta perfis disponiveis para uma plataforma e tipo (para mensagem de stock insuficiente)
+async function countAvailableProfiles(plataforma, profileType) {
+  const rows = await fetchAllRows();
+  if (rows.length <= 1) return 0;
+
+  if (profileType === 'full_account') {
+    let count = 0;
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const rowPlat = (row[0] || '').toLowerCase();
+      const status = (row[5] || '').toLowerCase();
+      const tipoConta = (row[9] || '').toLowerCase().trim();
+      const rowType = tipoConta || 'shared_profile';
+      if (!rowPlat.includes(plataforma.toLowerCase()) || !status.includes('dispon')) continue;
+      if (rowType !== 'full_account') continue;
+      count++;
+    }
+    return count;
+  }
+
+  // shared_profile: contar slots livres considerando limite de 5 por email
+  const emailGroups = {};
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    const rowPlat = (row[0] || '').toLowerCase();
+    const status = (row[5] || '').toLowerCase();
+    const email = (row[1] || '').trim();
+    const tipoConta = (row[9] || '').toLowerCase().trim();
+    const rowType = tipoConta || 'shared_profile';
+    if (!rowPlat.includes(plataforma.toLowerCase())) continue;
+    if (rowType !== 'shared_profile') continue;
+    const emailKey = email.toLowerCase();
+    if (!emailGroups[emailKey]) emailGroups[emailKey] = { email, availCount: 0 };
+    if (status.includes('dispon')) emailGroups[emailKey].availCount++;
+  }
+
+  let total = 0;
+  for (const emailKey of Object.keys(emailGroups)) {
+    const group = emailGroups[emailKey];
+    if (group.availCount === 0) continue;
+    const used = getEmailSlotUsage(rows, group.email);
+    const free = 5 - used;
+    const canTake = Math.min(group.availCount, free);
+    if (canTake > 0) total += canTake;
+  }
+  return total;
+}
+
 // ==================== VENDAS PERDIDAS ====================
 async function appendLostSale(sale) {
   try {
@@ -323,5 +385,6 @@ module.exports = {
   findAvailableProfiles,
   findClientProfiles,
   hasAnyStock,
+  countAvailableProfiles,
   appendLostSale,
 };

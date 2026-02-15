@@ -8,7 +8,7 @@ const {
   cleanNumber, todayDate,
   updateSheetCell, markProfileSold, markProfileAvailable,
   checkClientInSheet, findAvailableProfile, findAvailableProfiles, findClientProfiles,
-  hasAnyStock, appendLostSale,
+  hasAnyStock, countAvailableProfiles, appendLostSale,
 } = require('./googleSheets');
 
 const app = express();
@@ -20,7 +20,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // ==================== CONFIGURACOES ====================
 
-// Rota de Integração com o Site (Lovable)
+// Rota de Integração com o Site (Lovable)P
 app.post('/api/web-checkout', async (req, res) => {
   try {
     const { nome, whatsapp, plataforma, plano, slots } = req.body;
@@ -30,13 +30,21 @@ app.post('/api/web-checkout', async (req, res) => {
     // 1. Verifica stock real na planilha
     const profiles = await findAvailableProfiles(plataforma, totalSlots, pType);
     
-    if (!profiles) {
-      return res.status(400).json({ success: false, message: 'Sem stock disponível' });
+    // FIX 1+2: Stock insuficiente na rota web — notifica supervisor com contexto
+    if (!profiles || profiles.length < totalSlots) {
+      const availableSlots = profiles ? profiles.length : 0;
+      const svcInfo = CATALOGO[plataforma.toLowerCase()] || {};
+      const pricePerUnit = svcInfo.planos ? (svcInfo.planos[plano.toLowerCase()] || 0) : 0;
+      const valorEmRisco = pricePerUnit * parseInt(slots, 10);
+      if (MAIN_BOSS) {
+        await sendWhatsAppMessage(MAIN_BOSS, `⚠️ STOCK INSUFICIENTE — Ação necessária\n\n📋 Resumo:\n- Cliente (via site): ${nome} / ${whatsapp}\n- Pedido: ${slots}x ${plano} ${plataforma}\n- Slots necessários: ${totalSlots}\n- Slots disponíveis: ${availableSlots}\n- Valor da venda em risco: ${valorEmRisco.toLocaleString('pt')} Kz\n\n🔧 Opções:\n1. Repor stock → responder "reposto ${whatsapp.replace(/\\D/g, '')}"\n2. Cancelar → responder "cancelar ${whatsapp.replace(/\\D/g, '')}"`);
+      }
+      return res.status(400).json({ success: false, message: `Sem stock suficiente. Disponível: ${availableSlots}/${totalSlots}` });
     }
 
     // 2. Regista na planilha (Coluna H e I)
     for (const p of profiles) {
-      await markProfileSold(p.rowIndex, nome, whatsapp, totalSlots);
+      await markProfileSold(p.rowIndex, nome, whatsapp, 1); // FIX: 1 linha = 1 slot
     }
 
     // 3. Notifica o Chefe via WhatsApp
@@ -62,21 +70,22 @@ console.log('🖥️ Todos os IDs aceites:', ALL_SUPERVISORS);
 console.log('👑 Chefe Principal:', MAIN_BOSS);
 
 // ==================== CATALOGO ====================
+// Precos e planos conforme catalogo real
 const CATALOGO = {
   netflix: {
     nome: 'Netflix',
     emoji: '🎬',
-    planos: { individual: 5000, partilha: 9000, familia: 13500 }
+    planos: { individual: 4500, partilha: 5500 } // FIX: precos corrigidos
   },
   prime: {
     nome: 'Prime Video',
     emoji: '📺',
-    planos: { individual: 3000, partilha: 5500, familia: 8000 }
+    planos: { individual: 3500 } // FIX: so tem individual
   }
 };
 
-const PLAN_SLOTS = { individual: 1, partilha: 2, familia: 3 };
-const PLAN_RANK = { individual: 1, partilha: 2, familia: 3 };
+const PLAN_SLOTS = { individual: 1, partilha: 2 };
+const PLAN_RANK = { individual: 1, partilha: 2 };
 
 const PAYMENT = {
   titular: 'Braulio Manuel',
@@ -84,7 +93,7 @@ const PAYMENT = {
   multicaixa: '946014060'
 };
 
-const PLAN_PROFILE_TYPE = { individual: 'full_account', partilha: 'shared_profile', familia: 'shared_profile' };
+const PLAN_PROFILE_TYPE = { individual: 'full_account', partilha: 'shared_profile' };
 
 const SUPPORT_KEYWORDS = [
   'não entra', 'nao entra', 'senha errada', 'ajuda', 'travou',
@@ -97,15 +106,21 @@ function removeAccents(str) {
   return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 
+// FIX: formatPriceTable dinamico — so mostra planos que existem no catalogo
 function formatPriceTable(serviceKey) {
   const svc = CATALOGO[serviceKey];
   if (!svc) return '';
-  return [
-    `${svc.emoji} *TABELA ${svc.nome.toUpperCase()}*`,
-    `👤 Individual: ${svc.planos.individual.toLocaleString('pt')} Kz`,
-    `👥 Partilha: ${svc.planos.partilha.toLocaleString('pt')} Kz`,
-    `👨‍👩‍👧 Família: ${svc.planos.familia.toLocaleString('pt')} Kz`
-  ].join('\n');
+  const lines = [`${svc.emoji} *TABELA ${svc.nome.toUpperCase()}*`];
+  if (svc.planos.individual != null) lines.push(`👤 Individual: ${svc.planos.individual.toLocaleString('pt')} Kz`);
+  if (svc.planos.partilha != null) lines.push(`👥 Partilha: ${svc.planos.partilha.toLocaleString('pt')} Kz`);
+  return lines.join('\n');
+}
+
+// FIX: helper para gerar texto de opcoes de plano dinamicamente
+function planChoicesText(serviceKey) {
+  const svc = CATALOGO[serviceKey];
+  if (!svc) return '';
+  return Object.keys(svc.planos).map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' / ');
 }
 
 function findPlan(serviceKey, text) {
@@ -137,14 +152,14 @@ function detectSupportIssue(text) {
   return SUPPORT_KEYWORDS.some(kw => lower.includes(kw));
 }
 
-// Deteta quantidade explícita: "2 partilha", "3x familia", "quero 2 planos", etc.
+// Detecao de quantidade nos patterns
 function detectQuantity(text) {
   const lower = removeAccents(text.toLowerCase());
   const patterns = [
-    /(\d+)\s*x\s*(?:plano|planos|unidade|unidades|conta|contas)?\s*(?:de\s+)?(?:individual|partilha|familia)/,
-    /(\d+)\s+(?:plano|planos|unidade|unidades|conta|contas)\s+(?:de\s+)?(?:individual|partilha|familia)/,
-    /(\d+)\s+(?:individual|partilha|familia)/,
-    /(?:quero|preciso|queria)\s+(\d+)\s+(?:plano|planos|unidade|unidades|conta|contas|individual|partilha|familia)/,
+    /(\d+)\s*x\s*(?:plano|planos|unidade|unidades|conta|contas)?\s*(?:de\s+)?(?:individual|partilha)/,
+    /(\d+)\s+(?:plano|planos|unidade|unidades|conta|contas)\s+(?:de\s+)?(?:individual|partilha)/,
+    /(\d+)\s+(?:individual|partilha)/,
+    /(?:quero|preciso|queria)\s+(\d+)\s+(?:plano|planos|unidade|unidades|conta|contas|individual|partilha)/,
   ];
   for (const pattern of patterns) {
     const match = lower.match(pattern);
@@ -213,13 +228,45 @@ function logLostSale(phone, clientName, interests, lastState, reason) {
   return sale;
 }
 
+// FIX: Sweep aguardando_reposicao — 30min follow-up + 2h timeout final
+setInterval(async () => {
+  const now = Date.now();
+  const THIRTY_MIN = 30 * 60 * 1000;
+  const TWO_HOURS_RECOVERY = 2 * 60 * 60 * 1000;
+  for (const [num, state] of Object.entries(clientStates)) {
+    if (state.step !== 'aguardando_reposicao' && state.step !== 'aguardando_resposta_alternativa') continue;
+    const recovery = state.pendingRecovery;
+    if (!recovery) continue;
+    const elapsed = now - recovery.timestamp;
+
+    // 30min sem resposta do supervisor → follow-up ao cliente
+    if (elapsed >= THIRTY_MIN && !state.recovery30minSent) {
+      state.recovery30minSent = true;
+      const pedidoDesc = `${recovery.qty > 1 ? recovery.qty + 'x ' : ''}${recovery.plan}`;
+      await sendWhatsAppMessage(num, `Ainda estamos a verificar a disponibilidade para o teu pedido de ${pedidoDesc}. Entretanto, posso ajudar-te com outra coisa?`);
+    }
+
+    // 2h sem resolução → limpa sessão e envia mensagem final
+    if (elapsed >= TWO_HOURS_RECOVERY) {
+      const nome = state.clientName;
+      await sendWhatsAppMessage(num, `${nome ? nome + ', p' : 'P'}edimos desculpa pela demora. Infelizmente não conseguimos repor o stock a tempo para o teu pedido.\n\nComo compensação, terás *prioridade* na próxima reposição! Vamos notificar-te assim que houver disponibilidade. 😊\n\nSe precisares de algo entretanto, estamos aqui.`);
+      logLostSale(num, nome, state.interestStack || [], state.step, `Timeout reposição (2h): ${recovery.qty > 1 ? recovery.qty + 'x ' : ''}${recovery.service} ${recovery.plan}`);
+      if (MAIN_BOSS) {
+        await sendWhatsAppMessage(MAIN_BOSS, `⏰ *TIMEOUT 2H* — Stock não reposto\n👤 ${num} (${nome || ''})\n📦 ${recovery.qty > 1 ? recovery.qty + 'x ' : ''}${recovery.service} ${recovery.plan}\nSessão limpa automaticamente.`);
+      }
+      delete clientStates[num];
+      delete chatHistories[num];
+    }
+  }
+}, 5 * 60 * 1000); // Verificar a cada 5 minutos
+
 // Sweep: clientes inativos há 2+ horas
 setInterval(() => {
   const now = Date.now();
   const TWO_HOURS = 2 * 60 * 60 * 1000;
   for (const [num, state] of Object.entries(clientStates)) {
     if (state.lastActivity && (now - state.lastActivity) > TWO_HOURS) {
-      if (state.step !== 'inicio' && state.step !== 'esperando_supervisor' && !pendingVerifications[num]) {
+      if (state.step !== 'inicio' && state.step !== 'esperando_supervisor' && state.step !== 'aguardando_reposicao' && state.step !== 'aguardando_resposta_alternativa' && !pendingVerifications[num]) {
         logLostSale(num, state.clientName, state.interestStack || [], state.step, 'Timeout (2h sem atividade)');
         delete clientStates[num];
         delete chatHistories[num];
@@ -376,6 +423,112 @@ app.post('/', async (req, res) => {
         return res.status(200).send('OK');
       }
 
+      // FIX 3: Comando "reposto" — supervisor confirma reposição de stock
+      if (command === 'reposto' && parts[1]) {
+        const targetNum = parts[1].replace(/\D/g, '');
+        const targetState = clientStates[targetNum];
+        if (!targetState || targetState.step !== 'aguardando_reposicao') {
+          await sendWhatsAppMessage(senderNum, `⚠️ Cliente ${targetNum} não está a aguardar reposição de stock.`);
+          return res.status(200).send('OK');
+        }
+        const recovery = targetState.pendingRecovery;
+        if (!recovery) {
+          await sendWhatsAppMessage(senderNum, `⚠️ Sem dados de recuperação para ${targetNum}.`);
+          return res.status(200).send('OK');
+        }
+        // Verificar stock de novo
+        const profileType = PLAN_PROFILE_TYPE[recovery.plan.toLowerCase()] || 'shared_profile';
+        let stockProfiles = await findAvailableProfiles(recovery.service, recovery.totalSlots, profileType);
+        if (!stockProfiles) {
+          const altType = profileType === 'full_account' ? 'shared_profile' : 'full_account';
+          stockProfiles = await findAvailableProfiles(recovery.service, recovery.totalSlots, altType);
+        }
+        if (!stockProfiles) {
+          await sendWhatsAppMessage(senderNum, `❌ Stock ainda insuficiente para ${recovery.qty > 1 ? recovery.qty + 'x ' : ''}${recovery.service} ${recovery.plan} (${recovery.totalSlots} slots).`);
+          return res.status(200).send('OK');
+        }
+        // Stock reposto — retomar venda, enviar pagamento ao cliente
+        const planLabel = recovery.plan;
+        const qty = recovery.qty;
+        const price = CATALOGO[recovery.serviceKey] ? CATALOGO[recovery.serviceKey].planos[recovery.plan.toLowerCase()] : 0;
+        const totalPrice = price * qty;
+        const slotsPerUnit = PLAN_SLOTS[recovery.plan.toLowerCase()] || 1;
+        targetState.cart = [{
+          serviceKey: recovery.serviceKey,
+          plataforma: recovery.service,
+          plan: planLabel,
+          price: price,
+          quantity: qty,
+          slotsNeeded: slotsPerUnit,
+          totalSlots: recovery.totalSlots,
+          totalPrice: totalPrice
+        }];
+        targetState.totalValor = totalPrice;
+        targetState.step = 'aguardando_comprovativo';
+        delete targetState.pendingRecovery;
+        targetState.supervisorResponded = true;
+        await sendWhatsAppMessage(targetNum, `✅ Boa notícia${targetState.clientName ? ', ' + targetState.clientName : ''}! Já temos disponibilidade para o teu pedido de ${qty > 1 ? qty + 'x ' : ''}*${planLabel}* de ${recovery.service}. 🎉`);
+        await sendPaymentMessages(targetNum, targetState);
+        await sendWhatsAppMessage(senderNum, `✅ Venda retomada para ${targetNum}. Pagamento enviado ao cliente.`);
+        return res.status(200).send('OK');
+      }
+
+      // FIX 3: Comando "alternativa" — supervisor sugere plano alternativo
+      if (command === 'alternativa' && parts[1]) {
+        const altPlan = parts[1].toLowerCase();
+        const targetNum = (parts[2] || '').replace(/\D/g, '');
+        if (!targetNum) {
+          await sendWhatsAppMessage(senderNum, '⚠️ Formato: alternativa [plano] [número do cliente]');
+          return res.status(200).send('OK');
+        }
+        const targetState = clientStates[targetNum];
+        if (!targetState || targetState.step !== 'aguardando_reposicao') {
+          await sendWhatsAppMessage(senderNum, `⚠️ Cliente ${targetNum} não está a aguardar reposição.`);
+          return res.status(200).send('OK');
+        }
+        const recovery = targetState.pendingRecovery;
+        if (!recovery) {
+          await sendWhatsAppMessage(senderNum, `⚠️ Sem dados de recuperação para ${targetNum}.`);
+          return res.status(200).send('OK');
+        }
+        // Encontrar novo preço
+        const svcCat = CATALOGO[recovery.serviceKey];
+        if (!svcCat || !svcCat.planos[altPlan]) {
+          const available = svcCat ? Object.keys(svcCat.planos).join(', ') : 'N/A';
+          await sendWhatsAppMessage(senderNum, `⚠️ Plano "${altPlan}" não existe para ${recovery.service}. Disponíveis: ${available}`);
+          return res.status(200).send('OK');
+        }
+        const altPrice = svcCat.planos[altPlan];
+        const altPlanLabel = altPlan.charAt(0).toUpperCase() + altPlan.slice(1);
+        const altQty = recovery.qty;
+        const altTotal = altPrice * altQty;
+        // Atualizar recovery com plano alternativo
+        targetState.pendingRecovery.suggestedPlan = altPlan;
+        targetState.pendingRecovery.suggestedPrice = altPrice;
+        targetState.step = 'aguardando_resposta_alternativa';
+        targetState.supervisorResponded = true;
+        await sendWhatsAppMessage(targetNum, `💡 ${targetState.clientName ? targetState.clientName + ', t' : 'T'}emos uma alternativa para ti!\n\nEm vez de ${recovery.qty > 1 ? recovery.qty + 'x ' : ''}${recovery.plan}, podemos oferecer:\n\n📦 ${altQty > 1 ? altQty + 'x ' : ''}*${altPlanLabel}* de ${recovery.service} — ${altTotal.toLocaleString('pt')} Kz\n\nAceitas? (sim / não)`);
+        await sendWhatsAppMessage(senderNum, `✅ Alternativa enviada ao cliente ${targetNum}: ${altPlanLabel} (${altTotal.toLocaleString('pt')} Kz).`);
+        return res.status(200).send('OK');
+      }
+
+      // FIX 3: Comando "cancelar" com número — cancela pedido pendente de reposição
+      if (command === 'cancelar' && parts[1]) {
+        const targetNum = parts[1].replace(/\D/g, '');
+        const targetState = clientStates[targetNum];
+        if (targetState && (targetState.step === 'aguardando_reposicao' || targetState.step === 'aguardando_resposta_alternativa')) {
+          const nome = targetState.clientName;
+          await sendWhatsAppMessage(targetNum, `😔 ${nome ? nome + ', l' : 'L'}amentamos mas não foi possível processar o teu pedido desta vez. Esperamos ver-te em breve!\n\nSe precisares de algo, estamos aqui. 😊`);
+          logLostSale(targetNum, nome, targetState.interestStack || [], targetState.step, 'Cancelado pelo supervisor');
+          delete clientStates[targetNum];
+          delete chatHistories[targetNum];
+          await sendWhatsAppMessage(senderNum, `✅ Pedido de ${targetNum} cancelado e cliente notificado.`);
+        } else {
+          await sendWhatsAppMessage(senderNum, `⚠️ Cliente ${targetNum} não tem pedido pendente de reposição.`);
+        }
+        return res.status(200).send('OK');
+      }
+
       // --- Recuperar venda perdida ---
       if (command === 'recuperar' && parts[1]) {
         const saleId = parseInt(parts[1], 10);
@@ -481,7 +634,7 @@ app.post('/', async (req, res) => {
             }
           }
 
-          // Entregar credenciais — email/senha UMA VEZ, perfis listados individualmente
+          // FIX: Entregar credenciais — formato ✅ Perfil X: email | senha (suporta multi-email)
           if (results.some(r => r.success)) {
             await sendWhatsAppMessage(targetClient, '✅ *Pagamento confirmado!*\n\nAqui estão os dados da sua conta 😊');
 
@@ -493,12 +646,12 @@ app.post('/', async (req, res) => {
                 const svcEmoji = result.item.plataforma.toLowerCase().includes('netflix') ? '🎬' : '📺';
                 const qtyLabel = qty > 1 ? ` (${qty}x ${result.item.plan})` : '';
 
-                // Email e Senha aparecem apenas UMA VEZ no topo
-                let entrega = `${svcEmoji} *${result.item.plataforma}*${qtyLabel}\n\n📧 *Email:* ${profs[0].email}\n🔑 *Senha:* ${profs[0].senha}`;
-
-                // Lista numerada de TODOS os perfis e PINs reservados
+                // FIX: Listar TODOS os perfis no formato ✅ Perfil X: email | senha
+                let entrega = `${svcEmoji} *${result.item.plataforma}*${qtyLabel}\n`;
                 for (let i = 0; i < profs.length; i++) {
-                  entrega += `\n👤 Perfil ${i + 1}: ${profs[i].nomePerfil} | PIN: ${profs[i].pin}`;
+                  entrega += `\n✅ Perfil ${i + 1}: ${profs[i].email} | ${profs[i].senha}`;
+                  if (profs[i].nomePerfil) entrega += ` | ${profs[i].nomePerfil}`;
+                  if (profs[i].pin) entrega += ` | PIN: ${profs[i].pin}`;
                 }
 
                 await sendWhatsAppMessage(targetClient, entrega);
@@ -508,12 +661,13 @@ app.post('/', async (req, res) => {
                   if (p.isRenewal) {
                     await updateSheetCell(p.rowIndex, 'H', todayDate());
                   } else {
-                    await markProfileSold(p.rowIndex, pedido.clientName || '', targetClient, totalSlots);
+                    await markProfileSold(p.rowIndex, pedido.clientName || '', targetClient, 1); // FIX: 1 linha = 1 slot
                   }
                 }
               }
             }
 
+            // FIX: unica vez que aparece a frase de fecho
             await sendWhatsAppMessage(targetClient, 'Obrigado por escolheres a StreamZone! 🎉\nQualquer dúvida, estamos aqui para ajudar. 😊');
           }
 
@@ -599,6 +753,55 @@ app.post('/', async (req, res) => {
       return res.status(200).send('OK');
     }
 
+    // FIX 1: STEP: aguardando_reposicao — cliente aguarda reposição de stock
+    if (state.step === 'aguardando_reposicao') {
+      const recovery = state.pendingRecovery;
+      const pedidoDesc = recovery ? `${recovery.qty > 1 ? recovery.qty + 'x ' : ''}${recovery.plan} de ${recovery.service}` : 'o teu pedido';
+      await sendWhatsAppMessage(senderNum, `⏳ Estamos a tratar da disponibilidade para ${pedidoDesc}. Vais receber uma resposta em breve!`);
+      return res.status(200).send('OK');
+    }
+
+    // FIX 3: STEP: aguardando_resposta_alternativa — cliente recebeu proposta alternativa
+    if (state.step === 'aguardando_resposta_alternativa') {
+      const lower = textMessage.toLowerCase().trim();
+      if (['sim', 's', 'ok', 'aceito', 'yes'].includes(lower)) {
+        const recovery = state.pendingRecovery;
+        const altPlan = recovery.suggestedPlan;
+        const altPrice = recovery.suggestedPrice;
+        const qty = recovery.qty;
+        const altPlanLabel = altPlan.charAt(0).toUpperCase() + altPlan.slice(1);
+        const slotsPerUnit = PLAN_SLOTS[altPlan] || 1;
+        const totalSlots = slotsPerUnit * qty;
+        const totalPrice = altPrice * qty;
+        state.cart = [{
+          serviceKey: recovery.serviceKey,
+          plataforma: recovery.service,
+          plan: altPlanLabel,
+          price: altPrice,
+          quantity: qty,
+          slotsNeeded: slotsPerUnit,
+          totalSlots: totalSlots,
+          totalPrice: totalPrice
+        }];
+        state.totalValor = totalPrice;
+        state.step = 'aguardando_comprovativo';
+        delete state.pendingRecovery;
+        await sendWhatsAppMessage(senderNum, 'Excelente escolha! 🎉');
+        await sendPaymentMessages(senderNum, state);
+      } else if (['nao', 'não', 'n', 'no'].includes(lower)) {
+        const nome = state.clientName;
+        logLostSale(senderNum, nome, state.interestStack || [], state.step, 'Cliente recusou plano alternativo');
+        delete state.pendingRecovery;
+        state.step = 'escolha_servico';
+        state.cart = [];
+        state.totalValor = 0;
+        await sendWhatsAppMessage(senderNum, `Sem problema${nome ? ', ' + nome : ''}! Posso ajudar com outra coisa?\n\n🎬 *Netflix*\n📺 *Prime Video*`);
+      } else {
+        await sendWhatsAppMessage(senderNum, 'Por favor, responde *sim* para aceitar ou *não* para recusar a alternativa.');
+      }
+      return res.status(200).send('OK');
+    }
+
     // ---- STEP: aguardando_comprovativo ----
     if (state.step === 'aguardando_comprovativo') {
       // --- 1. ANÁLISE DE TEXTO (prioridade sobre ficheiros) ---
@@ -633,7 +836,7 @@ app.post('/', async (req, res) => {
             let msg = services.length > 1
               ? `Sem problema! Vamos configurar os dois serviços.\n\nVamos começar com o ${CATALOGO[services[0]].nome}:\n\n`
               : 'Sem problema! ';
-            msg += `${formatPriceTable(services[0])}\n\nQual plano deseja? (Individual / Partilha / Família)`;
+            msg += `${formatPriceTable(services[0])}\n\nQual plano deseja? (${planChoicesText(services[0])})`; // FIX: dinamico
             await sendWhatsAppMessage(senderNum, msg);
           } else {
             newState.step = 'escolha_servico';
@@ -731,7 +934,7 @@ app.post('/', async (req, res) => {
           ? `Olá ${nome}! Sou o Assistente de IA da StreamZone 🤖.`
           : 'Olá! Sou o Assistente de IA da StreamZone 🤖.';
         console.log(`📤 DEBUG: A enviar saudação de renovação para ${senderNum}`);
-        await sendWhatsAppMessage(senderNum, `${saudacao}\n\nVejo que já é nosso cliente de *${existing.plataforma}*! Quer renovar?\n\n${formatPriceTable(svcKey)}\n\nQual plano deseja? (Individual / Partilha / Família)`);
+        await sendWhatsAppMessage(senderNum, `${saudacao}\n\nVejo que já é nosso cliente de *${existing.plataforma}*! Quer renovar?\n\n${formatPriceTable(svcKey)}\n\nQual plano deseja? (${planChoicesText(svcKey)})`); // FIX: dinamico
         return res.status(200).send('OK');
       }
 
@@ -795,7 +998,7 @@ app.post('/', async (req, res) => {
         if (available.length > 1) {
           msg = `Ótimo! Vamos configurar os dois serviços.\n\nVamos começar com o ${CATALOGO[available[0]].nome}:\n\n`;
         }
-        msg += `${formatPriceTable(available[0])}\n\nQual plano deseja? (Individual / Partilha / Família)`;
+        msg += `${formatPriceTable(available[0])}\n\nQual plano deseja? (${planChoicesText(available[0])})`; // FIX: dinamico
         await sendWhatsAppMessage(senderNum, msg);
         return res.status(200).send('OK');
       }
@@ -855,13 +1058,53 @@ app.post('/', async (req, res) => {
           }
 
           if (!stockProfiles) {
+            // FIX 1+2+3: Fluxo completo de stock insuficiente
             const planLabel = chosen.plan.charAt(0).toUpperCase() + chosen.plan.slice(1);
-            logLostSale(senderNum, state.clientName, [state.serviceKey], 'escolha_plano', `Sem stock: ${quantity > 1 ? quantity + 'x ' : ''}${state.plataforma} ${planLabel} (${totalSlots} slots)`);
-            pausedClients[senderNum] = true;
-            await sendWhatsAppMessage(senderNum, `😔 De momento não temos stock suficiente para ${quantity > 1 ? quantity + 'x ' : ''}*${planLabel}* de ${state.plataforma}. O nosso suporte vai tratar do seu pedido!`);
+            const availableSlots = await countAvailableProfiles(state.plataforma, profileType);
+            const valorEmRisco = chosen.price * quantity;
+
+            // FIX: Estado aguardando_reposicao (NÃO pausedClients)
+            state.step = 'aguardando_reposicao';
+            state.pendingRecovery = {
+              serviceKey: state.serviceKey,
+              service: state.plataforma,
+              plan: planLabel,
+              qty: quantity,
+              totalSlots: totalSlots,
+              availableSlots: availableSlots,
+              timestamp: Date.now()
+            };
+            state.supervisorResponded = false;
+            state.recovery30minSent = false;
+
+            // FIX 1 Parte A: Mensagem imediata ao cliente com stock disponível vs necessário
+            await sendWhatsAppMessage(senderNum, `😔 De momento temos apenas ${availableSlots} perfil(is) disponível(eis) para ${state.plataforma}, mas precisavas de ${totalSlots}. Já passei a informação ao nosso supervisor para resolver isto o mais rápido possível. Vais receber uma resposta em breve!`);
+
+            // FIX 2: Notificação estruturada ao supervisor
             if (MAIN_BOSS) {
-              await sendWhatsAppMessage(MAIN_BOSS, `⚠️ *SEM STOCK*\n👤 ${senderNum} (${state.clientName || ''})\n📦 ${quantity > 1 ? quantity + 'x ' : ''}${state.plataforma} - ${chosen.plan} (${totalSlots} slots, tipo: ${profileType})\n\nUse *retomar ${senderNum}* quando resolver.`);
+              // Contexto da conversa (últimas 5 mensagens)
+              const history = chatHistories[senderNum] || [];
+              const last10 = history.slice(-10);
+              const contextLines = last10.length > 0
+                ? last10.map(h => {
+                    const role = h.role === 'user' ? '👤' : '🤖';
+                    const text = (h.parts[0]?.text || '').substring(0, 100);
+                    return `${role} ${text}`;
+                  }).join('\n')
+                : '(sem histórico)';
+
+              await sendWhatsAppMessage(MAIN_BOSS, `⚠️ STOCK INSUFICIENTE — Ação necessária\n\n📋 Resumo:\n- Cliente: ${state.clientName || 'sem nome'} / ${senderNum}\n- Pedido: ${quantity > 1 ? quantity + 'x ' : ''}${planLabel} ${state.plataforma}\n- Slots necessários: ${totalSlots}\n- Slots disponíveis: ${availableSlots}\n- Valor da venda em risco: ${valorEmRisco.toLocaleString('pt')} Kz\n\n💬 Contexto da conversa:\n${contextLines}\n\n🔧 Opções sugeridas:\n1. Repor stock → responder "reposto ${senderNum}"\n2. Oferecer plano alternativo → responder "alternativa [plano] ${senderNum}"\n3. Cancelar → responder "cancelar ${senderNum}"`);
             }
+
+            // FIX 1 Parte B: Mensagem de recuperação enviada 90s depois (se supervisor não respondeu)
+            const capturedNum = senderNum;
+            setTimeout(async () => {
+              const st = clientStates[capturedNum];
+              if (st && st.step === 'aguardando_reposicao' && !st.supervisorResponded) {
+                await sendWhatsAppMessage(capturedNum, `Enquanto aguardamos, o teu pedido de ${quantity > 1 ? quantity + 'x ' : ''}*${planLabel}* de ${state.plataforma} está guardado. Assim que houver disponibilidade, retomamos de onde paramos! 😊`);
+              }
+            }, 90 * 1000);
+
             return res.status(200).send('OK');
           }
         }
@@ -889,7 +1132,7 @@ app.post('/', async (req, res) => {
           const nextSvc = state.interestStack[state.currentItemIndex];
           state.serviceKey = nextSvc;
           state.plataforma = CATALOGO[nextSvc].nome;
-          await sendWhatsAppMessage(senderNum, `✅ ${qtyLabel}${addedItem.plataforma} - ${addedItem.plan} adicionado!\n\nAgora vamos ao ${CATALOGO[nextSvc].nome}:\n\n${formatPriceTable(nextSvc)}\n\nQual plano deseja? (Individual / Partilha / Família)`);
+          await sendWhatsAppMessage(senderNum, `✅ ${qtyLabel}${addedItem.plataforma} - ${addedItem.plan} adicionado!\n\nAgora vamos ao ${CATALOGO[nextSvc].nome}:\n\n${formatPriceTable(nextSvc)}\n\nQual plano deseja? (${planChoicesText(nextSvc)})`); // FIX: dinamico
         } else if (state.cart.length === 1) {
           state.plano = addedItem.plan;
           state.valor = addedItem.totalPrice;
@@ -910,7 +1153,11 @@ app.post('/', async (req, res) => {
 
       // Texto não é um plano — verificar se é uma pergunta
       try {
-        const planContext = `Tu és o Assistente de IA da StreamZone 🤖. O cliente está a escolher um plano de ${state.plataforma}.\n\nPlanos disponíveis:\n- Individual: 1 perfil\n- Partilha: 2 perfis\n- Família: 3 perfis\n\nResponde à pergunta do cliente em 1-2 frases curtas e termina SEMPRE com: "Qual plano preferes? (Individual / Partilha / Família)"`;
+        // FIX: prompt AI dinamico — so menciona planos que existem para este servico
+        const availPlans = Object.entries(CATALOGO[state.serviceKey].planos).map(([p, price]) => `- ${p.charAt(0).toUpperCase() + p.slice(1)}: ${PLAN_SLOTS[p] || 1} perfil(s), ${price.toLocaleString('pt')} Kz`).join('\n');
+        const choicesStr = planChoicesText(state.serviceKey);
+        const planContext = `Tu és o Assistente de IA da StreamZone 🤖. O cliente está a escolher um plano de ${state.plataforma}.\n\nPlanos disponíveis:\n${availPlans}\n\nResponde à pergunta do cliente em 1-2 frases curtas e termina SEMPRE com: "Qual plano preferes? (${choicesStr})"`;
+
         const model = genAI.getGenerativeModel({
           model: 'gemini-2.5-flash',
           systemInstruction: { parts: [{ text: planContext }] }
@@ -920,7 +1167,11 @@ app.post('/', async (req, res) => {
         await sendWhatsAppMessage(senderNum, resAI.response.text());
       } catch (e) {
         console.error('Erro AI plano:', e.message);
-        await sendWhatsAppMessage(senderNum, 'Por favor, escolha um dos planos:\n👤 *Individual*\n👥 *Partilha*\n👨‍👩‍👧 *Família*');
+        // Opcoes dinamicas
+        const fallbackLines = ['Por favor, escolha um dos planos:'];
+        if (CATALOGO[state.serviceKey].planos.individual != null) fallbackLines.push('👤 *Individual*');
+        if (CATALOGO[state.serviceKey].planos.partilha != null) fallbackLines.push('👥 *Partilha*');
+        await sendWhatsAppMessage(senderNum, fallbackLines.join('\n'));
       }
       return res.status(200).send('OK');
     }
@@ -951,4 +1202,4 @@ app.post('/', async (req, res) => {
   }
 });
 
-app.listen(port, '0.0.0.0', () => console.log(`Bot v13.0 (StreamZone - Multi-Slot Fix, Entrega Individual, Colunas Corretas) rodando na porta ${port}`));
+app.listen(port, '0.0.0.0', () => console.log(`Bot v14.1 (StreamZone) rodando na porta ${port}`));
