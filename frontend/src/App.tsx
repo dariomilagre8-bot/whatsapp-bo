@@ -66,6 +66,16 @@ function App() {
       </main>
 
       <CheckoutModal open={modalOpen} onClose={() => setModalOpen(false)} />
+
+      {/* FIX: chatbot widget — redireciona para WhatsApp */}
+      <a
+        href="https://wa.me/244946014060?text=Olá, preciso de ajuda com a StreamZone"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="fixed bottom-6 right-6 z-40 flex items-center gap-2 rounded-full bg-green-600 px-5 py-3 text-sm font-semibold text-white shadow-lg hover:bg-green-700 transition"
+      >
+        <span className="text-lg">💬</span> Precisa de ajuda?
+      </a>
     </div>
   )
 }

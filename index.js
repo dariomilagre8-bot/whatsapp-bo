@@ -3,6 +3,9 @@ const express = require('express');
 const cors = require('cors'); // <--- AQUI ESTÁ O CORS
 const axios = require('axios');
 const https = require('https');
+const multer = require('multer'); // FIX: upload de comprovativos
+const path = require('path');
+const fs = require('fs');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const {
   cleanNumber, todayDate,
@@ -57,6 +60,41 @@ app.post('/api/web-checkout', async (req, res) => {
   } catch (error) {
     console.error('Erro no Web Checkout:', error);
     res.status(500).json({ success: false, message: 'Erro no processamento do pedido.' });
+  }
+});
+
+// FIX: multer config para upload de comprovativos (max 5MB)
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, uploadsDir),
+    filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ['application/pdf', 'image/jpeg', 'image/png', 'image/jpg'];
+    cb(null, allowed.includes(file.mimetype));
+  }
+});
+
+// FIX: rota POST /api/upload-comprovativo — recebe ficheiro + dados do pedido
+app.post('/api/upload-comprovativo', upload.single('comprovativo'), async (req, res) => {
+  try {
+    const { nome, whatsapp, plataforma, plano, quantidade, total } = req.body;
+    const filename = req.file ? req.file.filename : 'sem ficheiro';
+
+    // Notificar supervisor via WhatsApp com resumo do pedido
+    const SUPERVISOR = (process.env.SUPERVISOR_NUMBER || '').split(',')[0].trim().replace(/\D/g, '');
+    if (SUPERVISOR) {
+      const msg = `📎 *COMPROVATIVO VIA SITE*\n👤 ${nome}\n📱 ${whatsapp}\n📦 ${quantidade}x ${plano} ${plataforma}\n💰 Total: ${parseInt(total || 0, 10).toLocaleString('pt')} Kz\n📄 Ficheiro: ${filename}\n\nResponda: *sim* ou *nao*`;
+      await sendWhatsAppMessage(SUPERVISOR, msg);
+    }
+
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('Erro upload comprovativo:', error);
+    res.status(500).json({ success: false, message: 'Erro no upload.' });
   }
 });
 
