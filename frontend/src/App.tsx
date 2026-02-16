@@ -18,21 +18,42 @@ function App() {
           Netflix e Prime Video com entrega imediata via WhatsApp. Escolhe o teu plano e começa a assistir hoje.
         </p>
 
+        {/* FIX: catálogo completo com preços corretos */}
+        <p className="mb-2 text-sm font-semibold text-indigo-400 uppercase tracking-wider">Netflix</p>
+        <div className="mb-6 grid gap-4 sm:grid-cols-3">
+          <div className="rounded-xl border border-white/10 bg-white/5 p-5 backdrop-blur">
+            <p className="text-sm text-gray-400">Individual</p>
+            <p className="mt-1 text-2xl font-bold">5.000 Kz</p>
+            <p className="text-xs text-gray-500">1 perfil</p>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-white/5 p-5 backdrop-blur">
+            <p className="text-sm text-gray-400">Partilha</p>
+            <p className="mt-1 text-2xl font-bold">9.000 Kz</p>
+            <p className="text-xs text-gray-500">2 perfis</p>
+          </div>
+          <div className="rounded-xl border border-white/10 bg-white/5 p-5 backdrop-blur">
+            <p className="text-sm text-gray-400">Família</p>
+            <p className="mt-1 text-2xl font-bold">13.500 Kz</p>
+            <p className="text-xs text-gray-500">3 perfis</p>
+          </div>
+        </div>
+
+        <p className="mb-2 text-sm font-semibold text-indigo-400 uppercase tracking-wider">Prime Video</p>
         <div className="mb-12 grid gap-4 sm:grid-cols-3">
           <div className="rounded-xl border border-white/10 bg-white/5 p-5 backdrop-blur">
-            <p className="text-sm text-gray-400">Netflix Individual</p>
-            <p className="mt-1 text-2xl font-bold">4.500 Kz</p>
-            <p className="text-xs text-gray-500">1 slot</p>
+            <p className="text-sm text-gray-400">Individual</p>
+            <p className="mt-1 text-2xl font-bold">3.000 Kz</p>
+            <p className="text-xs text-gray-500">1 perfil</p>
           </div>
           <div className="rounded-xl border border-white/10 bg-white/5 p-5 backdrop-blur">
-            <p className="text-sm text-gray-400">Netflix Partilha</p>
+            <p className="text-sm text-gray-400">Partilha</p>
             <p className="mt-1 text-2xl font-bold">5.500 Kz</p>
-            <p className="text-xs text-gray-500">2 slots</p>
+            <p className="text-xs text-gray-500">2 perfis</p>
           </div>
           <div className="rounded-xl border border-white/10 bg-white/5 p-5 backdrop-blur">
-            <p className="text-sm text-gray-400">Prime Video Individual</p>
-            <p className="mt-1 text-2xl font-bold">3.500 Kz</p>
-            <p className="text-xs text-gray-500">1 slot</p>
+            <p className="text-sm text-gray-400">Família</p>
+            <p className="mt-1 text-2xl font-bold">8.000 Kz</p>
+            <p className="text-xs text-gray-500">3 perfis</p>
           </div>
         </div>
 

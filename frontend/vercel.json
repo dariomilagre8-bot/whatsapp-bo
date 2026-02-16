@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/api/:path*",
-      "destination": "http://46.224.99.52:3000/api/:path*"
+      "destination": "https://whatssiru.46.224.99.52.nip.io/api/:path*"
     }
   ]
 }

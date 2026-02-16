@@ -1,16 +1,19 @@
 import { useState, type FormEvent } from 'react'
 
-// FIX: proxy via vercel.json rewrites — requests relativos, sem mixed content
+// FIX: catálogo completo com preços corretos (alinhado com backend)
 const CATALOGO = {
   Netflix: {
     planos: [
-      { label: 'Individual — 1 slot — 4.500 Kz', value: 'individual', slots: 1 },
-      { label: 'Partilha — 2 slots — 5.500 Kz', value: 'partilha', slots: 2 },
+      { label: 'Individual — 1 perfil — 5.000 Kz', value: 'individual', slots: 1 },
+      { label: 'Partilha — 2 perfis — 9.000 Kz', value: 'partilha', slots: 2 },
+      { label: 'Família — 3 perfis — 13.500 Kz', value: 'familia', slots: 3 },
     ],
   },
   'Prime Video': {
     planos: [
-      { label: 'Individual — 1 slot — 3.500 Kz', value: 'individual', slots: 1 },
+      { label: 'Individual — 1 perfil — 3.000 Kz', value: 'individual', slots: 1 },
+      { label: 'Partilha — 2 perfis — 5.500 Kz', value: 'partilha', slots: 2 },
+      { label: 'Família — 3 perfis — 8.000 Kz', value: 'familia', slots: 3 },
     ],
   },
 } as const
