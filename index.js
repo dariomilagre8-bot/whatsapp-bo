@@ -70,22 +70,22 @@ console.log('🖥️ Todos os IDs aceites:', ALL_SUPERVISORS);
 console.log('👑 Chefe Principal:', MAIN_BOSS);
 
 // ==================== CATALOGO ====================
-// Precos e planos conforme catalogo real
+// FIX: precos e planos corrigidos conforme catalogo oficial
 const CATALOGO = {
   netflix: {
     nome: 'Netflix',
     emoji: '🎬',
-    planos: { individual: 4500, partilha: 5500 } // FIX: precos corrigidos
+    planos: { individual: 5000, partilha: 9000, familia: 13500 }
   },
-  prime: {
+  prime_video: {
     nome: 'Prime Video',
     emoji: '📺',
-    planos: { individual: 3500 } // FIX: so tem individual
+    planos: { individual: 3000, partilha: 5500, familia: 8000 }
   }
 };
 
-const PLAN_SLOTS = { individual: 1, partilha: 2 };
-const PLAN_RANK = { individual: 1, partilha: 2 };
+const PLAN_SLOTS = { individual: 1, partilha: 2, familia: 3 }; // FIX: familia adicionado
+const PLAN_RANK = { individual: 1, partilha: 2, familia: 3 }; // FIX: familia adicionado
 
 const PAYMENT = {
   titular: 'Braulio Manuel',
@@ -93,7 +93,7 @@ const PAYMENT = {
   multicaixa: '946014060'
 };
 
-const PLAN_PROFILE_TYPE = { individual: 'full_account', partilha: 'shared_profile' };
+const PLAN_PROFILE_TYPE = { individual: 'full_account', partilha: 'shared_profile', familia: 'shared_profile' }; // FIX: familia adicionado
 
 const SUPPORT_KEYWORDS = [
   'não entra', 'nao entra', 'senha errada', 'ajuda', 'travou',
@@ -111,8 +111,9 @@ function formatPriceTable(serviceKey) {
   const svc = CATALOGO[serviceKey];
   if (!svc) return '';
   const lines = [`${svc.emoji} *TABELA ${svc.nome.toUpperCase()}*`];
-  if (svc.planos.individual != null) lines.push(`👤 Individual: ${svc.planos.individual.toLocaleString('pt')} Kz`);
-  if (svc.planos.partilha != null) lines.push(`👥 Partilha: ${svc.planos.partilha.toLocaleString('pt')} Kz`);
+  if (svc.planos.individual != null) lines.push(`👤 Individual (1 perfil): ${svc.planos.individual.toLocaleString('pt')} Kz`);
+  if (svc.planos.partilha != null) lines.push(`👥 Partilha (2 perfis): ${svc.planos.partilha.toLocaleString('pt')} Kz`);
+  if (svc.planos.familia != null) lines.push(`👨‍👩‍👧‍👦 Família (3 perfis): ${svc.planos.familia.toLocaleString('pt')} Kz`); // FIX: familia
   return lines.join('\n');
 }
 
@@ -127,6 +128,7 @@ function findPlan(serviceKey, text) {
   const lower = removeAccents(text.toLowerCase());
   const svc = CATALOGO[serviceKey];
   if (!svc) return null;
+  // FIX: "família" (com acento) também detecta "familia"
   for (const [plan, price] of Object.entries(svc.planos)) {
     if (lower.includes(plan)) return { plan, price };
   }
@@ -141,9 +143,9 @@ function detectServices(text) {
   const hasNetflix = lower.includes('netflix');
   const hasPrime = lower.includes('prime');
 
-  if (both || (hasNetflix && hasPrime)) return ['netflix', 'prime'];
+  if (both || (hasNetflix && hasPrime)) return ['netflix', 'prime_video']; // FIX: prime → prime_video
   if (hasNetflix) return ['netflix'];
-  if (hasPrime) return ['prime'];
+  if (hasPrime) return ['prime_video']; // FIX: prime → prime_video
   return [];
 }
 
@@ -156,10 +158,10 @@ function detectSupportIssue(text) {
 function detectQuantity(text) {
   const lower = removeAccents(text.toLowerCase());
   const patterns = [
-    /(\d+)\s*x\s*(?:plano|planos|unidade|unidades|conta|contas)?\s*(?:de\s+)?(?:individual|partilha)/,
-    /(\d+)\s+(?:plano|planos|unidade|unidades|conta|contas)\s+(?:de\s+)?(?:individual|partilha)/,
-    /(\d+)\s+(?:individual|partilha)/,
-    /(?:quero|preciso|queria)\s+(\d+)\s+(?:plano|planos|unidade|unidades|conta|contas|individual|partilha)/,
+    /(\d+)\s*x\s*(?:plano|planos|unidade|unidades|conta|contas)?\s*(?:de\s+)?(?:individual|partilha|familia)/, // FIX: familia
+    /(\d+)\s+(?:plano|planos|unidade|unidades|conta|contas)\s+(?:de\s+)?(?:individual|partilha|familia)/,
+    /(\d+)\s+(?:individual|partilha|familia)/,
+    /(?:quero|preciso|queria)\s+(\d+)\s+(?:plano|planos|unidade|unidades|conta|contas|individual|partilha|familia)/,
   ];
   for (const pattern of patterns) {
     const match = lower.match(pattern);
@@ -172,28 +174,45 @@ function detectQuantity(text) {
 }
 
 // ==================== PROMPTS GEMINI ====================
-const SYSTEM_PROMPT = `Tu és o Assistente de IA da StreamZone 🤖, uma loja de contas de streaming (Netflix e Prime Video) em Angola.
+// FIX: system prompt reescrito com regras de autonomia e catálogo memorizado
+const SYSTEM_PROMPT = `Tu és o assistente de vendas da StreamZone Connect 🤖. Vendes planos de streaming Netflix e Prime Video em Angola.
+
+CATÁLOGO (memoriza — usa SEMPRE estes preços):
+Netflix:
+  - Individual (1 perfil): 5.000 Kz
+  - Partilha (2 perfis): 9.000 Kz
+  - Família (3 perfis): 13.500 Kz
+Prime Video:
+  - Individual (1 perfil): 3.000 Kz
+  - Partilha (2 perfis): 5.500 Kz
+  - Família (3 perfis): 8.000 Kz
+
+REGRAS ABSOLUTAS:
+1. Se o cliente perguntar preços → responde IMEDIATAMENTE com o catálogo acima. Sem hesitar.
+2. Se o cliente perguntar "o que é Partilha/Família" → explica: "No plano Partilha recebes 2 perfis. No Família recebes 3 perfis para partilhar."
+3. Se o cliente perguntar algo sobre os serviços → responde com base no catálogo. Tu SABES todas as respostas.
+4. NUNCA digas "vou verificar", "vou consultar", "vou perguntar à equipa". Tu tens TODA a informação necessária.
+5. NUNCA peças pagamento, comprovativo ou PDF a menos que o cliente tenha EXPLICITAMENTE confirmado que quer comprar.
+6. NUNCA reveles o IBAN ou dados de pagamento antes do cliente escolher um plano.
+7. NUNCA sugiras serviços que não existem (Disney+, HBO, Spotify, etc.).
+8. Guia a conversa para escolher Netflix ou Prime Video.
+9. Sê caloroso, simpático e profissional. Máximo 2-3 frases por resposta.
+10. Responde sempre em Português.
+11. Redireciona temas fora do contexto para os nossos serviços.`;
+
+// FIX: prompt comprovativo reescrito — sem "verificar com equipa", sem pressionar PDF
+const SYSTEM_PROMPT_COMPROVATIVO = `Tu és o assistente de vendas da StreamZone Connect 🤖. O cliente já escolheu um plano e está na fase de pagamento.
+
+CATÁLOGO (para referência):
+Netflix: Individual 5.000 Kz (1 perfil) | Partilha 9.000 Kz (2 perfis) | Família 13.500 Kz (3 perfis)
+Prime Video: Individual 3.000 Kz (1 perfil) | Partilha 5.500 Kz (2 perfis) | Família 8.000 Kz (3 perfis)
 
 REGRAS:
-- NUNCA reveles o IBAN ou dados de pagamento antes do cliente escolher um plano
-- NUNCA menciones comprovativos ou PDFs antes do pagamento
-- Guia a conversa para escolher Netflix ou Prime Video
-- Sê caloroso, simpático e profissional
-- Responde sempre em Português
-- Máximo 2-3 frases por resposta, curtas e diretas
-- Redireciona temas fora do contexto para os nossos serviços
-- Se o cliente tiver um problema técnico com uma conta existente, responde com empatia e diz que vais verificar`;
-
-const SYSTEM_PROMPT_COMPROVATIVO = `Tu és o Assistente de IA da StreamZone 🤖. O cliente já escolheu um plano e está na fase de pagamento.
-
-REGRAS:
-- Responde a QUALQUER pergunta do cliente de forma curta, simpática e útil (máximo 2 frases)
-- Exemplos: "Quantos perfis?", "Como funciona?", "Posso partilhar?", "É seguro?" — responde sempre!
-- NUNCA inventes dados de pagamento (IBAN, Multicaixa) — o cliente já os recebeu
-- NÃO menciones PDFs, comprovativos ou documentos na tua resposta. Nada de "envie o comprovativo" ou frases parecidas.
-- NÃO exijas nem pressiones o envio de nada. Nada de "Para avançarmos, por favor envie..." ou frases parecidas.
-- Termina SEMPRE a tua resposta com EXATAMENTE esta frase: "Ficarei por aqui a aguardar o seu documento quando lhe for conveniente. 😊"
-- Se não souberes a resposta, diz honestamente que vais verificar com a equipa`;
+- Responde a QUALQUER pergunta do cliente de forma curta, simpática e útil (máximo 2 frases).
+- NUNCA inventes dados de pagamento (IBAN, Multicaixa) — o cliente já os recebeu.
+- NÃO menciones PDFs, comprovativos ou documentos. NÃO pressiones o envio de nada.
+- NUNCA digas "vou verificar", "vou consultar" ou "vou perguntar à equipa". Tu SABES as respostas.
+- Termina com: "Estou aqui se precisares de mais alguma coisa! 😊"`;
 
 // ==================== ESTADOS ====================
 const chatHistories = {};
@@ -332,8 +351,8 @@ async function sendPaymentMessages(number, state) {
   // MSG5: Titular
   await sendWhatsAppMessage(number, `👤 *Titular:* ${PAYMENT.titular}`);
 
-  // MSG6: Instrução suave (sem pressão)
-  await sendWhatsAppMessage(number, 'Ficarei por aqui a aguardar o seu documento quando lhe for conveniente. 😊');
+  // MSG6: Instrução suave (sem pressão) — FIX: removida frase "aguardar o documento"
+  await sendWhatsAppMessage(number, 'Quando fizeres o pagamento, envia o comprovativo em PDF por aqui. 😊');
 }
 
 // ==================== INICIALIZAR ESTADO DO CLIENTE ====================
@@ -866,7 +885,7 @@ app.post('/', async (req, res) => {
           await sendWhatsAppMessage(senderNum, aiText);
         } catch (e) {
           console.error('Erro AI comprovativo:', e.message);
-          await sendWhatsAppMessage(senderNum, 'Ficarei por aqui a aguardar o seu documento quando lhe for conveniente. 😊');
+          await sendWhatsAppMessage(senderNum, 'Estou aqui se precisares de mais alguma coisa! 😊'); // FIX: removida frase "aguardar o documento"
         }
         return res.status(200).send('OK');
       }
@@ -920,7 +939,7 @@ app.post('/', async (req, res) => {
       const existing = await checkClientInSheet(senderNum);
       console.log(`🔍 DEBUG: checkClientInSheet resultado:`, existing ? 'ENCONTRADO' : 'NAO ENCONTRADO');
       if (existing) {
-        const svcKey = existing.plataforma.toLowerCase().includes('netflix') ? 'netflix' : 'prime';
+        const svcKey = existing.plataforma.toLowerCase().includes('netflix') ? 'netflix' : 'prime_video'; // FIX: prime → prime_video
         const nome = existing.clienteName || pushName || '';
         state.clientName = nome;
         state.serviceKey = svcKey;
@@ -1171,6 +1190,7 @@ app.post('/', async (req, res) => {
         const fallbackLines = ['Por favor, escolha um dos planos:'];
         if (CATALOGO[state.serviceKey].planos.individual != null) fallbackLines.push('👤 *Individual*');
         if (CATALOGO[state.serviceKey].planos.partilha != null) fallbackLines.push('👥 *Partilha*');
+        if (CATALOGO[state.serviceKey].planos.familia != null) fallbackLines.push('👨‍👩‍👧‍👦 *Família*'); // FIX: familia
         await sendWhatsAppMessage(senderNum, fallbackLines.join('\n'));
       }
       return res.status(200).send('OK');
