@@ -1491,5 +1491,235 @@ app.post('/', async (req, res) => {
     res.status(200).send('Erro');
   }
 });
+// ==================== ADMIN DASHBOARD ENDPOINTS ====================
+// Adicionar ao index.js do bot, antes do app.listen(...)
+//
+// No ficheiro .env adicionar:
+//   ADMIN_SECRET=uma_password_forte_aqui
+//
+// ====================================================================
+
+const ADMIN_SECRET = process.env.ADMIN_SECRET || 'streamzone-admin-2024';
+
+// Middleware de autenticação para rotas admin
+function requireAdmin(req, res, next) {
+  const auth = req.headers['x-admin-secret'] || req.query.secret;
+  if (auth !== ADMIN_SECRET) {
+    return res.status(401).json({ success: false, message: 'Não autorizado.' });
+  }
+  next();
+}
+
+// GET /api/admin/stats — métricas gerais
+app.get('/api/admin/stats', requireAdmin, async (req, res) => {
+  try {
+    const pendingCount = Object.keys(pendingVerifications).length;
+    const activeChats = Object.values(clientStates).filter(s => s.step !== 'inicio').length;
+    const lostSalesTotal = lostSales.length;
+    const lostSalesPending = lostSales.filter(s => !s.recovered).length;
+
+    // Calcular valor em risco (pedidos pendentes)
+    let valorEmRisco = 0;
+    for (const pv of Object.values(pendingVerifications)) {
+      valorEmRisco += pv.totalValor || 0;
+    }
+
+    res.json({
+      success: true,
+      stats: {
+        pendingCount,
+        activeChats,
+        lostSalesTotal,
+        lostSalesPending,
+        valorEmRisco,
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// GET /api/admin/pending — pedidos pendentes de aprovação
+app.get('/api/admin/pending', requireAdmin, async (req, res) => {
+  try {
+    const pending = Object.entries(pendingVerifications).map(([phone, pv]) => ({
+      phone,
+      clientName: pv.clientName || '',
+      cart: pv.cart || [],
+      totalValor: pv.totalValor || 0,
+      timestamp: pv.timestamp || Date.now(),
+      fromWebsite: pv.fromWebsite || false,
+    }));
+    res.json({ success: true, pending });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// POST /api/admin/approve — aprovar pedido
+app.post('/api/admin/approve', requireAdmin, async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ success: false, message: 'Número obrigatório.' });
+
+    const pedido = pendingVerifications[phone];
+    if (!pedido) return res.status(404).json({ success: false, message: 'Pedido não encontrado.' });
+
+    // Reutilizar a lógica de aprovação existente — simular mensagem "sim" do supervisor
+    // Processar entrega directamente
+    const results = [];
+    let allSuccess = true;
+
+    for (const item of pedido.cart) {
+      const totalSlots = item.totalSlots || item.slotsNeeded;
+      const profileType = PLAN_PROFILE_TYPE[item.plan.toLowerCase()] || 'shared_profile';
+      let profiles = null;
+
+      if (item.isRenewal) {
+        const platProfiles = await findClientProfiles(phone, item.plataforma);
+        if (platProfiles && platProfiles.length > 0) {
+          profiles = platProfiles.map(p => ({ ...p, isRenewal: true }));
+        }
+      } else {
+        profiles = await findAvailableProfiles(item.plataforma, totalSlots, profileType);
+        if (!profiles) {
+          const altType = profileType === 'full_account' ? 'shared_profile' : 'full_account';
+          profiles = await findAvailableProfiles(item.plataforma, totalSlots, altType);
+        }
+      }
+
+      if (profiles && profiles.length > 0) {
+        results.push({ item, profiles, success: true });
+      } else {
+        results.push({ item, profiles: null, success: false });
+        allSuccess = false;
+      }
+    }
+
+    if (results.some(r => r.success)) {
+      await sendWhatsAppMessage(phone, '✅ *Pagamento confirmado!*\n\nAqui estão os dados da sua conta 😊');
+
+      for (const result of results) {
+        if (!result.success) continue;
+        const profs = result.profiles;
+        const qty = result.item.quantity || 1;
+        const svcEmoji = result.item.plataforma.toLowerCase().includes('netflix') ? '🎬' : '📺';
+        const planLower = result.item.plan.toLowerCase();
+        const slotsPerUnit = PLAN_SLOTS[planLower] || 1;
+        const qtyLabel = qty > 1 ? ` (${qty}x ${result.item.plan})` : '';
+        let entrega = `${svcEmoji} *${result.item.plataforma}*${qtyLabel}\n`;
+
+        if (slotsPerUnit > 1 && profs.length >= slotsPerUnit) {
+          for (let unitIdx = 0; unitIdx < qty; unitIdx++) {
+            if (qty > 1) entrega += `\n📦 *Conta ${unitIdx + 1}:*`;
+            const startIdx = unitIdx * slotsPerUnit;
+            const endIdx = Math.min(startIdx + slotsPerUnit, profs.length);
+            for (let i = startIdx; i < endIdx; i++) {
+              const pNum = (i - startIdx) + 1;
+              entrega += `\n✅ Perfil ${pNum}: ${profs[i].email} | ${profs[i].senha}`;
+              if (profs[i].nomePerfil) entrega += ` | ${profs[i].nomePerfil}`;
+              if (profs[i].pin) entrega += ` | PIN: ${profs[i].pin}`;
+            }
+          }
+        } else {
+          for (let i = 0; i < profs.length; i++) {
+            entrega += `\n✅ Perfil ${i + 1}: ${profs[i].email} | ${profs[i].senha}`;
+            if (profs[i].nomePerfil) entrega += ` | ${profs[i].nomePerfil}`;
+            if (profs[i].pin) entrega += ` | PIN: ${profs[i].pin}`;
+          }
+        }
+
+        await sendWhatsAppMessage(phone, entrega);
+
+        for (const p of profs) {
+          if (p.isRenewal) {
+            await updateSheetCell(p.rowIndex, 'H', todayDate());
+          } else {
+            await markProfileSold(p.rowIndex, pedido.clientName || '', phone, 1);
+          }
+        }
+      }
+
+      await sendWhatsAppMessage(phone, 'Obrigado por escolheres a StreamZone! 🎉\nQualquer dúvida, estamos aqui. 😊');
+    }
+
+    delete pendingVerifications[phone];
+    if (clientStates[phone]) {
+      const savedName = clientStates[phone].clientName;
+      clientStates[phone] = initClientState({ clientName: savedName, step: 'escolha_servico' });
+    }
+
+    res.json({ success: true, allSuccess, message: allSuccess ? 'Entrega realizada.' : 'Entrega parcial — verificar stock.' });
+  } catch (e) {
+    console.error('Erro admin approve:', e);
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// POST /api/admin/reject — rejeitar pedido
+app.post('/api/admin/reject', requireAdmin, async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ success: false, message: 'Número obrigatório.' });
+
+    const pedido = pendingVerifications[phone];
+    if (!pedido) return res.status(404).json({ success: false, message: 'Pedido não encontrado.' });
+
+    await sendWhatsAppMessage(phone, '❌ Comprovativo inválido. Por favor, envie o comprovativo de pagamento em formato PDF. 📄');
+    if (clientStates[phone]) clientStates[phone].step = 'aguardando_comprovativo';
+    delete pendingVerifications[phone];
+
+    res.json({ success: true, message: 'Pedido rejeitado e cliente notificado.' });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// GET /api/admin/lost-sales — vendas perdidas
+app.get('/api/admin/lost-sales', requireAdmin, async (req, res) => {
+  try {
+    res.json({ success: true, lostSales });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// POST /api/admin/recover — recuperar venda perdida
+app.post('/api/admin/recover', requireAdmin, async (req, res) => {
+  try {
+    const { saleId, message: customMsg } = req.body;
+    const sale = lostSales.find(s => s.id === saleId && !s.recovered);
+    if (!sale) return res.status(404).json({ success: false, message: 'Venda não encontrada ou já recuperada.' });
+
+    sale.recovered = true;
+    delete pausedClients[sale.phone];
+    clientStates[sale.phone] = initClientState({ step: 'escolha_servico', clientName: sale.clientName });
+
+    const msg = customMsg || `Olá${sale.clientName ? ' ' + sale.clientName : ''}! 😊 Notámos que ficou interessado nos nossos serviços. Ainda podemos ajudar?\n\n🎬 *Netflix*\n📺 *Prime Video*`;
+    await sendWhatsAppMessage(sale.phone, msg);
+
+    res.json({ success: true, message: `Cliente ${sale.phone} re-contactado.` });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// GET /api/admin/stock — estado do stock (lê da Google Sheet)
+app.get('/api/admin/stock', requireAdmin, async (req, res) => {
+  try {
+    const stockData = {};
+    for (const [key, svc] of Object.entries(CATALOGO)) {
+      const count = await countAvailableProfiles(svc.nome, 'shared_profile');
+      stockData[key] = {
+        nome: svc.nome,
+        emoji: svc.emoji,
+        available: count || 0,
+      };
+    }
+    res.json({ success: true, stock: stockData });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
 
 app.listen(port, '0.0.0.0', () => console.log(`Bot v15.0 (StreamZone) rodando na porta ${port}`));
