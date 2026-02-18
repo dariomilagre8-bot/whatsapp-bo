@@ -30,6 +30,7 @@ app.post('/api/web-checkout', async (req, res) => {
     const totalSlots = parseInt(slots, 10);
     const pType = PLAN_PROFILE_TYPE[plano.toLowerCase()] || 'shared_profile';
 
+    // Verificar stock (sem marcar como vendido — só verificação)
     const profiles = await findAvailableProfiles(plataforma, totalSlots, pType);
     
     if (!profiles || profiles.length < totalSlots) {
@@ -38,19 +39,20 @@ app.post('/api/web-checkout', async (req, res) => {
       const pricePerUnit = svcInfo.planos ? (svcInfo.planos[plano.toLowerCase()] || 0) : 0;
       const valorEmRisco = pricePerUnit * parseInt(slots, 10);
       if (MAIN_BOSS) {
-        await sendWhatsAppMessage(MAIN_BOSS, `⚠️ STOCK INSUFICIENTE — Ação necessária\n\n📋 Resumo:\n- Cliente (via site): ${nome} / ${whatsapp}\n- Pedido: ${slots}x ${plano} ${plataforma}\n- Slots necessários: ${totalSlots}\n- Slots disponíveis: ${availableSlots}\n- Valor da venda em risco: ${valorEmRisco.toLocaleString('pt')} Kz\n\n🔧 Opções:\n1. Repor stock → responder "reposto ${whatsapp.replace(/\D/g, '')}"\n2. Cancelar → responder "cancelar ${whatsapp.replace(/\D/g, '')}"`);
+        await sendWhatsAppMessage(MAIN_BOSS, `⚠️ STOCK INSUFICIENTE — Ação necessária\n\n📋 Resumo:\n- Cliente (via site): ${nome} / ${whatsapp}\n- Pedido: ${slots}x ${plano} ${plataforma}\n- Slots necessários: ${totalSlots}\n- Slots disponíveis: ${availableSlots}\n- Valor da venda em risco: ${valorEmRisco.toLocaleString('pt')} Kz\n\n🔧 Opções:\n1. Repor stock → responder "reposto ${(whatsapp || '').replace(/\D/g, '')}"\n2. Cancelar → responder "cancelar ${(whatsapp || '').replace(/\D/g, '')}"`);
       }
       return res.status(400).json({ success: false, message: `Sem stock suficiente. Disponível: ${availableSlots}/${totalSlots}` });
     }
 
-    for (const p of profiles) {
-      await markProfileSold(p.rowIndex, nome, whatsapp, 1);
-    }
+    // FIX: NÃO marcar como vendido aqui — só quando o supervisor aprovar
+    // Os perfis serão reservados na aprovação (comando "sim")
 
     if (MAIN_BOSS) {
-      const alerta = `🚀 *VENDA VIA SITE*\n👤 ${nome}\n📱 ${whatsapp}\n📦 ${plataforma} ${plano}\n🔢 ${totalSlots} slots reservados.`;
+      const alerta = `🚀 *VENDA VIA SITE*\n👤 ${nome}\n📱 ${whatsapp}\n📦 ${plataforma} ${plano}\n🔢 ${totalSlots} slots (stock verificado, aguarda comprovativo).`;
       await sendWhatsAppMessage(MAIN_BOSS, alerta);
     }
+
+    console.log(`🌐 SITE: Stock verificado OK para ${whatsapp} — ${plano} ${plataforma} (${totalSlots} slots)`);
 
     res.status(200).json({ success: true, message: 'Pedido registado com sucesso!' });
   } catch (error) {
@@ -78,11 +80,57 @@ app.post('/api/upload-comprovativo', upload.single('comprovativo'), async (req, 
   try {
     const { nome, whatsapp, plataforma, plano, quantidade, total } = req.body;
     const filename = req.file ? req.file.filename : 'sem ficheiro';
+    const cleanWhatsapp = (whatsapp || '').replace(/\D/g, '');
+    const qty = parseInt(quantidade || 1, 10);
+    const totalVal = parseInt(total || 0, 10);
 
-    const SUPERVISOR = (process.env.SUPERVISOR_NUMBER || '').split(',')[0].trim().replace(/\D/g, '');
-    if (SUPERVISOR) {
-      const msg = `📎 *COMPROVATIVO VIA SITE*\n👤 ${nome}\n📱 ${whatsapp}\n📦 ${quantidade}x ${plano} ${plataforma}\n💰 Total: ${parseInt(total || 0, 10).toLocaleString('pt')} Kz\n📄 Ficheiro: ${filename}\n\nResponda: *sim* ou *nao*`;
-      await sendWhatsAppMessage(SUPERVISOR, msg);
+    // Detectar serviceKey e dados do plano
+    const serviceKey = plataforma.toLowerCase().includes('netflix') ? 'netflix' : 'prime_video';
+    const svc = CATALOGO[serviceKey];
+    const planLower = (plano || '').toLowerCase();
+    const price = svc ? (svc.planos[planLower] || 0) : 0;
+    const slotsPerUnit = PLAN_SLOTS[planLower] || 1;
+    const totalSlots = slotsPerUnit * qty;
+    const planLabel = plano.charAt(0).toUpperCase() + plano.slice(1);
+
+    // FIX: Registar o pedido em pendingVerifications e clientStates
+    // para que o supervisor possa aprovar com "sim"
+    clientStates[cleanWhatsapp] = initClientState({
+      step: 'esperando_supervisor',
+      clientName: nome || '',
+      serviceKey: serviceKey,
+      plataforma: plataforma,
+      plano: planLabel,
+      valor: totalVal,
+      totalValor: totalVal,
+      cart: [{
+        serviceKey: serviceKey,
+        plataforma: plataforma,
+        plan: planLabel,
+        price: price,
+        quantity: qty,
+        slotsNeeded: slotsPerUnit,
+        totalSlots: totalSlots,
+        totalPrice: totalVal
+      }]
+    });
+
+    pendingVerifications[cleanWhatsapp] = {
+      cart: clientStates[cleanWhatsapp].cart,
+      clientName: nome || '',
+      isRenewal: false,
+      totalValor: totalVal,
+      timestamp: Date.now(),
+      fromWebsite: true
+    };
+
+    console.log(`🌐 SITE: Pedido registado para ${cleanWhatsapp} (${nome}) — ${qty}x ${planLabel} ${plataforma}`);
+    console.log(`🌐 SITE: pendingVerifications keys: [${Object.keys(pendingVerifications).join(', ')}]`);
+
+    // Notificar supervisor com número do cliente para fácil aprovação
+    if (MAIN_BOSS) {
+      const msg = `📎 *COMPROVATIVO VIA SITE*\n👤 ${nome}\n📱 ${cleanWhatsapp}\n📦 ${qty > 1 ? qty + 'x ' : ''}${planLabel} ${plataforma}\n💰 Total: ${totalVal.toLocaleString('pt')} Kz\n📄 Ficheiro: ${filename}\n\nResponda: *sim* ou *nao*`;
+      await sendWhatsAppMessage(MAIN_BOSS, msg);
     }
 
     res.status(200).json({ success: true });
