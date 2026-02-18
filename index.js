@@ -23,6 +23,104 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // ==================== CONFIGURACOES ====================
 
+// ==================== API PÚBLICA DO SITE ====================
+
+// Endpoint: catálogo de preços (site busca daqui — não há mais hardcode)
+app.get('/api/catalogo', (req, res) => {
+  const catalogo = Object.entries(CATALOGO).map(([key, svc]) => ({
+    key,
+    nome: svc.nome,
+    emoji: svc.emoji,
+    planos: Object.entries(svc.planos).map(([plano, preco]) => ({
+      plano,
+      preco,
+      slots: PLAN_SLOTS[plano] || 1,
+      label: plano.charAt(0).toUpperCase() + plano.slice(1)
+    }))
+  }));
+  res.json({ success: true, catalogo, pagamento: PAYMENT });
+});
+
+// Endpoint: chat com IA real (Gemini) para o widget do site
+// Mantém histórico por sessão via sessionId (cookie / localStorage do browser)
+const webChatHistories = {};
+
+app.post('/api/chat', async (req, res) => {
+  try {
+    const { message, sessionId } = req.body;
+    if (!message || !sessionId) {
+      return res.status(400).json({ success: false, reply: 'Mensagem inválida.' });
+    }
+
+    // Limitar sessões em memória (max 500, remove as mais antigas)
+    const sessions = Object.keys(webChatHistories);
+    if (sessions.length > 500) {
+      delete webChatHistories[sessions[0]];
+    }
+
+    if (!webChatHistories[sessionId]) {
+      webChatHistories[sessionId] = { history: [], createdAt: Date.now() };
+    }
+
+    const session = webChatHistories[sessionId];
+
+    // Limpar sessões com mais de 2 horas
+    if (Date.now() - session.createdAt > 2 * 60 * 60 * 1000) {
+      webChatHistories[sessionId] = { history: [], createdAt: Date.now() };
+    }
+
+    const WEB_CHAT_PROMPT = `Tu és o assistente de vendas da StreamZone Connect 🤖, integrado no site oficial.
+Vendes planos de streaming Netflix e Prime Video em Angola.
+
+CATÁLOGO ACTUALIZADO:
+Netflix:
+  - Individual (1 perfil): ${CATALOGO.netflix.planos.individual.toLocaleString('pt')} Kz
+  - Partilha (2 perfis): ${CATALOGO.netflix.planos.partilha.toLocaleString('pt')} Kz
+  - Família (3 perfis): ${CATALOGO.netflix.planos.familia.toLocaleString('pt')} Kz
+
+Prime Video:
+  - Individual (1 perfil): ${CATALOGO.prime_video.planos.individual.toLocaleString('pt')} Kz
+  - Partilha (2 perfis): ${CATALOGO.prime_video.planos.partilha.toLocaleString('pt')} Kz
+  - Família (3 perfis): ${CATALOGO.prime_video.planos.familia.toLocaleString('pt')} Kz
+
+PAGAMENTO:
+  - IBAN: ${PAYMENT.iban} (${PAYMENT.titular})
+  - Multicaixa Express: ${PAYMENT.multicaixa}
+  - Após pagamento: enviar comprovativo em PDF pelo site ou WhatsApp
+
+REGRAS:
+1. Responde SEMPRE em Português, máximo 3 frases curtas.
+2. Se o cliente quiser comprar → diz "Clica no botão do plano que escolheres para fazer a compra! 🛒"
+3. NUNCA inventes serviços (Disney+, HBO, Spotify, etc.)
+4. Sê simpático, directo e útil.
+5. Se a pergunta for complexa ou reclamação → sugere contacto via WhatsApp.`;
+
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.5-flash',
+      systemInstruction: { parts: [{ text: WEB_CHAT_PROMPT }] }
+    });
+
+    const chat = model.startChat({ history: session.history });
+    const result = await chat.sendMessage(message);
+    const reply = result.response.text();
+
+    // Guardar histórico (máximo 20 turnos = 10 pares)
+    session.history.push({ role: 'user', parts: [{ text: message }] });
+    session.history.push({ role: 'model', parts: [{ text: reply }] });
+    if (session.history.length > 20) {
+      session.history = session.history.slice(-20);
+    }
+
+    res.json({ success: true, reply });
+  } catch (error) {
+    console.error('Erro /api/chat:', error.message);
+    res.status(500).json({
+      success: false,
+      reply: 'De momento não consigo responder. Contacta-nos via WhatsApp! 😊'
+    });
+  }
+});
+
 // Rota de Integração com o Site (Lovable)
 app.post('/api/web-checkout', async (req, res) => {
   try {
