@@ -7,6 +7,9 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { Resend } = require('resend');
+
+const resend = new Resend(process.env.RESEND_API_KEY);
 const {
   cleanNumber, todayDate,
   updateSheetCell, markProfileSold, markProfileAvailable,
@@ -124,7 +127,7 @@ REGRAS:
 // Rota de Integração com o Site (Lovable)
 app.post('/api/web-checkout', async (req, res) => {
   try {
-    const { nome, whatsapp, plataforma, plano, slots } = req.body;
+    const { nome, whatsapp, email, plataforma, plano, slots } = req.body;
     const totalSlots = parseInt(slots, 10);
     const pType = PLAN_PROFILE_TYPE[plano.toLowerCase()] || 'shared_profile';
 
@@ -146,7 +149,7 @@ app.post('/api/web-checkout', async (req, res) => {
     // Os perfis serão reservados na aprovação (comando "sim")
 
     if (MAIN_BOSS) {
-      const alerta = `🚀 *VENDA VIA SITE*\n👤 ${nome}\n📱 ${whatsapp}\n📦 ${plataforma} ${plano}\n🔢 ${totalSlots} slots (stock verificado, aguarda comprovativo).`;
+      const alerta = `🚀 *VENDA VIA SITE*\n👤 ${nome}\n📱 ${whatsapp}${email ? '\n📧 ' + email : ''}\n📦 ${plataforma} ${plano}\n🔢 ${totalSlots} slots (stock verificado, aguarda comprovativo).`;
       await sendWhatsAppMessage(MAIN_BOSS, alerta);
     }
 
@@ -176,7 +179,7 @@ const upload = multer({
 
 app.post('/api/upload-comprovativo', upload.single('comprovativo'), async (req, res) => {
   try {
-    const { nome, whatsapp, plataforma, plano, quantidade, total } = req.body;
+    const { nome, whatsapp, email, plataforma, plano, quantidade, total } = req.body;
     const filename = req.file ? req.file.filename : 'sem ficheiro';
     const cleanWhatsapp = (whatsapp || '').replace(/\D/g, '');
     const qty = parseInt(quantidade || 1, 10);
@@ -191,11 +194,12 @@ app.post('/api/upload-comprovativo', upload.single('comprovativo'), async (req, 
     const totalSlots = slotsPerUnit * qty;
     const planLabel = plano.charAt(0).toUpperCase() + plano.slice(1);
 
-    // FIX: Registar o pedido em pendingVerifications e clientStates
+    // Registar o pedido em pendingVerifications e clientStates
     // para que o supervisor possa aprovar com "sim"
     clientStates[cleanWhatsapp] = initClientState({
       step: 'esperando_supervisor',
       clientName: nome || '',
+      clientEmail: email || '',
       serviceKey: serviceKey,
       plataforma: plataforma,
       plano: planLabel,
@@ -216,6 +220,7 @@ app.post('/api/upload-comprovativo', upload.single('comprovativo'), async (req, 
     pendingVerifications[cleanWhatsapp] = {
       cart: clientStates[cleanWhatsapp].cart,
       clientName: nome || '',
+      clientEmail: email || '',
       isRenewal: false,
       totalValor: totalVal,
       timestamp: Date.now(),
@@ -227,7 +232,8 @@ app.post('/api/upload-comprovativo', upload.single('comprovativo'), async (req, 
 
     // Notificar supervisor com número do cliente para fácil aprovação
     if (MAIN_BOSS) {
-      const msg = `📎 *COMPROVATIVO VIA SITE*\n👤 ${nome}\n📱 ${cleanWhatsapp}\n📦 ${qty > 1 ? qty + 'x ' : ''}${planLabel} ${plataforma}\n💰 Total: ${totalVal.toLocaleString('pt')} Kz\n📄 Ficheiro: ${filename}\n\nResponda: *sim* ou *nao*`;
+      const emailLine = email ? `\n📧 ${email}` : '';
+      const msg = `📎 *COMPROVATIVO VIA SITE*\n👤 ${nome}\n📱 ${cleanWhatsapp}${emailLine}\n📦 ${qty > 1 ? qty + 'x ' : ''}${planLabel} ${plataforma}\n💰 Total: ${totalVal.toLocaleString('pt')} Kz\n📄 Ficheiro: ${filename}\n\nResponda: *sim* ou *nao*`;
       await sendWhatsAppMessage(MAIN_BOSS, msg);
     }
 
@@ -382,6 +388,72 @@ REGRAS:
 - NUNCA digas "vou verificar", "vou consultar" ou "vou perguntar à equipa". Tu SABES as respostas.
 - Termina com: "Estou aqui se precisares de mais alguma coisa! 😊"`;
 
+// ==================== EMAIL (RESEND) ====================
+async function sendCredentialsEmail(toEmail, clientName, cartItems, credentialsList) {
+  if (!toEmail || !process.env.RESEND_API_KEY) return;
+
+  const itemsHtml = cartItems.map(item => {
+    const qty = item.quantity || 1;
+    const qtyLabel = qty > 1 ? `${qty}x ` : '';
+    return `<li><strong>${qtyLabel}${item.plataforma} — ${item.plan}</strong>: ${(item.totalPrice || item.price).toLocaleString('pt')} Kz</li>`;
+  }).join('');
+
+  const credsHtml = credentialsList.map(cred => `
+    <div style="background:#f4f4f4;border-radius:8px;padding:12px 16px;margin:8px 0;">
+      <p style="margin:0;font-size:15px;">🎬 <strong>${cred.plataforma}</strong></p>
+      ${cred.profiles.map((p, i) => `
+        <p style="margin:6px 0 0;font-size:14px;">
+          ✅ <strong>Perfil ${i + 1}:</strong> ${p.email} | ${p.senha}
+          ${p.nomePerfil ? `| ${p.nomePerfil}` : ''}
+          ${p.pin ? `| PIN: ${p.pin}` : ''}
+        </p>
+      `).join('')}
+    </div>
+  `).join('');
+
+  const html = `
+    <!DOCTYPE html>
+    <html lang="pt">
+    <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+    <body style="font-family:Arial,sans-serif;background:#fff;color:#222;max-width:580px;margin:0 auto;padding:24px;">
+      <div style="text-align:center;margin-bottom:24px;">
+        <h1 style="color:#e50914;font-size:28px;margin:0;">StreamZone Connect</h1>
+        <p style="color:#555;margin:4px 0 0;">Os teus acessos de streaming</p>
+      </div>
+
+      <p>Olá <strong>${clientName || 'Cliente'}</strong>! 🎉</p>
+      <p>O teu pagamento foi confirmado. Aqui estão os detalhes da tua compra:</p>
+
+      <ul style="padding-left:20px;line-height:1.8;">${itemsHtml}</ul>
+
+      <h3 style="border-bottom:2px solid #e50914;padding-bottom:6px;">🔑 Dados de Acesso</h3>
+      ${credsHtml}
+
+      <div style="background:#fff8e1;border-left:4px solid #ffc107;padding:12px 16px;margin:20px 0;border-radius:4px;">
+        <p style="margin:0;font-size:13px;">⚠️ <strong>Importante:</strong> Não partilhes estes dados com ninguém. Em caso de problema, contacta-nos pelo WhatsApp.</p>
+      </div>
+
+      <p style="text-align:center;color:#888;font-size:12px;margin-top:32px;">
+        StreamZone Connect · Angola<br>
+        Este email foi gerado automaticamente. Não responda a este endereço.
+      </p>
+    </body>
+    </html>
+  `;
+
+  try {
+    await resend.emails.send({
+      from: process.env.RESEND_FROM || 'StreamZone <noreply@streamzone.ao>',
+      to: toEmail,
+      subject: '✅ StreamZone — Os teus dados de acesso',
+      html,
+    });
+    console.log(`📧 Email de credenciais enviado para ${toEmail}`);
+  } catch (e) {
+    console.error('❌ Erro ao enviar email Resend:', e.message);
+  }
+}
+
 // ==================== ESTADOS ====================
 const chatHistories = {};
 const clientStates = {};
@@ -515,6 +587,7 @@ function initClientState(extra) {
   return {
     step: 'inicio',
     clientName: '',
+    clientEmail: '',
     isRenewal: false,
     interestStack: [],
     currentItemIndex: 0,
@@ -951,6 +1024,14 @@ app.post('/', async (req, res) => {
             // Envia fecho + pergunta se precisa de mais alguma coisa
             // =====================================================================
             await sendWhatsAppMessage(targetClient, 'Obrigado por escolheres a StreamZone! 🎉\nQualquer dúvida, estamos aqui para ajudar. 😊\n\nPrecisas de mais alguma coisa?');
+
+            // Enviar credenciais por email (se disponível)
+            if (pedido.clientEmail) {
+              const credentialsList = results
+                .filter(r => r.success)
+                .map(r => ({ plataforma: r.item.plataforma, profiles: r.profiles }));
+              await sendCredentialsEmail(pedido.clientEmail, pedido.clientName, pedido.cart, credentialsList);
+            }
           }
 
           // =====================================================================
@@ -1192,6 +1273,7 @@ app.post('/', async (req, res) => {
         pendingVerifications[senderNum] = {
           cart: state.cart,
           clientName: state.clientName || '',
+          clientEmail: state.clientEmail || '',
           isRenewal: state.isRenewal || false,
           totalValor: state.totalValor,
           timestamp: Date.now()
