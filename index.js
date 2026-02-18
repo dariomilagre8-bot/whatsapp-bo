@@ -124,7 +124,7 @@ const PAYMENT = {
   multicaixa: '946014060'
 };
 
-const PLAN_PROFILE_TYPE = { individual: 'full_account', partilha: 'shared_profile', familia: 'shared_profile' };
+const PLAN_PROFILE_TYPE = { individual: 'shared_profile', partilha: 'shared_profile', familia: 'shared_profile' };
 
 const SUPPORT_KEYWORDS = [
   'não entra', 'nao entra', 'senha errada', 'ajuda', 'travou',
