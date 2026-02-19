@@ -2,11 +2,13 @@ require('dotenv').config();
 
 // ==================== SENTRY ====================
 const Sentry = require('@sentry/node');
-Sentry.init({
-  dsn: process.env.SENTRY_DSN,
-  environment: process.env.NODE_ENV || 'production',
-  tracesSampleRate: 1.0,
-});
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV || 'production',
+    tracesSampleRate: 1.0,
+  });
+}
 // ================================================
 
 const express = require('express');
@@ -23,10 +25,6 @@ const {
   checkClientInSheet, findAvailableProfile, findAvailableProfiles, findClientProfiles,
   hasAnyStock, countAvailableProfiles, appendLostSale,
 } = require('./googleSheets');
-const Sentry = require('@sentry/node');
-if (process.env.SENTRY_DSN) {
-  Sentry.init({ dsn: process.env.SENTRY_DSN });
-}
 
 // ==================== EMAIL (RESEND) ====================
 // npm install resend   →   adiciona ao package.json
