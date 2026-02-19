@@ -1566,4 +1566,128 @@ app.post('/', async (req, res) => {
   }
 });
 
+// ==================== ADMIN DASHBOARD ENDPOINTS ====================
+const ADMIN_SECRET = process.env.ADMIN_SECRET || 'streamzone-admin-2024';
+
+function requireAdmin(req, res, next) {
+  const auth = req.headers['x-admin-secret'] || req.query.secret;
+  if (auth !== ADMIN_SECRET) {
+    return res.status(401).json({ success: false, message: 'Não autorizado.' });
+  }
+  next();
+}
+
+app.get('/api/admin/stats', requireAdmin, async (req, res) => {
+  try {
+    const pendingCount = Object.keys(pendingVerifications).length;
+    const activeChats = Object.values(clientStates).filter(s => s.step !== 'inicio').length;
+    const lostSalesTotal = lostSales.length;
+    const lostSalesPending = lostSales.filter(s => !s.recovered).length;
+    let valorEmRisco = 0;
+    for (const pv of Object.values(pendingVerifications)) valorEmRisco += pv.totalValor || 0;
+    res.json({ success: true, stats: { pendingCount, activeChats, lostSalesTotal, lostSalesPending, valorEmRisco } });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+app.get('/api/admin/pending', requireAdmin, async (req, res) => {
+  try {
+    const pending = Object.entries(pendingVerifications).map(([phone, pv]) => ({
+      phone, clientName: pv.clientName || '', cart: pv.cart || [],
+      totalValor: pv.totalValor || 0, timestamp: pv.timestamp || Date.now(), fromWebsite: pv.fromWebsite || false,
+    }));
+    res.json({ success: true, pending });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+app.post('/api/admin/approve', requireAdmin, async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ success: false, message: 'Número obrigatório.' });
+    const pedido = pendingVerifications[phone];
+    if (!pedido) return res.status(404).json({ success: false, message: 'Pedido não encontrado.' });
+    const results = [];
+    for (const item of pedido.cart) {
+      const totalSlots = item.totalSlots || item.slotsNeeded;
+      const profileType = PLAN_PROFILE_TYPE[item.plan.toLowerCase()] || 'shared_profile';
+      let profiles = await findAvailableProfiles(item.plataforma, totalSlots, profileType);
+      if (!profiles) {
+        const altType = profileType === 'full_account' ? 'shared_profile' : 'full_account';
+        profiles = await findAvailableProfiles(item.plataforma, totalSlots, altType);
+      }
+      results.push({ item, profiles, success: !!(profiles && profiles.length > 0) });
+    }
+    if (results.some(r => r.success)) {
+      await sendWhatsAppMessage(phone, '✅ *Pagamento confirmado!*\n\nAqui estão os dados da sua conta 😊');
+      for (const result of results) {
+        if (!result.success) continue;
+        const profs = result.profiles;
+        const qty = result.item.quantity || 1;
+        const svcEmoji = result.item.plataforma.toLowerCase().includes('netflix') ? '🎬' : '📺';
+        const planLower = result.item.plan.toLowerCase();
+        const slotsPerUnit = PLAN_SLOTS[planLower] || 1;
+        let entrega = `${svcEmoji} *${result.item.plataforma}*\n`;
+        if (slotsPerUnit > 1) {
+          for (let i = 0; i < profs.length; i++) {
+            entrega += `\n✅ Perfil ${i + 1}: ${profs[i].email} | ${profs[i].senha}`;
+            if (profs[i].pin) entrega += ` | PIN: ${profs[i].pin}`;
+          }
+        } else {
+          entrega += `\n✅ ${profs[0].email} | ${profs[0].senha}`;
+          if (profs[0].pin) entrega += ` | PIN: ${profs[0].pin}`;
+        }
+        await sendWhatsAppMessage(phone, entrega);
+        for (const p of profs) await markProfileSold(p.rowIndex, pedido.clientName || '', phone, 1);
+      }
+      await sendWhatsAppMessage(phone, 'Obrigado por escolheres a StreamZone! 🎉');
+    }
+    delete pendingVerifications[phone];
+    if (clientStates[phone]) clientStates[phone] = initClientState({ clientName: clientStates[phone].clientName, step: 'escolha_servico' });
+    res.json({ success: true, message: results.every(r => r.success) ? 'Entrega realizada.' : 'Entrega parcial.' });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+app.post('/api/admin/reject', requireAdmin, async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone) return res.status(400).json({ success: false, message: 'Número obrigatório.' });
+    const pedido = pendingVerifications[phone];
+    if (!pedido) return res.status(404).json({ success: false, message: 'Pedido não encontrado.' });
+    await sendWhatsAppMessage(phone, '❌ Comprovativo inválido. Por favor, envie o comprovativo em PDF. 📄');
+    if (clientStates[phone]) clientStates[phone].step = 'aguardando_comprovativo';
+    delete pendingVerifications[phone];
+    res.json({ success: true, message: 'Pedido rejeitado.' });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+app.get('/api/admin/lost-sales', requireAdmin, async (req, res) => {
+  try { res.json({ success: true, lostSales }); }
+  catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+app.post('/api/admin/recover', requireAdmin, async (req, res) => {
+  try {
+    const { saleId, message: customMsg } = req.body;
+    const sale = lostSales.find(s => s.id === saleId && !s.recovered);
+    if (!sale) return res.status(404).json({ success: false, message: 'Venda não encontrada.' });
+    sale.recovered = true;
+    delete pausedClients[sale.phone];
+    clientStates[sale.phone] = initClientState({ step: 'escolha_servico', clientName: sale.clientName });
+    const msg = customMsg || `Olá${sale.clientName ? ' ' + sale.clientName : ''}! 😊 Ainda podemos ajudar?\n\n🎬 *Netflix*\n📺 *Prime Video*`;
+    await sendWhatsAppMessage(sale.phone, msg);
+    res.json({ success: true, message: `Cliente ${sale.phone} re-contactado.` });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+app.get('/api/admin/stock', requireAdmin, async (req, res) => {
+  try {
+    const stockData = {};
+    for (const [key, svc] of Object.entries(CATALOGO)) {
+      const count = await countAvailableProfiles(svc.nome, 'shared_profile');
+      stockData[key] = { nome: svc.nome, emoji: svc.emoji, available: count || 0 };
+    }
+    res.json({ success: true, stock: stockData });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+// ====================================================================
+
 app.listen(port, '0.0.0.0', () => console.log(`Bot v15.0 (StreamZone) rodando na porta ${port}`));
