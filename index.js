@@ -108,7 +108,7 @@ async function sendCredentialsEmail({ toEmail, clientName, productName, productC
 const app = express();
 app.use(express.json());
 app.use(cors());
-if (process.env.SENTRY_DSN) {
+if (process.env.SENTRY_DSN && Sentry.Handlers && typeof Sentry.Handlers.requestHandler === 'function') {
   app.use(Sentry.Handlers.requestHandler());
 }
 
@@ -1960,7 +1960,7 @@ app.post('/api/admin/expiracoes/avisar', requireAdmin, async (req, res) => {
   }
 });
 
-if (process.env.SENTRY_DSN) {
+if (process.env.SENTRY_DSN && typeof Sentry.setupExpressErrorHandler === 'function') {
   Sentry.setupExpressErrorHandler(app);
 }
 
