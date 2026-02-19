@@ -8,94 +8,19 @@ const path = require('path');
 const fs = require('fs');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const {
-  cleanNumber, todayDate, fetchAllRows,
+  cleanNumber, todayDate,
   updateSheetCell, markProfileSold, markProfileAvailable,
   checkClientInSheet, findAvailableProfile, findAvailableProfiles, findClientProfiles,
   hasAnyStock, countAvailableProfiles, appendLostSale,
-  isDisponivel, isIndisponivel, normalizePlataforma,
 } = require('./googleSheets');
-
-// ==================== EMAIL (BREVO API) ====================
-const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
-const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'streamdabanda@gmail.com';
-if (BREVO_API_KEY) {
-  console.log('✅ Brevo (email) inicializado');
-} else {
-  console.log('⚠️  BREVO_API_KEY não definida — emails desactivados');
-}
-
-async function sendCredentialsEmail({ toEmail, clientName, productName, productColor, credentials }) {
-  if (!BREVO_API_KEY || !toEmail) return;
-  const colorHex = productColor || '#E50914';
-  const rows = credentials.map(c => `
-    <tr>
-      <td style="padding:10px 16px;border-bottom:1px solid #1a1a1a;color:#888;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:1px;white-space:nowrap">${c.label}</td>
-      <td style="padding:10px 16px;border-bottom:1px solid #1a1a1a;color:#ffffff;font-size:13px;font-weight:700;font-family:monospace">${c.value}</td>
-    </tr>`).join('');
-
-  const html = `<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#0a0a0a;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
-  <div style="max-width:520px;margin:0 auto;padding:32px 16px">
-    <!-- Header -->
-    <div style="background:${colorHex};border-radius:16px 16px 0 0;padding:28px 32px;text-align:center">
-      <h1 style="margin:0;color:#ffffff;font-size:26px;font-weight:900;letter-spacing:-1px">STREAMZONE</h1>
-      <p style="margin:6px 0 0;color:rgba(255,255,255,0.8);font-size:13px">Angola · Streaming Premium</p>
-    </div>
-    <!-- Body -->
-    <div style="background:#141414;padding:32px;border-left:1px solid #222;border-right:1px solid #222">
-      <p style="color:#b3b3b3;font-size:15px;margin:0 0 8px">Olá, <strong style="color:#ffffff">${clientName}</strong>!</p>
-      <p style="color:#b3b3b3;font-size:14px;margin:0 0 28px;line-height:1.6">
-        O teu pagamento foi verificado. Aqui estão os dados da tua conta <strong style="color:#ffffff">${productName}</strong>.
-      </p>
-      <!-- Bloco de credenciais -->
-      <div style="background:#0a0a0a;border-radius:12px;overflow:hidden;border:1px solid #222;margin-bottom:24px">
-        <div style="background:${colorHex}22;padding:12px 16px;border-bottom:1px solid ${colorHex}44">
-          <span style="color:${colorHex};font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:1px">🔑 As Tuas Credenciais</span>
-        </div>
-        <table style="width:100%;border-collapse:collapse">${rows}</table>
-      </div>
-      <div style="background:#1a1a1a;border-radius:10px;padding:16px;border-left:3px solid ${colorHex}">
-        <p style="margin:0;color:#888;font-size:12px;line-height:1.7">
-          ⚠️ <strong style="color:#ccc">Guarda estes dados em lugar seguro.</strong><br>
-          Não partilhes as credenciais com terceiros.<br>
-          Em caso de problema, fala connosco no WhatsApp.
-        </p>
-      </div>
-    </div>
-    <!-- Footer -->
-    <div style="background:#0a0a0a;border-radius:0 0 16px 16px;padding:20px 32px;border:1px solid #1a1a1a;border-top:none;text-align:center">
-      <a href="https://wa.me/244946014060" style="display:inline-block;background:#25D366;color:white;text-decoration:none;padding:10px 24px;border-radius:8px;font-size:13px;font-weight:700;margin-bottom:16px">
-        💬 Suporte WhatsApp
-      </a>
-      <p style="margin:0;color:#444;font-size:11px">StreamZone Angola · Obrigado pela tua confiança! 🎉</p>
-    </div>
-  </div>
-</body></html>`;
-
-  try {
-    await axios.post('https://api.brevo.com/v3/smtp/email', {
-      sender: { name: 'StreamZone', email: BREVO_SENDER_EMAIL },
-      to: [{ email: toEmail, name: clientName }],
-      subject: `✅ As tuas credenciais ${productName} — StreamZone`,
-      htmlContent: html,
-    }, {
-      headers: {
-        'api-key': BREVO_API_KEY,
-        'Content-Type': 'application/json',
-      },
-    });
-    console.log(`📧 Email enviado para ${toEmail} (${productName})`);
-  } catch (e) {
-    console.error('❌ Erro ao enviar email:', e.response?.data?.message || e.message);
-  }
-}
-// =======================================================
-
 
 const app = express();
 app.use(express.json());
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'x-admin-secret'],
+}));
 
 const port = process.env.PORT || 80;
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -106,40 +31,31 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 app.post('/api/web-checkout', async (req, res) => {
   try {
     const { nome, whatsapp, plataforma, plano, slots } = req.body;
+    const totalSlots = parseInt(slots, 10);
+    const pType = PLAN_PROFILE_TYPE[plano.toLowerCase()] || 'shared_profile';
 
-    // ── NORMALIZAÇÃO — resolve nomes do frontend para chaves internas ──
-    const serviceKey    = normalizeServiceKey(plataforma);
-    const platformName  = normalizePlatformName(plataforma);  // nome exacto da Sheet
-    const planKey       = normalizePlanKey(plano);
-    const slotsPerUnit  = getPlanSlots(planKey);
-    const totalSlots    = parseInt(slots, 10) || slotsPerUnit;
-    const pricePerUnit  = getPlanPrice(serviceKey, planKey);
-    const pType         = PLAN_PROFILE_TYPE[planKey] || 'shared_profile';
-
-    console.log(`🌐 web-checkout: plataforma="${plataforma}"→"${platformName}" plano="${plano}"→"${planKey}" slots=${totalSlots} preço=${pricePerUnit}Kz`);
-
-    if (!serviceKey) {
-      return res.status(400).json({ success: false, message: `Plataforma não reconhecida: "${plataforma}"` });
-    }
-
-    // Verificar stock — passa o nome normalizado para a Sheet
-    const profiles = await findAvailableProfiles(platformName, totalSlots, pType);
-
+    const profiles = await findAvailableProfiles(plataforma, totalSlots, pType);
+    
     if (!profiles || profiles.length < totalSlots) {
       const availableSlots = profiles ? profiles.length : 0;
-      const valorEmRisco = pricePerUnit * (parseInt(slots, 10) || 1);
+      const svcInfo = CATALOGO[plataforma.toLowerCase()] || {};
+      const pricePerUnit = svcInfo.planos ? (svcInfo.planos[plano.toLowerCase()] || 0) : 0;
+      const valorEmRisco = pricePerUnit * parseInt(slots, 10);
       if (MAIN_BOSS) {
-        await sendWhatsAppMessage(MAIN_BOSS, `⚠️ STOCK INSUFICIENTE — Ação necessária\n\n📋 Resumo:\n- Cliente (via site): ${nome} / ${whatsapp}\n- Pedido: ${slots}x ${planKey} ${platformName}\n- Slots necessários: ${totalSlots}\n- Slots disponíveis: ${availableSlots}\n- Valor da venda em risco: ${valorEmRisco.toLocaleString('pt')} Kz\n\n🔧 Opções:\n1. Repor stock → responder "reposto ${(whatsapp || '').replace(/\D/g, '')}"\n2. Cancelar → responder "cancelar ${(whatsapp || '').replace(/\D/g, '')}"`);
+        await sendWhatsAppMessage(MAIN_BOSS, `⚠️ STOCK INSUFICIENTE — Ação necessária\n\n📋 Resumo:\n- Cliente (via site): ${nome} / ${whatsapp}\n- Pedido: ${slots}x ${plano} ${plataforma}\n- Slots necessários: ${totalSlots}\n- Slots disponíveis: ${availableSlots}\n- Valor da venda em risco: ${valorEmRisco.toLocaleString('pt')} Kz\n\n🔧 Opções:\n1. Repor stock → responder "reposto ${whatsapp.replace(/\D/g, '')}"\n2. Cancelar → responder "cancelar ${whatsapp.replace(/\D/g, '')}"`);
       }
       return res.status(400).json({ success: false, message: `Sem stock suficiente. Disponível: ${availableSlots}/${totalSlots}` });
     }
 
+    for (const p of profiles) {
+      await markProfileSold(p.rowIndex, nome, whatsapp, 1);
+    }
+
     if (MAIN_BOSS) {
-      const alerta = `🚀 *VENDA VIA SITE*\n👤 ${nome}\n📱 ${whatsapp}\n📦 ${platformName} ${planKey} (${pricePerUnit.toLocaleString('pt')} Kz)\n🔢 ${totalSlots} slots (stock verificado, aguarda comprovativo).`;
+      const alerta = `🚀 *VENDA VIA SITE*\n👤 ${nome}\n📱 ${whatsapp}\n📦 ${plataforma} ${plano}\n🔢 ${totalSlots} slots reservados.`;
       await sendWhatsAppMessage(MAIN_BOSS, alerta);
     }
 
-    console.log(`✅ SITE: Stock OK para ${whatsapp} — ${planKey} ${platformName} (${totalSlots} slots, ${pricePerUnit}Kz/un)`);
     res.status(200).json({ success: true, message: 'Pedido registado com sucesso!' });
   } catch (error) {
     console.error('Erro no Web Checkout:', error);
@@ -166,59 +82,45 @@ app.post('/api/upload-comprovativo', upload.single('comprovativo'), async (req, 
   try {
     const { nome, whatsapp, plataforma, plano, quantidade, total, email } = req.body;
     const filename = req.file ? req.file.filename : 'sem ficheiro';
-    const cleanWhatsapp = (whatsapp || '').replace(/\D/g, '');
 
-    // ── NORMALIZAÇÃO ──────────────────────────────────────────────
-    const serviceKey    = normalizeServiceKey(plataforma);
-    const platformName  = normalizePlatformName(plataforma);  // nome exacto da Sheet
-    const planKey       = normalizePlanKey(plano);
-    const planLabel     = planKey.charAt(0).toUpperCase() + planKey.slice(1)
-    const qty           = parseInt(quantidade || 1, 10);
-    const slotsPerUnit  = getPlanSlots(planKey);
-    const totalSlots    = slotsPerUnit * qty;
-    const price         = getPlanPrice(serviceKey, planKey);
-    const totalVal      = parseInt(total || 0, 10) || price * qty;  // fallback: calcula se total=0
+    // Registar pendingVerification para que o supervisor possa aprovar via "sim [número]" ou pelo painel admin
+    const cleanWa = (whatsapp || '').replace(/\D/g, '');
+    if (cleanWa) {
+      const serviceKey = (plataforma || '').toLowerCase().includes('netflix') ? 'netflix' : 'prime_video';
+      const planLower = (plano || 'individual').toLowerCase();
+      const slotsPerUnit = PLAN_SLOTS[planLower] || 1;
+      const qty = parseInt(quantidade, 10) || 1;
+      const totalVal = parseInt(total, 10) || 0;
+      const unitPrice = CATALOGO[serviceKey]?.planos[planLower] || Math.round(totalVal / qty);
+      const planLabel = planLower.charAt(0).toUpperCase() + planLower.slice(1);
 
-    console.log(`🌐 upload-comprovativo: plataforma="${plataforma}"→"${platformName}" plano="${plano}"→"${planKey}" qty=${qty} total=${totalVal}Kz`);
+      pendingVerifications[cleanWa] = {
+        cart: [{
+          serviceKey,
+          plataforma: CATALOGO[serviceKey]?.nome || plataforma,
+          plan: planLabel,
+          price: unitPrice,
+          quantity: qty,
+          slotsNeeded: slotsPerUnit,
+          totalSlots: slotsPerUnit * qty,
+          totalPrice: totalVal,
+        }],
+        clientName: nome || '',
+        email: email || null,
+        fromWebsite: true,
+        isRenewal: false,
+        totalValor: totalVal,
+        timestamp: Date.now(),
+      };
+      if (!clientStates[cleanWa]) {
+        clientStates[cleanWa] = initClientState({ clientName: nome || '', step: 'esperando_supervisor' });
+      }
+    }
 
-    // Registar pedido em clientStates e pendingVerifications
-    clientStates[cleanWhatsapp] = initClientState({
-      step: 'esperando_supervisor',
-      clientName: nome || '',
-      clientEmail: email || '',
-      serviceKey: serviceKey,
-      plataforma: platformName,   // nome normalizado
-      plano: planLabel,
-      valor: totalVal,
-      totalValor: totalVal,
-      cart: [{
-        serviceKey: serviceKey,
-        plataforma: platformName, // nome normalizado para a Sheet
-        plan: planLabel,
-        price: price,
-        quantity: qty,
-        slotsNeeded: slotsPerUnit,
-        totalSlots: totalSlots,
-        totalPrice: totalVal
-      }]
-    });
-
-    pendingVerifications[cleanWhatsapp] = {
-      cart: clientStates[cleanWhatsapp].cart,
-      clientName: nome || '',
-      clientEmail: email || '',
-      isRenewal: false,
-      totalValor: totalVal,
-      timestamp: Date.now(),
-      fromWebsite: true
-    };
-
-    console.log(`🌐 SITE: Pedido registado para ${cleanWhatsapp} (${nome}) — ${qty}x ${planLabel} ${platformName} @ ${price}Kz = ${totalVal}Kz${email ? ' | email: ' + email : ''}`);
-
-    if (MAIN_BOSS) {
-      const emailLine = email ? `\n📧 Email: ${email}` : '';
-      const msg = `📎 *COMPROVATIVO VIA SITE*\n👤 ${nome}\n📱 ${cleanWhatsapp}${emailLine}\n📦 ${qty > 1 ? qty + 'x ' : ''}${planLabel} ${platformName}\n💰 Total: ${totalVal.toLocaleString('pt')} Kz\n📄 Ficheiro: ${filename}\n\nResponda: *sim* ou *nao*`;
-      await sendWhatsAppMessage(MAIN_BOSS, msg);
+    const SUPERVISOR = (process.env.SUPERVISOR_NUMBER || '').split(',')[0].trim().replace(/\D/g, '');
+    if (SUPERVISOR) {
+      const msg = `📎 *COMPROVATIVO VIA SITE*\n👤 ${nome}\n📱 ${whatsapp}\n📦 ${quantidade}x ${plano} ${plataforma}\n💰 Total: ${parseInt(total || 0, 10).toLocaleString('pt')} Kz\n📄 Ficheiro: ${filename}${email ? `\n📧 Email: ${email}` : ''}\n\nResponda: *sim ${cleanWa}* ou *nao ${cleanWa}*`;
+      await sendWhatsAppMessage(SUPERVISOR, msg);
     }
 
     res.status(200).json({ success: true });
@@ -260,50 +162,7 @@ const PAYMENT = {
   multicaixa: '946014060'
 };
 
-const PLAN_PROFILE_TYPE = { individual: 'shared_profile', partilha: 'shared_profile', familia: 'shared_profile' };
-
-// ==================== NORMALIZAÇÃO ====================
-// Resolve o mapeamento entre nomes do frontend e chaves internas
-// Frontend pode enviar: "Netflix", "netflix", "NETFLIX", "Prime Video", "prime", "prime_video"
-// Sheet tem: "Netflix" ou "Prime Video" (coluna Plataforma)
-
-function normalizeServiceKey(raw) {
-  if (!raw) return null;
-  const s = raw.toString().toLowerCase().trim();
-  if (s.includes('netflix')) return 'netflix';
-  if (s.includes('prime')) return 'prime_video';
-  return null;
-}
-
-function normalizePlatformName(raw) {
-  // Devolve o nome EXACTO como está na Google Sheet
-  const key = normalizeServiceKey(raw);
-  if (key === 'netflix') return 'Netflix';
-  if (key === 'prime_video') return 'Prime Video';
-  return raw; // fallback — devolve o original
-}
-
-function normalizePlanKey(raw) {
-  if (!raw) return 'individual';
-  const s = raw.toString().toLowerCase().trim()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, ''); // remove acentos: família→familia
-  if (s.includes('familia') || s.includes('family')) return 'familia';
-  if (s.includes('partilha') || s.includes('shared') || s.includes('sharing')) return 'partilha';
-  if (s.includes('individual') || s.includes('single')) return 'individual';
-  return s; // fallback
-}
-
-function getPlanPrice(serviceKey, planKey) {
-  const svc = CATALOGO[serviceKey];
-  if (!svc) return 0;
-  return svc.planos[planKey] || 0;
-}
-
-function getPlanSlots(planKey) {
-  return PLAN_SLOTS[planKey] || 1;
-}
-// ======================================================
-
+const PLAN_PROFILE_TYPE = { individual: 'full_account', partilha: 'shared_profile', familia: 'shared_profile' };
 
 const SUPPORT_KEYWORDS = [
   'não entra', 'nao entra', 'senha errada', 'ajuda', 'travou',
@@ -494,13 +353,15 @@ setInterval(() => {
 }, 30 * 60 * 1000);
 
 // ==================== WHATSAPP ====================
+// Retorna { sent: boolean, invalidNumber: boolean }
+// invalidNumber=true quando a Evolution API responde {"exists":false} (número sem WhatsApp)
 async function sendWhatsAppMessage(number, text) {
   try {
     const cleanTarget = cleanNumber(number);
     console.log(`📤 SEND: cleanTarget="${cleanTarget}" length=${cleanTarget.length}`);
     if (cleanTarget.length < 9 || cleanTarget.length > 15) {
-      console.log(`❌ SEND: Número inválido, não enviar.`);
-      return false;
+      console.log(`❌ SEND: Número inválido (length), não enviar.`);
+      return { sent: false, invalidNumber: false };
     }
     const finalAddress = cleanTarget + '@s.whatsapp.net';
     const url = `${process.env.EVOLUTION_API_URL}/message/sendText/${process.env.EVOLUTION_INSTANCE_NAME}`;
@@ -510,9 +371,50 @@ async function sendWhatsAppMessage(number, text) {
       number: finalAddress, text: text, delay: 1200
     }, { headers: { 'apikey': process.env.EVOLUTION_API_KEY }, httpsAgent });
     console.log(`✅ SEND: Mensagem enviada com sucesso para ${finalAddress}`);
+    return { sent: true, invalidNumber: false };
+  } catch (e) {
+    const data = e.response?.data;
+    // Detetar especificamente erro 400 com {"exists":false} da Evolution API
+    const isInvalidNumber = (
+      e.response?.status === 400 &&
+      (data?.exists === false || JSON.stringify(data || '').includes('"exists":false'))
+    );
+    console.error(`❌ FALHA ENVIO para ${number}:`, e.response ? JSON.stringify(data) : e.message);
+    if (isInvalidNumber) {
+      console.warn(`⚠️ SEND: Número ${number} não tem WhatsApp (exists: false) — fluxo continuará normalmente.`);
+    }
+    return { sent: false, invalidNumber: isInvalidNumber };
+  }
+}
+
+// ==================== EMAIL DE CREDENCIAIS (BREVO) ====================
+async function sendCredentialsEmail(toEmail, clientName, productName, allCreds) {
+  try {
+    const credHtml = allCreds.map(c => {
+      const unitHdr = c.unitLabel ? `<p style="color:#888;font-size:11px;margin:0 0 6px 0;text-transform:uppercase;letter-spacing:1px">${c.unitLabel}</p>` : '';
+      const perfilHtml = c.nomePerfil ? `<p style="margin:3px 0">👤 Perfil: <strong>${c.nomePerfil}</strong></p>` : '';
+      const pinHtml = c.pin ? `<p style="margin:3px 0">🔒 PIN: <strong>${c.pin}</strong></p>` : '';
+      return `<div style="background:#1a1a1a;border-radius:10px;padding:16px;margin:10px 0;border:1px solid #333">${unitHdr}<p style="margin:3px 0">📧 Email: <strong>${c.email}</strong></p><p style="margin:3px 0">🔑 Senha: <strong>${c.senha}</strong></p>${perfilHtml}${pinHtml}</div>`;
+    }).join('');
+
+    const htmlContent = `<div style="background:#0a0a0a;color:#e5e5e5;font-family:Arial,sans-serif;padding:40px;max-width:600px;margin:0 auto"><h1 style="color:#E50914;margin:0 0 4px 0">StreamZone Connect</h1><h2 style="color:#fff;font-weight:400;margin:0 0 24px 0">As Tuas Credenciais 🎬</h2><p>Olá <strong>${clientName}</strong>,</p><p>Aqui estão os dados da tua conta <strong>${productName}</strong>:</p>${credHtml}<p style="margin-top:32px;padding-top:16px;border-top:1px solid #222;color:#666;font-size:12px">StreamZone Angola · Suporte via WhatsApp: +244 946 014 060</p></div>`;
+
+    await axios.post('https://api.brevo.com/v3/smtp/email', {
+      sender: { name: 'StreamZone Connect', email: process.env.BREVO_SENDER_EMAIL },
+      to: [{ email: toEmail, name: clientName }],
+      subject: `StreamZone — As tuas credenciais de ${productName}`,
+      htmlContent,
+    }, {
+      headers: {
+        'api-key': process.env.BREVO_API_KEY,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      }
+    });
+    console.log(`✅ EMAIL: Credenciais enviadas via Brevo para ${toEmail}`);
     return true;
   } catch (e) {
-    console.error(`❌ FALHA ENVIO para ${number}:`, e.response ? JSON.stringify(e.response.data) : e.message);
+    console.error('❌ EMAIL: Falha ao enviar via Brevo:', e.response?.data || e.message);
     return false;
   }
 }
@@ -605,6 +507,201 @@ function handleChangeMind(senderNum, state, textMessage) {
   delete state.supervisorResponded;
   
   return true; // sinaliza que foi tratado
+}
+
+// ==================== PROCESSAMENTO DE APROVAÇÃO / REJEIÇÃO ====================
+// Função central chamada tanto pelo comando "sim" do WhatsApp como pelo painel Admin.
+// Corrige BUG #2: allCreds respeita SEMPRE qty × slotsPerUnit (todos os perfis).
+// Corrige BUG #4: se WhatsApp devolver exists:false, cai para email + avisa MAIN_BOSS.
+async function processApproval(targetClient, senderNum) {
+  const pedido = pendingVerifications[targetClient];
+  if (!pedido) return { success: false, allSuccess: false };
+
+  const results = [];
+  let allSuccess = true;
+
+  for (const item of pedido.cart) {
+    const totalSlots = item.totalSlots || item.slotsNeeded;
+    const qty = item.quantity || 1;
+    const profileType = PLAN_PROFILE_TYPE[item.plan.toLowerCase()] || 'shared_profile';
+    let profiles = null;
+
+    if (pedido.isRenewal) {
+      const clientProfiles = await findClientProfiles(targetClient);
+      if (clientProfiles) {
+        const platProfiles = clientProfiles.filter(p =>
+          p.plataforma.toLowerCase().includes(item.plataforma.toLowerCase())
+        );
+        if (platProfiles.length > 0) profiles = platProfiles.map(p => ({ ...p, isRenewal: true }));
+      }
+    } else {
+      console.log(`🔍 processApproval: Buscando ${totalSlots} perfis para ${item.plataforma} ${item.plan} (type: ${profileType})`);
+      profiles = await findAvailableProfiles(item.plataforma, totalSlots, profileType);
+      if (!profiles) {
+        const altType = profileType === 'full_account' ? 'shared_profile' : 'full_account';
+        profiles = await findAvailableProfiles(item.plataforma, totalSlots, altType);
+        if (profiles && senderNum) {
+          await sendWhatsAppMessage(senderNum, `ℹ️ Fallback: ${item.plataforma} ${item.plan} usou tipo ${altType} em vez de ${profileType}.`);
+        }
+      }
+    }
+
+    if (profiles && profiles.length > 0) {
+      results.push({ item, profiles, success: true });
+    } else {
+      results.push({ item, profiles: null, success: false });
+      allSuccess = false;
+    }
+  }
+
+  // ── Construir allCreds respeitando SEMPRE qty × slotsPerUnit ─────────────
+  // CORRIGE BUG #2: o loop anterior ignorava qty e enviava só a 1ª unidade.
+  const allCreds = [];
+  for (const result of results) {
+    if (result.success) {
+      const profs = result.profiles;
+      const planLower = result.item.plan.toLowerCase();
+      const slotsPerUnit = PLAN_SLOTS[planLower] || 1;
+      const qty = result.item.quantity || 1;
+      for (let unitIdx = 0; unitIdx < qty; unitIdx++) {
+        for (let si = 0; si < slotsPerUnit; si++) {
+          const pi = unitIdx * slotsPerUnit + si;
+          if (pi < profs.length) {
+            allCreds.push({
+              plataforma: result.item.plataforma,
+              plan: result.item.plan,
+              unitLabel: qty > 1 ? `Conta ${unitIdx + 1}` : '',
+              email: profs[pi].email,
+              senha: profs[pi].senha,
+              nomePerfil: profs[pi].nomePerfil || '',
+              pin: profs[pi].pin || '',
+            });
+          }
+        }
+      }
+    }
+  }
+
+  if (results.some(r => r.success)) {
+    // ── Tentar entregar via WhatsApp — detetar número inválido ───────────
+    // CORRIGE BUG #4: Evolution API retorna 400 {"exists":false} para números sem WhatsApp.
+    const waCheck = await sendWhatsAppMessage(targetClient, '✅ *Pagamento confirmado!*\n\nAqui estão os dados da sua conta 😊');
+
+    if (waCheck.invalidNumber) {
+      // Fallback: enviar email com credenciais se disponível
+      if (pedido.email && allCreds.length > 0) {
+        const productName = pedido.cart.map(i => `${i.plataforma} ${i.plan}`).join(', ');
+        await sendCredentialsEmail(pedido.email, pedido.clientName || 'Cliente', productName, allCreds);
+      }
+      // Aviso ao MAIN_BOSS independentemente
+      if (MAIN_BOSS) {
+        const emailStatus = pedido.email
+          ? `📧 Credenciais enviadas para: ${pedido.email}`
+          : '❌ Sem email alternativo — entregar manualmente.';
+        await sendWhatsAppMessage(MAIN_BOSS, `⚠️ *NÚMERO FALSO/INVÁLIDO*\n👤 ${pedido.clientName || 'N/A'} — ${targetClient}\n❌ O número não tem WhatsApp (exists: false).\n${emailStatus}`);
+      }
+      if (senderNum) {
+        await sendWhatsAppMessage(senderNum, `⚠️ Número ${targetClient} inválido (sem WhatsApp).\n${pedido.email ? `📧 Credenciais enviadas para ${pedido.email}.` : '❌ Sem email — entregar manualmente.'}`);
+      }
+    } else {
+      // ── Entregar credenciais via WhatsApp ─────────────────────────────
+      for (const result of results) {
+        if (result.success) {
+          const profs = result.profiles;
+          const qty = result.item.quantity || 1;
+          const svcEmoji = result.item.plataforma.toLowerCase().includes('netflix') ? '🎬' : '📺';
+          const qtyLabel = qty > 1 ? ` (${qty}x ${result.item.plan})` : '';
+          const planLower = result.item.plan.toLowerCase();
+          const slotsPerUnit = PLAN_SLOTS[planLower] || 1;
+          let entrega = `${svcEmoji} *${result.item.plataforma}*${qtyLabel}\n`;
+          if (slotsPerUnit > 1 && profs.length >= slotsPerUnit) {
+            for (let unitIdx = 0; unitIdx < qty; unitIdx++) {
+              if (qty > 1) entrega += `\n📦 *Conta ${unitIdx + 1}:*`;
+              const startIdx = unitIdx * slotsPerUnit;
+              const endIdx = Math.min(startIdx + slotsPerUnit, profs.length);
+              for (let i = startIdx; i < endIdx; i++) {
+                const profileNum = (i - startIdx) + 1;
+                entrega += `\n✅ Perfil ${profileNum}: ${profs[i].email} | ${profs[i].senha}`;
+                if (profs[i].nomePerfil) entrega += ` | ${profs[i].nomePerfil}`;
+                if (profs[i].pin) entrega += ` | PIN: ${profs[i].pin}`;
+              }
+            }
+          } else {
+            for (let i = 0; i < profs.length; i++) {
+              entrega += `\n✅ Perfil ${i + 1}: ${profs[i].email} | ${profs[i].senha}`;
+              if (profs[i].nomePerfil) entrega += ` | ${profs[i].nomePerfil}`;
+              if (profs[i].pin) entrega += ` | PIN: ${profs[i].pin}`;
+            }
+          }
+          await sendWhatsAppMessage(targetClient, entrega);
+        }
+      }
+      await sendWhatsAppMessage(targetClient, 'Obrigado por escolheres a StreamZone! 🎉\nQualquer dúvida, estamos aqui para ajudar. 😊\n\nPrecisas de mais alguma coisa?');
+
+      // Enviar email de credenciais se o cliente forneceu email (BUG #1 + BUG #2 resolvidos)
+      if (pedido.email && allCreds.length > 0) {
+        const productName = pedido.cart.map(i => `${i.plataforma} ${i.plan}`).join(', ');
+        await sendCredentialsEmail(pedido.email, pedido.clientName || 'Cliente', productName, allCreds);
+      }
+    }
+
+    // Marcar TODOS os perfis na planilha
+    for (const result of results) {
+      if (result.success) {
+        for (const p of result.profiles) {
+          if (p.isRenewal) {
+            await updateSheetCell(p.rowIndex, 'H', todayDate());
+          } else {
+            await markProfileSold(p.rowIndex, pedido.clientName || '', targetClient, 1);
+          }
+        }
+      }
+    }
+  }
+
+  // Notificação ao supervisor sobre o resultado
+  if (senderNum && !results.some(r => r.success && !r.success)) {
+    if (allSuccess) {
+      const grandTotalSlots = pedido.cart.reduce((sum, item) => sum + (item.totalSlots || item.slotsNeeded), 0);
+      const totalProfiles = results.reduce((sum, r) => sum + (r.profiles ? r.profiles.length : 0), 0);
+      const cartDesc = pedido.cart.map(item => {
+        const q = item.quantity || 1;
+        return `${q > 1 ? q + 'x ' : ''}${item.plataforma} ${item.plan}`;
+      }).join(', ');
+      await sendWhatsAppMessage(senderNum, `✅ Entrega realizada para ${pedido.clientName || targetClient}! ${cartDesc} (${grandTotalSlots} slot(s), ${totalProfiles} perfil(s) marcados).`);
+    } else {
+      const failed = results.filter(r => !r.success);
+      const failedNames = failed.map(r => {
+        const q = r.item.quantity || 1;
+        return `${q > 1 ? q + 'x ' : ''}${r.item.plataforma} ${r.item.plan}`;
+      }).join(', ');
+      if (results.some(r => r.success)) {
+        await sendWhatsAppMessage(targetClient, `⚠️ Alguns serviços serão enviados manualmente: ${failedNames}`);
+      } else {
+        await sendWhatsAppMessage(targetClient, 'Pagamento recebido! A equipa vai enviar os dados em breve. 😊');
+      }
+      await sendWhatsAppMessage(senderNum, `⚠️ *SEM STOCK* para: ${failedNames}. Envie manualmente!`);
+    }
+  }
+
+  // Limpar estado
+  delete pendingVerifications[targetClient];
+  if (clientStates[targetClient]) {
+    const savedName = clientStates[targetClient].clientName;
+    clientStates[targetClient] = initClientState({ clientName: savedName, step: 'escolha_servico' });
+  }
+  delete chatHistories[targetClient];
+  return { success: true, allSuccess, totalDelivered: results.filter(r => r.success).length };
+}
+
+async function processRejection(targetClient, senderNum) {
+  await sendWhatsAppMessage(targetClient, '❌ Comprovativo inválido. Por favor, envie o comprovativo de pagamento APENAS em formato PDF. 📄');
+  if (clientStates[targetClient]) {
+    clientStates[targetClient].step = 'aguardando_comprovativo';
+  }
+  delete pendingVerifications[targetClient];
+  if (senderNum) await sendWhatsAppMessage(senderNum, '❌ Rejeitado. Cliente pode reenviar.');
+  return { success: true };
 }
 
 // ==================== SERVIDOR ====================
@@ -868,210 +965,9 @@ app.post('/', async (req, res) => {
 
         if (action === 'approve') {
           await sendWhatsAppMessage(senderNum, '🔄 Aprovado! A processar...');
-
-          const results = [];
-          let allSuccess = true;
-
-          for (const item of pedido.cart) {
-            const totalSlots = item.totalSlots || item.slotsNeeded;
-            const qty = item.quantity || 1;
-            const profileType = PLAN_PROFILE_TYPE[item.plan.toLowerCase()] || 'shared_profile';
-            let profiles = null;
-
-            if (pedido.isRenewal) {
-              const clientProfiles = await findClientProfiles(targetClient);
-              if (clientProfiles) {
-                const platProfiles = clientProfiles.filter(p =>
-                  p.plataforma.toLowerCase().includes(item.plataforma.toLowerCase())
-                );
-                if (platProfiles.length > 0) {
-                  profiles = platProfiles.map(p => ({ ...p, isRenewal: true }));
-                }
-              }
-            } else {
-              // =====================================================================
-              // FIX #3: ENTREGA MÚLTIPLA — Buscar EXACTAMENTE totalSlots perfis
-              // Para Família = 3 perfis, Partilha = 2 perfis, Individual = 1 perfil
-              // O totalSlots já inclui quantity * slotsPerUnit
-              // =====================================================================
-              console.log(`🔍 FIX#3: Buscando ${totalSlots} perfis para ${item.plataforma} ${item.plan} (type: ${profileType})`);
-              profiles = await findAvailableProfiles(item.plataforma, totalSlots, profileType);
-              if (!profiles) {
-                const altType = profileType === 'full_account' ? 'shared_profile' : 'full_account';
-                profiles = await findAvailableProfiles(item.plataforma, totalSlots, altType);
-                if (profiles) {
-                  await sendWhatsAppMessage(senderNum, `ℹ️ Fallback: ${item.plataforma} ${item.plan} usou tipo ${altType} em vez de ${profileType}.`);
-                }
-              }
-              if (profiles) {
-                console.log(`✅ FIX#3: Encontrados ${profiles.length} perfis para ${item.plataforma} ${item.plan}`);
-              } else {
-                console.log(`❌ FIX#3: Sem perfis suficientes para ${item.plataforma} ${item.plan}`);
-              }
-            }
-
-            if (profiles && profiles.length > 0) {
-              results.push({ item, profiles, success: true });
-            } else {
-              results.push({ item, profiles: null, success: false });
-              allSuccess = false;
-            }
-          }
-
-          // =====================================================================
-          // FIX #3: ENTREGA DE CREDENCIAIS — Loop que monta TODAS as linhas
-          // Se Família → 3 linhas (Perfil 1, 2, 3)
-          // Se Partilha → 2 linhas (Perfil 1, 2)
-          // Se Individual → 1 linha
-          // Nunca envia apenas 1 linha para planos multi-perfil.
-          // =====================================================================
-          if (results.some(r => r.success)) {
-            await sendWhatsAppMessage(targetClient, '✅ *Pagamento confirmado!*\n\nAqui estão os dados da sua conta 😊');
-
-            for (const result of results) {
-              if (result.success) {
-                const profs = result.profiles;
-                const qty = result.item.quantity || 1;
-                const totalSlots = result.item.totalSlots || result.item.slotsNeeded;
-                const svcEmoji = result.item.plataforma.toLowerCase().includes('netflix') ? '🎬' : '📺';
-                const qtyLabel = qty > 1 ? ` (${qty}x ${result.item.plan})` : '';
-                const planLower = result.item.plan.toLowerCase();
-                const slotsPerUnit = PLAN_SLOTS[planLower] || 1;
-
-                let entrega = `${svcEmoji} *${result.item.plataforma}*${qtyLabel}\n`;
-
-                if (slotsPerUnit > 1 && profs.length >= slotsPerUnit) {
-                  for (let unitIdx = 0; unitIdx < qty; unitIdx++) {
-                    if (qty > 1) {
-                      entrega += `\n📦 *Conta ${unitIdx + 1}:*`;
-                    }
-                    const startIdx = unitIdx * slotsPerUnit;
-                    const endIdx = Math.min(startIdx + slotsPerUnit, profs.length);
-                    for (let i = startIdx; i < endIdx; i++) {
-                      const profileNum = (i - startIdx) + 1;
-                      entrega += `\n\n✅ *Perfil ${profileNum}*`;
-                      if (profs[i].nomePerfil) entrega += ` — ${profs[i].nomePerfil}`;
-                      entrega += `\n📧 *Email:* ${profs[i].email}`;
-                      entrega += `\n🔑 *Senha:* ${profs[i].senha}`;
-                      if (profs[i].pin) entrega += `\n🔢 *PIN:* ${profs[i].pin}`;
-                    }
-                  }
-                } else {
-                  for (let i = 0; i < profs.length; i++) {
-                    entrega += `\n\n✅ *Perfil ${i + 1}*`;
-                    if (profs[i].nomePerfil) entrega += ` — ${profs[i].nomePerfil}`;
-                    entrega += `\n📧 *Email:* ${profs[i].email}`;
-                    entrega += `\n🔑 *Senha:* ${profs[i].senha}`;
-                    if (profs[i].pin) entrega += `\n🔢 *PIN:* ${profs[i].pin}`;
-                  }
-                }
-
-                await sendWhatsAppMessage(targetClient, entrega);
-
-                // Marcar TODAS as linhas na planilha
-                for (const p of profs) {
-                  if (p.isRenewal) {
-                    await updateSheetCell(p.rowIndex, 'H', todayDate());
-                  } else {
-                    await markProfileSold(p.rowIndex, pedido.clientName || '', targetClient, 1);
-                  }
-                }
-              }
-            }
-
-            // =====================================================================
-            // FIX #2: Mensagem pós-venda — bot NÃO fica mudo após entrega
-            // Envia fecho + pergunta se precisa de mais alguma coisa
-            // =====================================================================
-            await sendWhatsAppMessage(targetClient, 'Obrigado por escolheres a StreamZone! 🎉\nQualquer dúvida, estamos aqui para ajudar. 😊\n\nPrecisas de mais alguma coisa?');
-
-            // =====================================================================
-            // EMAIL AUTOMÁTICO — envia credenciais para o email do cliente
-            // Apenas se o cliente forneceu email no site
-            // =====================================================================
-            const clientEmail = pedido.clientEmail || clientStates[targetClient]?.clientEmail;
-            if (clientEmail) {
-              // Montar lista de credenciais de todos os perfis entregues
-              const allCreds = [];
-              for (const result of results) {
-                if (result.success) {
-                  const planLower = result.item.plan.toLowerCase();
-                  const slotsPerUnit = PLAN_SLOTS[planLower] || 1;
-                  const profs = result.profiles;
-                  const svcEmoji = result.item.plataforma.toLowerCase().includes('netflix') ? '🎬' : '📺';
-
-                  if (slotsPerUnit > 1) {
-                    for (let i = 0; i < profs.length; i++) {
-                      allCreds.push({ label: `${svcEmoji} Perfil ${i + 1} — Email`, value: profs[i].email });
-                      allCreds.push({ label: `${svcEmoji} Perfil ${i + 1} — Senha`, value: profs[i].senha });
-                      if (profs[i].pin) allCreds.push({ label: `${svcEmoji} Perfil ${i + 1} — PIN`, value: profs[i].pin });
-                    }
-                  } else {
-                    allCreds.push({ label: `${svcEmoji} Email`, value: profs[0].email });
-                    allCreds.push({ label: `${svcEmoji} Senha`, value: profs[0].senha });
-                    if (profs[0]?.pin) allCreds.push({ label: `${svcEmoji} PIN`, value: profs[0].pin });
-                  }
-                }
-              }
-
-              const firstResult = results.find(r => r.success);
-              const isNetflix = firstResult?.item?.plataforma?.toLowerCase().includes('netflix');
-
-              await sendCredentialsEmail({
-                toEmail: clientEmail,
-                clientName: pedido.clientName || 'Cliente',
-                productName: firstResult?.item?.plataforma || 'StreamZone',
-                productColor: isNetflix ? '#E50914' : '#00A8E1',
-                credentials: allCreds,
-              });
-            }
-          }
-
-          // =====================================================================
-          // FIX #2: Confirmar no grupo de Atendimento com nome do cliente
-          // =====================================================================
-          if (allSuccess) {
-            const grandTotalSlots = pedido.cart.reduce((sum, item) => sum + (item.totalSlots || item.slotsNeeded), 0);
-            const totalProfiles = results.reduce((sum, r) => sum + (r.profiles ? r.profiles.length : 0), 0);
-            const cartDesc = pedido.cart.map(item => {
-              const q = item.quantity || 1;
-              return `${q > 1 ? q + 'x ' : ''}${item.plataforma} ${item.plan}`;
-            }).join(', ');
-            const clientLabel = pedido.clientName || targetClient;
-            await sendWhatsAppMessage(senderNum, `✅ Entrega realizada para ${clientLabel}! ${cartDesc} (${grandTotalSlots} slot(s), ${totalProfiles} perfil(s) marcados).`);
-          } else {
-            const failed = results.filter(r => !r.success);
-            const failedNames = failed.map(r => {
-              const q = r.item.quantity || 1;
-              return `${q > 1 ? q + 'x ' : ''}${r.item.plataforma} ${r.item.plan}`;
-            }).join(', ');
-            if (results.some(r => r.success)) {
-              await sendWhatsAppMessage(targetClient, `⚠️ Alguns serviços serão enviados manualmente: ${failedNames}`);
-            } else {
-              await sendWhatsAppMessage(targetClient, 'Pagamento recebido! A equipa vai enviar os dados em breve. 😊');
-            }
-            await sendWhatsAppMessage(senderNum, `⚠️ *SEM STOCK* para: ${failedNames}. Envie manualmente!`);
-          }
-
-          delete pendingVerifications[targetClient];
-          // FIX #2: NÃO apagar o clientState imediatamente — manter para pós-venda
-          // O cliente pode querer fazer nova compra. Resettamos para escolha_servico.
-          if (clientStates[targetClient]) {
-            const savedName = clientStates[targetClient].clientName;
-            clientStates[targetClient] = initClientState({
-              clientName: savedName,
-              step: 'escolha_servico',
-            });
-          }
-          delete chatHistories[targetClient];
+          await processApproval(targetClient, senderNum);
         } else {
-          // Rejeitar
-          await sendWhatsAppMessage(targetClient, '❌ Comprovativo inválido. Por favor, envie o comprovativo de pagamento APENAS em formato PDF. 📄');
-          if (clientStates[targetClient]) {
-            clientStates[targetClient].step = 'aguardando_comprovativo';
-          }
-          delete pendingVerifications[targetClient];
-          await sendWhatsAppMessage(senderNum, '❌ Rejeitado. Cliente pode reenviar.');
+          await processRejection(targetClient, senderNum);
         }
       }
       return res.status(200).send('OK');
@@ -1566,131 +1462,129 @@ app.post('/', async (req, res) => {
   }
 });
 
-// ==================== ADMIN DASHBOARD ENDPOINTS ====================
-const ADMIN_SECRET = process.env.ADMIN_SECRET || 'streamzone-admin-2024';
+// ==================== ROTAS ADMIN ====================
+// Autenticação via header x-admin-secret (ADMIN_SECRET em .env)
+// CORS explícito para permitir chamadas do frontend Vercel com header personalizado.
+const adminRouter = express.Router();
 
-function requireAdmin(req, res, next) {
-  const auth = req.headers['x-admin-secret'] || req.query.secret;
-  if (auth !== ADMIN_SECRET) {
-    return res.status(401).json({ success: false, message: 'Não autorizado.' });
+adminRouter.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'x-admin-secret'],
+}));
+adminRouter.options('*', cors());
+
+adminRouter.use((req, res, next) => {
+  const secret = req.headers['x-admin-secret'];
+  if (!process.env.ADMIN_SECRET || !secret || secret !== process.env.ADMIN_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
   }
   next();
-}
-
-app.get('/api/admin/stats', requireAdmin, async (req, res) => {
-  try {
-    const pendingCount = Object.keys(pendingVerifications).length;
-    const activeChats = Object.values(clientStates).filter(s => s.step !== 'inicio').length;
-    const lostSalesTotal = lostSales.length;
-    const lostSalesPending = lostSales.filter(s => !s.recovered).length;
-    let valorEmRisco = 0;
-    for (const pv of Object.values(pendingVerifications)) valorEmRisco += pv.totalValor || 0;
-    res.json({ success: true, stats: { pendingCount, activeChats, lostSalesTotal, lostSalesPending, valorEmRisco } });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
-app.get('/api/admin/pending', requireAdmin, async (req, res) => {
-  try {
-    const pending = Object.entries(pendingVerifications).map(([phone, pv]) => ({
-      phone, clientName: pv.clientName || '', cart: pv.cart || [],
-      totalValor: pv.totalValor || 0, timestamp: pv.timestamp || Date.now(), fromWebsite: pv.fromWebsite || false,
-    }));
-    res.json({ success: true, pending });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+// GET /api/admin/stats
+adminRouter.get('/stats', (req, res) => {
+  const pendingEntries = Object.entries(pendingVerifications);
+  const pendingCount = pendingEntries.length;
+  const valorEmRisco = pendingEntries.reduce((sum, [, p]) => sum + (p.totalValor || 0), 0);
+  const activeChats = Object.values(clientStates).filter(s => s.step && s.step !== 'inicio').length;
+  const lostSalesPending = lostSales.filter(s => !s.recovered).length;
+  const lostSalesTotal = lostSales.length;
+  res.json({ stats: { pendingCount, activeChats, valorEmRisco, lostSalesPending, lostSalesTotal } });
 });
 
-app.post('/api/admin/approve', requireAdmin, async (req, res) => {
-  try {
-    const { phone } = req.body;
-    if (!phone) return res.status(400).json({ success: false, message: 'Número obrigatório.' });
-    const pedido = pendingVerifications[phone];
-    if (!pedido) return res.status(404).json({ success: false, message: 'Pedido não encontrado.' });
-    const results = [];
-    for (const item of pedido.cart) {
-      const totalSlots = item.totalSlots || item.slotsNeeded;
-      const profileType = PLAN_PROFILE_TYPE[item.plan.toLowerCase()] || 'shared_profile';
-      let profiles = await findAvailableProfiles(item.plataforma, totalSlots, profileType);
-      if (!profiles) {
-        const altType = profileType === 'full_account' ? 'shared_profile' : 'full_account';
-        profiles = await findAvailableProfiles(item.plataforma, totalSlots, altType);
-      }
-      results.push({ item, profiles, success: !!(profiles && profiles.length > 0) });
-    }
-    if (results.some(r => r.success)) {
-      await sendWhatsAppMessage(phone, '✅ *Pagamento confirmado!*\n\nAqui estão os dados da sua conta 😊');
-      for (const result of results) {
-        if (!result.success) continue;
-        const profs = result.profiles;
-        const qty = result.item.quantity || 1;
-        const svcEmoji = result.item.plataforma.toLowerCase().includes('netflix') ? '🎬' : '📺';
-        const planLower = result.item.plan.toLowerCase();
-        const slotsPerUnit = PLAN_SLOTS[planLower] || 1;
-        let entrega = `${svcEmoji} *${result.item.plataforma}*\n`;
-        if (slotsPerUnit > 1) {
-          for (let i = 0; i < profs.length; i++) {
-            entrega += `\n\n✅ *Perfil ${i + 1}*`;
-            if (profs[i].nomePerfil) entrega += ` — ${profs[i].nomePerfil}`;
-            entrega += `\n📧 *Email:* ${profs[i].email}`;
-            entrega += `\n🔑 *Senha:* ${profs[i].senha}`;
-            if (profs[i].pin) entrega += `\n🔢 *PIN:* ${profs[i].pin}`;
-          }
-        } else {
-          entrega += `\n✅ ${profs[0].email} | ${profs[0].senha}`;
-          if (profs[0].pin) entrega += ` | PIN: ${profs[0].pin}`;
-        }
-        await sendWhatsAppMessage(phone, entrega);
-        for (const p of profs) await markProfileSold(p.rowIndex, pedido.clientName || '', phone, 1);
-      }
-      await sendWhatsAppMessage(phone, 'Obrigado por escolheres a StreamZone! 🎉');
-    }
-    delete pendingVerifications[phone];
-    if (clientStates[phone]) clientStates[phone] = initClientState({ clientName: clientStates[phone].clientName, step: 'escolha_servico' });
-    res.json({ success: true, message: results.every(r => r.success) ? 'Entrega realizada.' : 'Entrega parcial.' });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+// GET /api/admin/pending
+adminRouter.get('/pending', (req, res) => {
+  const pending = Object.entries(pendingVerifications).map(([phone, p]) => ({
+    phone,
+    clientName: p.clientName || '',
+    cart: p.cart || [],
+    totalValor: p.totalValor || 0,
+    timestamp: p.timestamp || Date.now(),
+    fromWebsite: p.fromWebsite || false,
+    isRenewal: p.isRenewal || false,
+  }));
+  res.json({ pending });
 });
 
-app.post('/api/admin/reject', requireAdmin, async (req, res) => {
+// POST /api/admin/approve
+adminRouter.post('/approve', async (req, res) => {
+  const { phone } = req.body;
+  if (!phone) return res.status(400).json({ error: 'phone required' });
+  if (!pendingVerifications[phone]) return res.status(404).json({ error: 'not_found' });
   try {
-    const { phone } = req.body;
-    if (!phone) return res.status(400).json({ success: false, message: 'Número obrigatório.' });
-    const pedido = pendingVerifications[phone];
-    if (!pedido) return res.status(404).json({ success: false, message: 'Pedido não encontrado.' });
-    await sendWhatsAppMessage(phone, '❌ Comprovativo inválido. Por favor, envie o comprovativo em PDF. 📄');
-    if (clientStates[phone]) clientStates[phone].step = 'aguardando_comprovativo';
-    delete pendingVerifications[phone];
-    res.json({ success: true, message: 'Pedido rejeitado.' });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+    const result = await processApproval(phone, null);
+    res.json({ success: true, allSuccess: result.allSuccess });
+  } catch (e) {
+    console.error('Erro admin approve:', e.message);
+    res.status(500).json({ error: 'Erro ao processar aprovação.' });
+  }
 });
 
-app.get('/api/admin/lost-sales', requireAdmin, async (req, res) => {
-  try { res.json({ success: true, lostSales }); }
-  catch (e) { res.status(500).json({ success: false, message: e.message }); }
+// POST /api/admin/reject
+adminRouter.post('/reject', async (req, res) => {
+  const { phone } = req.body;
+  if (!phone) return res.status(400).json({ error: 'phone required' });
+  try {
+    await processRejection(phone, null);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('Erro admin reject:', e.message);
+    res.status(500).json({ error: 'Erro ao rejeitar.' });
+  }
 });
 
-app.post('/api/admin/recover', requireAdmin, async (req, res) => {
+// GET /api/admin/stock
+adminRouter.get('/stock', async (req, res) => {
   try {
-    const { saleId, message: customMsg } = req.body;
-    const sale = lostSales.find(s => s.id === saleId && !s.recovered);
-    if (!sale) return res.status(404).json({ success: false, message: 'Venda não encontrada.' });
-    sale.recovered = true;
-    delete pausedClients[sale.phone];
-    clientStates[sale.phone] = initClientState({ step: 'escolha_servico', clientName: sale.clientName });
-    const msg = customMsg || `Olá${sale.clientName ? ' ' + sale.clientName : ''}! 😊 Ainda podemos ajudar?\n\n🎬 *Netflix*\n📺 *Prime Video*`;
-    await sendWhatsAppMessage(sale.phone, msg);
-    res.json({ success: true, message: `Cliente ${sale.phone} re-contactado.` });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
-});
-
-app.get('/api/admin/stock', requireAdmin, async (req, res) => {
-  try {
-    const stockData = {};
+    const stock = {};
     for (const [key, svc] of Object.entries(CATALOGO)) {
-      const count = await countAvailableProfiles(svc.nome, 'shared_profile');
-      stockData[key] = { nome: svc.nome, emoji: svc.emoji, available: count || 0 };
+      const shared = await countAvailableProfiles(svc.nome, 'shared_profile') || 0;
+      const full = await countAvailableProfiles(svc.nome, 'full_account') || 0;
+      stock[key] = { nome: svc.nome, emoji: svc.emoji, available: shared + full, shared, full };
     }
-    res.json({ success: true, stock: stockData });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+    res.json({ stock });
+  } catch (e) {
+    console.error('Erro admin stock:', e.message);
+    res.status(500).json({ error: 'Erro ao carregar stock.' });
+  }
 });
-// ====================================================================
 
-app.listen(port, '0.0.0.0', () => console.log(`Bot v15.0 (StreamZone) rodando na porta ${port}`));
+// GET /api/admin/lost-sales
+adminRouter.get('/lost-sales', (req, res) => {
+  res.json({ lostSales });
+});
+
+// POST /api/admin/recover
+adminRouter.post('/recover', async (req, res) => {
+  const { saleId, message } = req.body;
+  const sale = lostSales.find(s => s.id === saleId && !s.recovered);
+  if (!sale) return res.status(404).json({ error: 'not_found' });
+  sale.recovered = true;
+  delete pausedClients[sale.phone];
+  clientStates[sale.phone] = initClientState({ step: 'escolha_servico', clientName: sale.clientName });
+  const msg = message || `Olá${sale.clientName ? ' ' + sale.clientName : ''}! 😊 Notámos que ficou interessado nos nossos serviços. Ainda podemos ajudar?\n\n🎬 *Netflix*\n📺 *Prime Video*`;
+  await sendWhatsAppMessage(sale.phone, msg);
+  res.json({ success: true });
+});
+
+// GET /api/admin/expiracoes
+adminRouter.get('/expiracoes', (req, res) => {
+  // Leitura de expirações via Google Sheets será implementada quando o endpoint estiver disponível
+  res.json({ expiracoes: [] });
+});
+
+// POST /api/admin/expiracoes/avisar
+adminRouter.post('/expiracoes/avisar', async (req, res) => {
+  const item = req.body;
+  if (item.phone) {
+    const dias = item.diasRestantes != null ? item.diasRestantes : '?';
+    const msg = `⏰ *Aviso de Expiração*\n\nOlá${item.nome ? ' ' + item.nome : ''}! O teu plano ${item.plataforma || ''} ${item.plano || ''} expira em *${dias} dia(s)*.\n\nRenova agora para não perder o acesso! 😊`;
+    await sendWhatsAppMessage(item.phone, msg);
+  }
+  res.json({ success: true });
+});
+
+app.use('/api/admin', adminRouter);
+
+app.listen(port, '0.0.0.0', () => console.log(`Bot v16.0 (StreamZone) rodando na porta ${port}`));
