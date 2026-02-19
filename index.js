@@ -23,6 +23,10 @@ const {
   checkClientInSheet, findAvailableProfile, findAvailableProfiles, findClientProfiles,
   hasAnyStock, countAvailableProfiles, appendLostSale,
 } = require('./googleSheets');
+const Sentry = require('@sentry/node');
+if (process.env.SENTRY_DSN) {
+  Sentry.init({ dsn: process.env.SENTRY_DSN });
+}
 
 // ==================== EMAIL (RESEND) ====================
 // npm install resend   →   adiciona ao package.json
@@ -106,6 +110,8 @@ async function sendCredentialsEmail({ toEmail, clientName, productName, productC
 const app = express();
 app.use(express.json());
 app.use(cors());
+// Permite ao Sentry monitorizar os pedidos que entram no bot
+app.use(Sentry.Handlers.requestHandler());
 
 const port = process.env.PORT || 80;
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -295,11 +301,17 @@ function normalizeServiceKey(raw) {
 }
 
 function normalizePlatformName(raw) {
-  // Devolve o nome EXACTO como está na Google Sheet
-  const key = normalizeServiceKey(raw);
-  if (key === 'netflix') return 'Netflix';
-  if (key === 'prime_video') return 'Prime Video';
-  return raw; // fallback — devolve o original
+  const s = (raw || '').toString().toLowerCase().trim();
+
+  // Dicionário de tradução Site -> Planilha
+  if (s.includes('netflix') || s.includes('individual streamzone') || s.includes('partilha streamzone')) {
+    return 'Netflix';
+  }
+  if (s.includes('prime') || s.includes('amazon')) {
+    return 'Prime Video';
+  }
+
+  return raw; // Fallback
 }
 
 function normalizePlanKey(raw) {
