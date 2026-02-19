@@ -1,16 +1,5 @@
 require('dotenv').config();
 
-// ==================== SENTRY ====================
-const Sentry = require('@sentry/node');
-if (process.env.SENTRY_DSN) {
-  Sentry.init({
-    dsn: process.env.SENTRY_DSN,
-    environment: process.env.NODE_ENV || 'production',
-    tracesSampleRate: 1.0,
-  });
-}
-// ================================================
-
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -109,8 +98,18 @@ app.use(Sentry.Handlers.requestHandler());
 const app = express();
 app.use(express.json());
 app.use(cors());
-if (process.env.SENTRY_DSN && Sentry.Handlers && typeof Sentry.Handlers.requestHandler === 'function') {
-  app.use(Sentry.Handlers.requestHandler());
+
+// Sentry carregado depois de app existir (evita "Cannot access app before initialization")
+const Sentry = require('@sentry/node');
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV || 'production',
+    tracesSampleRate: 1.0,
+  });
+  if (Sentry.Handlers && typeof Sentry.Handlers.requestHandler === 'function') {
+    app.use(Sentry.Handlers.requestHandler());
+  }
 }
 
 const port = process.env.PORT || 80;
