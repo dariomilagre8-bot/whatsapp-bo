@@ -1,4 +1,14 @@
 require('dotenv').config();
+
+// ==================== SENTRY ====================
+const Sentry = require('@sentry/node');
+Sentry.init({
+  dsn: process.env.SENTRY_DSN,
+  environment: process.env.NODE_ENV || 'production',
+  tracesSampleRate: 1.0,
+});
+// ================================================
+
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -108,19 +118,27 @@ app.post('/api/web-checkout', async (req, res) => {
     const { nome, whatsapp, plataforma, plano, slots } = req.body;
 
     // ── NORMALIZAÇÃO — resolve nomes do frontend para chaves internas ──
-    const serviceKey    = normalizeServiceKey(plataforma);
-    const platformName  = normalizePlatformName(plataforma);  // nome exacto da Sheet
-    const planKey       = normalizePlanKey(plano);
-    const slotsPerUnit  = getPlanSlots(planKey);
-    const totalSlots    = parseInt(slots, 10) || slotsPerUnit;
-    const pricePerUnit  = getPlanPrice(serviceKey, planKey);
-    const pType         = PLAN_PROFILE_TYPE[planKey] || 'shared_profile';
+    let serviceKey, platformName, planKey, slotsPerUnit, totalSlots, pricePerUnit, pType;
+    try {
+      serviceKey   = normalizeServiceKey(plataforma);
+      platformName = normalizePlatformName(plataforma); // nome exacto da Sheet
+      planKey      = normalizePlanKey(plano);
+      slotsPerUnit = getPlanSlots(planKey);
+      totalSlots   = parseInt(slots, 10) || slotsPerUnit;
+      pricePerUnit = getPlanPrice(serviceKey, planKey);
+      pType        = PLAN_PROFILE_TYPE[planKey] || 'shared_profile';
+
+      if (!serviceKey) {
+        const mapErr = new Error(`Mapeamento de produto falhou: plataforma="${plataforma}" não reconhecida`);
+        Sentry.captureException(mapErr);
+        return res.status(400).json({ success: false, message: `Plataforma não reconhecida: "${plataforma}"` });
+      }
+    } catch (mapError) {
+      Sentry.captureException(mapError);
+      return res.status(400).json({ success: false, message: `Erro no mapeamento do produto: "${plataforma}"` });
+    }
 
     console.log(`🌐 web-checkout: plataforma="${plataforma}"→"${platformName}" plano="${plano}"→"${planKey}" slots=${totalSlots} preço=${pricePerUnit}Kz`);
-
-    if (!serviceKey) {
-      return res.status(400).json({ success: false, message: `Plataforma não reconhecida: "${plataforma}"` });
-    }
 
     // Verificar stock — passa o nome normalizado para a Sheet
     const profiles = await findAvailableProfiles(platformName, totalSlots, pType);
@@ -142,6 +160,7 @@ app.post('/api/web-checkout', async (req, res) => {
     console.log(`✅ SITE: Stock OK para ${whatsapp} — ${planKey} ${platformName} (${totalSlots} slots, ${pricePerUnit}Kz/un)`);
     res.status(200).json({ success: true, message: 'Pedido registado com sucesso!' });
   } catch (error) {
+    Sentry.captureException(error);
     console.error('Erro no Web Checkout:', error);
     res.status(500).json({ success: false, message: 'Erro no processamento do pedido.' });
   }
@@ -1929,5 +1948,7 @@ app.post('/api/admin/expiracoes/avisar', requireAdmin, async (req, res) => {
     res.status(500).json({ success: false, message: e.message });
   }
 });
+
+Sentry.setupExpressErrorHandler(app);
 
 app.listen(port, '0.0.0.0', () => console.log(`Bot v15.0 (StreamZone) rodando na porta ${port}`));
