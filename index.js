@@ -941,10 +941,7 @@ app.post('/', async (req, res) => {
 
                 let entrega = `${svcEmoji} *${result.item.plataforma}*${qtyLabel}\n`;
 
-                // FIX #3: Garantir que TODOS os perfis são listados
-                // Agrupar por email se slotsPerUnit > 1 (Partilha/Familia)
                 if (slotsPerUnit > 1 && profs.length >= slotsPerUnit) {
-                  // Para cada unidade comprada, mostrar os perfis agrupados
                   for (let unitIdx = 0; unitIdx < qty; unitIdx++) {
                     if (qty > 1) {
                       entrega += `\n📦 *Conta ${unitIdx + 1}:*`;
@@ -953,17 +950,20 @@ app.post('/', async (req, res) => {
                     const endIdx = Math.min(startIdx + slotsPerUnit, profs.length);
                     for (let i = startIdx; i < endIdx; i++) {
                       const profileNum = (i - startIdx) + 1;
-                      entrega += `\n✅ Perfil ${profileNum}: ${profs[i].email} | ${profs[i].senha}`;
-                      if (profs[i].nomePerfil) entrega += ` | ${profs[i].nomePerfil}`;
-                      if (profs[i].pin) entrega += ` | PIN: ${profs[i].pin}`;
+                      entrega += `\n\n✅ *Perfil ${profileNum}*`;
+                      if (profs[i].nomePerfil) entrega += ` — ${profs[i].nomePerfil}`;
+                      entrega += `\n📧 *Email:* ${profs[i].email}`;
+                      entrega += `\n🔑 *Senha:* ${profs[i].senha}`;
+                      if (profs[i].pin) entrega += `\n🔢 *PIN:* ${profs[i].pin}`;
                     }
                   }
                 } else {
-                  // Individual ou fallback — listar todos
                   for (let i = 0; i < profs.length; i++) {
-                    entrega += `\n✅ Perfil ${i + 1}: ${profs[i].email} | ${profs[i].senha}`;
-                    if (profs[i].nomePerfil) entrega += ` | ${profs[i].nomePerfil}`;
-                    if (profs[i].pin) entrega += ` | PIN: ${profs[i].pin}`;
+                    entrega += `\n\n✅ *Perfil ${i + 1}*`;
+                    if (profs[i].nomePerfil) entrega += ` — ${profs[i].nomePerfil}`;
+                    entrega += `\n📧 *Email:* ${profs[i].email}`;
+                    entrega += `\n🔑 *Senha:* ${profs[i].senha}`;
+                    if (profs[i].pin) entrega += `\n🔢 *PIN:* ${profs[i].pin}`;
                   }
                 }
 
@@ -1629,8 +1629,11 @@ app.post('/api/admin/approve', requireAdmin, async (req, res) => {
         let entrega = `${svcEmoji} *${result.item.plataforma}*\n`;
         if (slotsPerUnit > 1) {
           for (let i = 0; i < profs.length; i++) {
-            entrega += `\n✅ Perfil ${i + 1}: ${profs[i].email} | ${profs[i].senha}`;
-            if (profs[i].pin) entrega += ` | PIN: ${profs[i].pin}`;
+            entrega += `\n\n✅ *Perfil ${i + 1}*`;
+            if (profs[i].nomePerfil) entrega += ` — ${profs[i].nomePerfil}`;
+            entrega += `\n📧 *Email:* ${profs[i].email}`;
+            entrega += `\n🔑 *Senha:* ${profs[i].senha}`;
+            if (profs[i].pin) entrega += `\n🔢 *PIN:* ${profs[i].pin}`;
           }
         } else {
           entrega += `\n✅ ${profs[0].email} | ${profs[0].senha}`;
