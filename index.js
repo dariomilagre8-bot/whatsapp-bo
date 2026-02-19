@@ -185,7 +185,7 @@ app.post('/api/upload-comprovativo', upload.single('comprovativo'), async (req, 
     const price         = getPlanPrice(serviceKey, planKey);
     const totalVal      = parseInt(total || 0, 10) || price * qty;  // fallback: calcula se total=0
 
-    console.log(`🌐 upload-comprovativo: plataforma="${plataforma}"→"${platformName}" plano="${plano}"→"${planKey}" qty=${qty} total=${totalVal}Kz`);
+    console.log(`🌐 upload-comprovativo: plataforma="${plataforma}"→"${platformName}" plano="${plano}"→"${planKey}" qty=${qty} total=${totalVal}Kz | email="${email || '(vazio)'}"`);
 
     // Registar pedido em clientStates e pendingVerifications
     clientStates[cleanWhatsapp] = initClientState({
@@ -996,6 +996,7 @@ app.post('/', async (req, res) => {
             // Apenas se o cliente forneceu email no site
             // =====================================================================
             const clientEmail = pedido.clientEmail || clientStates[targetClient]?.clientEmail;
+            console.log(`📧 clientEmail="${clientEmail || '(vazio)'}"`);
             if (clientEmail) {
               // Montar lista de credenciais de todos os perfis entregues
               const allCreds = [];
