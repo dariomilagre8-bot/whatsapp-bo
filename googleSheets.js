@@ -3,7 +3,30 @@ const { google } = require('googleapis');
 
 // ==================== CONFIG ====================
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
-const SHEET_NAME = 'Página1';
+// Nome da aba — define SHEET_NAME no Easypanel se for diferente
+const SHEET_NAME = process.env.SHEET_NAME || 'Página1';
+
+// ── Helpers de status — robustos contra acentos, maiusculas e espacos ──
+// A Sheet pode ter: "disponivel", "Disponivel", "disponível", "Disponível"
+// Todas são aceites correctamente
+function normalizeStatus(s) {
+  return (s || '').toString().toLowerCase().trim()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+function isDisponivel(statusCell) {
+  const n = normalizeStatus(statusCell);
+  return n.includes('dispon') && !n.includes('indispon');
+}
+function isIndisponivel(statusCell) {
+  return normalizeStatus(statusCell).includes('indispon');
+}
+// Normaliza nome de plataforma para comparacao com a Sheet
+function normalizePlataforma(raw) {
+  const s = (raw || '').toLowerCase().trim();
+  if (s.includes('netflix')) return 'netflix';
+  if (s.includes('prime')) return 'prime';
+  return s;
+}
 
 const auth = new google.auth.GoogleAuth({
   keyFile: path.join(__dirname, 'credentials.json'),
@@ -63,14 +86,14 @@ async function markProfileSold(rowIndex, clientName, clientNumber, planSlots) {
     return;
   }
 
-  await updateSheetCell(rowIndex, 'F', 'Indisponivel');
+  await updateSheetCell(rowIndex, 'F', 'indisponivel');
   await updateSheetCell(rowIndex, 'G', clientLabel);
   await updateSheetCell(rowIndex, 'H', saleDate);      // FIX: sempre DD/MM/YYYY
   await updateSheetCell(rowIndex, 'I', slotsInt);       // FIX: sempre inteiro
 }
 
 async function markProfileAvailable(rowIndex) {
-  await updateSheetCell(rowIndex, 'F', 'Disponivel');
+  await updateSheetCell(rowIndex, 'F', 'disponivel');
   await updateSheetCell(rowIndex, 'G', '');
   await updateSheetCell(rowIndex, 'H', '');  // Data_Venda
   await updateSheetCell(rowIndex, 'I', '');  // QNTD_PERFIS
@@ -85,7 +108,7 @@ function getEmailSlotUsage(rows, email) {
     const row = rows[i];
     const rowEmail = (row[1] || '').toLowerCase().trim();
     const status = (row[5] || '').toLowerCase();
-    if (rowEmail === email.toLowerCase().trim() && status.includes('indispon')) {
+    if (rowEmail === email.toLowerCase().trim() && isIndisponivel(status)) {
       used += 1;
     }
   }
@@ -129,13 +152,13 @@ async function findAvailableProfile(plataforma, slotsNeeded, profileType) {
 
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
-    const rowPlat = (row[0] || '').toLowerCase();
+    const rowPlat = normalizePlataforma(row[0]);
     const status = (row[5] || '').toLowerCase();
     const email = (row[1] || '');
     const tipoConta = (row[9] || '').toLowerCase().trim();
     const rowType = tipoConta || 'shared_profile'; // Linhas sem coluna J = shared_profile
 
-    if (!rowPlat.includes(plataforma.toLowerCase()) || !status.includes('dispon')) continue;
+    if (!rowPlat.includes(normalizePlataforma(plataforma)) || !isDisponivel(status)) continue;
 
     // Se profileType foi especificado, filtrar por tipo
     if (profileType && rowType !== profileType) continue;
@@ -184,11 +207,11 @@ async function findAvailableProfiles(plataforma, slotsNeeded, profileType) {
     const accounts = [];
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const rowPlat = (row[0] || '').toLowerCase();
+      const rowPlat = normalizePlataforma(row[0]);
       const status = (row[5] || '').toLowerCase();
       const tipoConta = (row[9] || '').toLowerCase().trim();
       const rowType = tipoConta || 'shared_profile';
-      if (!rowPlat.includes(plataforma.toLowerCase()) || !status.includes('dispon')) continue;
+      if (!rowPlat.includes(normalizePlataforma(plataforma)) || !isDisponivel(status)) continue;
       if (rowType !== 'full_account') continue;
       accounts.push({
         rowIndex: i + 1,
@@ -207,20 +230,20 @@ async function findAvailableProfiles(plataforma, slotsNeeded, profileType) {
   const emailGroups = {};
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
-    const rowPlat = (row[0] || '').toLowerCase();
+    const rowPlat = normalizePlataforma(row[0]);
     const status = (row[5] || '').toLowerCase();
     const email = (row[1] || '').trim();
     const tipoConta = (row[9] || '').toLowerCase().trim();
     const rowType = tipoConta || 'shared_profile';
 
-    if (!rowPlat.includes(plataforma.toLowerCase())) continue;
+    if (!rowPlat.includes(normalizePlataforma(plataforma))) continue;
     if (rowType !== 'shared_profile') continue;
 
     const emailKey = email.toLowerCase();
     if (!emailGroups[emailKey]) {
       emailGroups[emailKey] = { email, availableRows: [] };
     }
-    if (status.includes('dispon')) {
+    if (isDisponivel(status)) {
       emailGroups[emailKey].availableRows.push({
         rowIndex: i + 1,
         plataforma: row[0] || '',
@@ -289,7 +312,7 @@ async function hasAnyStock(plataforma, profileType) {
     const rowType = tipoConta || 'shared_profile';
 
     if ((row[0] || '').toLowerCase().includes(plataforma.toLowerCase()) &&
-        (row[5] || '').toLowerCase().includes('dispon')) {
+        isDisponivel(row[5])) {
       if (!profileType || rowType === profileType) {
         return true;
       }
@@ -307,11 +330,11 @@ async function countAvailableProfiles(plataforma, profileType) {
     let count = 0;
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const rowPlat = (row[0] || '').toLowerCase();
+      const rowPlat = normalizePlataforma(row[0]);
       const status = (row[5] || '').toLowerCase();
       const tipoConta = (row[9] || '').toLowerCase().trim();
       const rowType = tipoConta || 'shared_profile';
-      if (!rowPlat.includes(plataforma.toLowerCase()) || !status.includes('dispon')) continue;
+      if (!rowPlat.includes(normalizePlataforma(plataforma)) || !isDisponivel(status)) continue;
       if (rowType !== 'full_account') continue;
       count++;
     }
@@ -322,16 +345,16 @@ async function countAvailableProfiles(plataforma, profileType) {
   const emailGroups = {};
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
-    const rowPlat = (row[0] || '').toLowerCase();
+    const rowPlat = normalizePlataforma(row[0]);
     const status = (row[5] || '').toLowerCase();
     const email = (row[1] || '').trim();
     const tipoConta = (row[9] || '').toLowerCase().trim();
     const rowType = tipoConta || 'shared_profile';
-    if (!rowPlat.includes(plataforma.toLowerCase())) continue;
+    if (!rowPlat.includes(normalizePlataforma(plataforma))) continue;
     if (rowType !== 'shared_profile') continue;
     const emailKey = email.toLowerCase();
     if (!emailGroups[emailKey]) emailGroups[emailKey] = { email, availCount: 0 };
-    if (status.includes('dispon')) emailGroups[emailKey].availCount++;
+    if (isDisponivel(status)) emailGroups[emailKey].availCount++;
   }
 
   let total = 0;
