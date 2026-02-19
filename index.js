@@ -1,5 +1,15 @@
 require('dotenv').config();
 
+// Sentry deve ser inicializado antes de require('express') para instrumentar o Express
+const Sentry = require('@sentry/node');
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV || 'production',
+    tracesSampleRate: 1.0,
+  });
+}
+
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -97,18 +107,8 @@ async function sendCredentialsEmail({ toEmail, clientName, productName, productC
 const app = express();
 app.use(express.json());
 app.use(cors());
-
-// Sentry carregado depois de app existir (evita "Cannot access app before initialization")
-const Sentry = require('@sentry/node');
-if (process.env.SENTRY_DSN) {
-  Sentry.init({
-    dsn: process.env.SENTRY_DSN,
-    environment: process.env.NODE_ENV || 'production',
-    tracesSampleRate: 1.0,
-  });
-  if (Sentry.Handlers && typeof Sentry.Handlers.requestHandler === 'function') {
-    app.use(Sentry.Handlers.requestHandler());
-  }
+if (process.env.SENTRY_DSN && Sentry.Handlers && typeof Sentry.Handlers.requestHandler === 'function') {
+  app.use(Sentry.Handlers.requestHandler());
 }
 
 const port = process.env.PORT || 80;
