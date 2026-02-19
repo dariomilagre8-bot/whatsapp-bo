@@ -16,7 +16,7 @@
     "express": "^4.18.2",
     "googleapis": "^140.0.1",
     "multer": "^2.0.2",
-    "resend": "^6.9.2"
+    "nodemailer": "^6.9.16"
   },
   "engines": {
     "node": "18.x"

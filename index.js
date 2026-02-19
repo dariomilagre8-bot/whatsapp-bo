@@ -15,23 +15,28 @@ const {
   isDisponivel, isIndisponivel, normalizePlataforma,
 } = require('./googleSheets');
 
-// ==================== EMAIL (RESEND) ====================
-// npm install resend   →   adiciona ao package.json
-let resendClient = null;
+// ==================== EMAIL (NODEMAILER + GMAIL) ====================
+let mailTransporter = null;
 try {
-  const { Resend } = require('resend');
-  if (process.env.RESEND_API_KEY) {
-    resendClient = new Resend(process.env.RESEND_API_KEY);
-    console.log('✅ Resend inicializado');
+  const nodemailer = require('nodemailer');
+  if (process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) {
+    mailTransporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_APP_PASSWORD,
+      },
+    });
+    console.log('✅ Gmail (nodemailer) inicializado');
   } else {
-    console.log('⚠️  RESEND_API_KEY não definida — emails desactivados');
+    console.log('⚠️  GMAIL_USER ou GMAIL_APP_PASSWORD não definidos — emails desactivados');
   }
 } catch (e) {
-  console.log('⚠️  Resend não instalado — emails desactivados');
+  console.log('⚠️  Nodemailer não instalado — emails desactivados');
 }
 
 async function sendCredentialsEmail({ toEmail, clientName, productName, productColor, credentials }) {
-  if (!resendClient || !toEmail) return;
+  if (!mailTransporter || !toEmail) return;
   const colorHex = productColor || '#E50914';
   const rows = credentials.map(c => `
     <tr>
@@ -80,8 +85,8 @@ async function sendCredentialsEmail({ toEmail, clientName, productName, productC
 </body></html>`;
 
   try {
-    await resendClient.emails.send({
-      from: process.env.RESEND_FROM || 'StreamZone <noreply@streamzone.ao>',
+    await mailTransporter.sendMail({
+      from: `StreamZone <${process.env.GMAIL_USER}>`,
       to: toEmail,
       subject: `✅ As tuas credenciais ${productName} — StreamZone`,
       html,
