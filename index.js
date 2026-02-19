@@ -15,28 +15,17 @@ const {
   isDisponivel, isIndisponivel, normalizePlataforma,
 } = require('./googleSheets');
 
-// ==================== EMAIL (NODEMAILER + GMAIL) ====================
-let mailTransporter = null;
-try {
-  const nodemailer = require('nodemailer');
-  if (process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) {
-    mailTransporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.GMAIL_USER,
-        pass: process.env.GMAIL_APP_PASSWORD,
-      },
-    });
-    console.log('✅ Gmail (nodemailer) inicializado');
-  } else {
-    console.log('⚠️  GMAIL_USER ou GMAIL_APP_PASSWORD não definidos — emails desactivados');
-  }
-} catch (e) {
-  console.log('⚠️  Nodemailer não instalado — emails desactivados');
+// ==================== EMAIL (BREVO API) ====================
+const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
+const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'streamdabanda@gmail.com';
+if (BREVO_API_KEY) {
+  console.log('✅ Brevo (email) inicializado');
+} else {
+  console.log('⚠️  BREVO_API_KEY não definida — emails desactivados');
 }
 
 async function sendCredentialsEmail({ toEmail, clientName, productName, productColor, credentials }) {
-  if (!mailTransporter || !toEmail) return;
+  if (!BREVO_API_KEY || !toEmail) return;
   const colorHex = productColor || '#E50914';
   const rows = credentials.map(c => `
     <tr>
@@ -85,15 +74,20 @@ async function sendCredentialsEmail({ toEmail, clientName, productName, productC
 </body></html>`;
 
   try {
-    await mailTransporter.sendMail({
-      from: `StreamZone <${process.env.GMAIL_USER}>`,
-      to: toEmail,
+    await axios.post('https://api.brevo.com/v3/smtp/email', {
+      sender: { name: 'StreamZone', email: BREVO_SENDER_EMAIL },
+      to: [{ email: toEmail, name: clientName }],
       subject: `✅ As tuas credenciais ${productName} — StreamZone`,
-      html,
+      htmlContent: html,
+    }, {
+      headers: {
+        'api-key': BREVO_API_KEY,
+        'Content-Type': 'application/json',
+      },
     });
     console.log(`📧 Email enviado para ${toEmail} (${productName})`);
   } catch (e) {
-    console.error('❌ Erro ao enviar email:', e.message);
+    console.error('❌ Erro ao enviar email:', e.response?.data?.message || e.message);
   }
 }
 // =======================================================
