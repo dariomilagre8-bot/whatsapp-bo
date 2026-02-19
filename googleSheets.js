@@ -410,4 +410,7 @@ module.exports = {
   hasAnyStock,
   countAvailableProfiles,
   appendLostSale,
+  isDisponivel,
+  isIndisponivel,
+  normalizePlataforma,
 };

@@ -24,6 +24,7 @@ const {
   updateSheetCell, markProfileSold, markProfileAvailable,
   checkClientInSheet, findAvailableProfile, findAvailableProfiles, findClientProfiles,
   hasAnyStock, countAvailableProfiles, appendLostSale,
+  isDisponivel, isIndisponivel, normalizePlataforma,
 } = require('./googleSheets');
 
 // ==================== EMAIL (RESEND) ====================
@@ -104,7 +105,7 @@ async function sendCredentialsEmail({ toEmail, clientName, productName, productC
 }
 // =======================================================
 
-
+app.use(Sentry.Handlers.requestHandler());
 const app = express();
 app.use(express.json());
 app.use(cors());
