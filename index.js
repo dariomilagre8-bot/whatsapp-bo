@@ -108,8 +108,9 @@ async function sendCredentialsEmail({ toEmail, clientName, productName, productC
 const app = express();
 app.use(express.json());
 app.use(cors());
-// Permite ao Sentry monitorizar os pedidos que entram no bot
-app.use(Sentry.Handlers.requestHandler());
+if (process.env.SENTRY_DSN) {
+  app.use(Sentry.Handlers.requestHandler());
+}
 
 const port = process.env.PORT || 80;
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -1959,7 +1960,9 @@ app.post('/api/admin/expiracoes/avisar', requireAdmin, async (req, res) => {
   }
 });
 
-Sentry.setupExpressErrorHandler(app);
+if (process.env.SENTRY_DSN) {
+  Sentry.setupExpressErrorHandler(app);
+}
 
 // Módulo de expiração: liberta perfis cuja data de venda já passou do período de validade
 const { startExpirationInterval } = require('./expiracao-modulo');
