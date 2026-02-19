@@ -1,5 +1,7 @@
 import { useState, useRef, type FormEvent } from 'react'
 
+const API_BASE = import.meta.env.VITE_API_URL || ''
+
 const CATALOGO = {
   Netflix: {
     backendKey: 'netflix',
@@ -97,7 +99,7 @@ export default function CheckoutModal({ open, onClose }: Props) {
 
     try {
       const cleanNum = '244' + whatsapp.replace(/\s/g, '')
-      const res = await fetch('/api/web-checkout', {
+      const res = await fetch(`${API_BASE}/api/web-checkout`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -125,7 +127,7 @@ export default function CheckoutModal({ open, onClose }: Props) {
       fd.append('quantidade', String(quantidade))
       fd.append('total', String(totalPrice))
 
-      await fetch('/api/upload-comprovativo', { method: 'POST', body: fd })
+      await fetch(`${API_BASE}/api/upload-comprovativo`, { method: 'POST', body: fd })
 
       setStep(4)
     } catch {
