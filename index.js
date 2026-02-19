@@ -1951,4 +1951,8 @@ app.post('/api/admin/expiracoes/avisar', requireAdmin, async (req, res) => {
 
 Sentry.setupExpressErrorHandler(app);
 
+// Módulo de expiração: liberta perfis cuja data de venda já passou do período de validade
+const { startExpirationInterval } = require('./expiracao-modulo');
+startExpirationInterval();
+
 app.listen(port, '0.0.0.0', () => console.log(`Bot v15.0 (StreamZone) rodando na porta ${port}`));
