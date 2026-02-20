@@ -1993,7 +1993,8 @@ app.get('/api/branding', (req, res) => {
 });
 
 app.get('/api/version', (req, res) => {
-  res.json({ v: '20260220-expiracao-mrr', started: new Date().toISOString() });
+  const s = process.env.ADMIN_SECRET || '';
+  res.json({ v: '20260220-expiracao-mrr', started: new Date().toISOString(), secretLen: s.length, secretHint: s ? s[0] + '***' + s[s.length - 1] : '(não definido)' });
 });
 
 app.use('/api/admin', adminRouter);
