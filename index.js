@@ -1,4 +1,5 @@
 require('dotenv').config();
+const branding = require('./branding');
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -146,12 +147,20 @@ const CATALOGO = {
   netflix: {
     nome: 'Netflix',
     emoji: '🎬',
-    planos: { individual: 5000, partilha: 9000, familia: 13500 }
+    planos: {
+      individual: branding.precos.netflix.individual,
+      partilha: branding.precos.netflix.partilha,
+      familia: branding.precos.netflix.familia,
+    }
   },
   prime_video: {
     nome: 'Prime Video',
     emoji: '📺',
-    planos: { individual: 3000, partilha: 5500, familia: 8000 }
+    planos: {
+      individual: branding.precos.prime.individual,
+      partilha: branding.precos.prime.partilha,
+      familia: branding.precos.prime.familia,
+    }
   }
 };
 
@@ -238,17 +247,17 @@ function detectQuantity(text) {
 }
 
 // ==================== PROMPTS GEMINI ====================
-const SYSTEM_PROMPT = `Tu és o assistente de vendas da StreamZone Connect 🤖. Vendes planos de streaming Netflix e Prime Video em Angola.
+const SYSTEM_PROMPT = `Tu és o assistente de vendas da ${branding.nome} 🤖. Vendes planos de streaming Netflix e Prime Video em Angola.
 
 CATÁLOGO (memoriza — usa SEMPRE estes preços):
 Netflix:
-  - Individual (1 perfil): 5.000 Kz
-  - Partilha (2 perfis): 9.000 Kz
-  - Família (3 perfis): 13.500 Kz
+  - Individual (1 perfil): ${branding.precos.netflix.individual.toLocaleString('pt')} Kz
+  - Partilha (2 perfis): ${branding.precos.netflix.partilha.toLocaleString('pt')} Kz
+  - Família (3 perfis): ${branding.precos.netflix.familia.toLocaleString('pt')} Kz
 Prime Video:
-  - Individual (1 perfil): 3.000 Kz
-  - Partilha (2 perfis): 5.500 Kz
-  - Família (3 perfis): 8.000 Kz
+  - Individual (1 perfil): ${branding.precos.prime.individual.toLocaleString('pt')} Kz
+  - Partilha (2 perfis): ${branding.precos.prime.partilha.toLocaleString('pt')} Kz
+  - Família (3 perfis): ${branding.precos.prime.familia.toLocaleString('pt')} Kz
 
 REGRAS ABSOLUTAS:
 1. Se o cliente perguntar preços → responde IMEDIATAMENTE com o catálogo acima. Sem hesitar.
@@ -263,11 +272,11 @@ REGRAS ABSOLUTAS:
 10. Responde sempre em Português.
 11. Redireciona temas fora do contexto para os nossos serviços.`;
 
-const SYSTEM_PROMPT_COMPROVATIVO = `Tu és o assistente de vendas da StreamZone Connect 🤖. O cliente já escolheu um plano e está na fase de pagamento.
+const SYSTEM_PROMPT_COMPROVATIVO = `Tu és o assistente de vendas da ${branding.nome} 🤖. O cliente já escolheu um plano e está na fase de pagamento.
 
 CATÁLOGO (para referência):
-Netflix: Individual 5.000 Kz (1 perfil) | Partilha 9.000 Kz (2 perfis) | Família 13.500 Kz (3 perfis)
-Prime Video: Individual 3.000 Kz (1 perfil) | Partilha 5.500 Kz (2 perfis) | Família 8.000 Kz (3 perfis)
+Netflix: Individual ${branding.precos.netflix.individual.toLocaleString('pt')} Kz (1 perfil) | Partilha ${branding.precos.netflix.partilha.toLocaleString('pt')} Kz (2 perfis) | Família ${branding.precos.netflix.familia.toLocaleString('pt')} Kz (3 perfis)
+Prime Video: Individual ${branding.precos.prime.individual.toLocaleString('pt')} Kz (1 perfil) | Partilha ${branding.precos.prime.partilha.toLocaleString('pt')} Kz (2 perfis) | Família ${branding.precos.prime.familia.toLocaleString('pt')} Kz (3 perfis)
 
 REGRAS:
 - Responde a QUALQUER pergunta do cliente de forma curta, simpática e útil (máximo 2 frases).
@@ -399,12 +408,12 @@ async function sendCredentialsEmail(toEmail, clientName, productName, allCreds) 
       return `<div style="background:#1a1a1a;border-radius:10px;padding:16px;margin:10px 0;border:1px solid #333">${unitHdr}<p style="margin:3px 0">📧 Email: <strong>${c.email}</strong></p><p style="margin:3px 0">🔑 Senha: <strong>${c.senha}</strong></p>${perfilHtml}${pinHtml}</div>`;
     }).join('');
 
-    const htmlContent = `<div style="background:#0a0a0a;color:#e5e5e5;font-family:Arial,sans-serif;padding:40px;max-width:600px;margin:0 auto"><h1 style="color:#E50914;margin:0 0 4px 0">StreamZone Connect</h1><h2 style="color:#fff;font-weight:400;margin:0 0 24px 0">As Tuas Credenciais 🎬</h2><p>Olá <strong>${clientName}</strong>,</p><p>Aqui estão os dados da tua conta <strong>${productName}</strong>:</p>${credHtml}<p style="margin-top:32px;padding-top:16px;border-top:1px solid #222;color:#666;font-size:12px">StreamZone Angola · Suporte via WhatsApp: +244 946 014 060</p></div>`;
+    const htmlContent = `<div style="background:#0a0a0a;color:#e5e5e5;font-family:Arial,sans-serif;padding:40px;max-width:600px;margin:0 auto"><h1 style="color:${branding.corPrincipal};margin:0 0 4px 0">${branding.nome}</h1><h2 style="color:#fff;font-weight:400;margin:0 0 24px 0">As Tuas Credenciais ${branding.emoji}</h2><p>Olá <strong>${clientName}</strong>,</p><p>Aqui estão os dados da tua conta <strong>${productName}</strong>:</p>${credHtml}<p style="margin-top:32px;padding-top:16px;border-top:1px solid #222;color:#666;font-size:12px">${branding.nome} · Suporte via WhatsApp: +${branding.whatsappSuporte}</p></div>`;
 
     await axios.post('https://api.brevo.com/v3/smtp/email', {
-      sender: { name: 'StreamZone Connect', email: process.env.BREVO_SENDER_EMAIL },
+      sender: { name: branding.nome, email: process.env.BREVO_SENDER_EMAIL },
       to: [{ email: toEmail, name: clientName }],
-      subject: `StreamZone — As tuas credenciais de ${productName}`,
+      subject: `${branding.nome} — As tuas credenciais de ${productName}`,
       htmlContent,
     }, {
       headers: {
@@ -638,7 +647,7 @@ async function processApproval(targetClient, senderNum) {
           await sendWhatsAppMessage(targetClient, entrega);
         }
       }
-      await sendWhatsAppMessage(targetClient, 'Obrigado por escolheres a StreamZone! 🎉\nQualquer dúvida, estamos aqui para ajudar. 😊\n\nPrecisas de mais alguma coisa?');
+      await sendWhatsAppMessage(targetClient, `Obrigado por escolheres a ${branding.nome}! 🎉\nQualquer dúvida, estamos aqui para ajudar. 😊\n\nPrecisas de mais alguma coisa?`);
 
       // Enviar email de credenciais se o cliente forneceu email (BUG #1 + BUG #2 resolvidos)
       if (pedido.email && allCreds.length > 0) {
@@ -1241,8 +1250,8 @@ app.post('/', async (req, res) => {
         state.step = 'escolha_plano';
 
         const saudacao = nome
-          ? `Olá ${nome}! Sou o Assistente de IA da StreamZone 🤖.`
-          : 'Olá! Sou o Assistente de IA da StreamZone 🤖.';
+          ? `Olá ${nome}! Sou o Assistente de IA da ${branding.nome} 🤖.`
+          : `Olá! Sou o Assistente de IA da ${branding.nome} 🤖.`;
         console.log(`📤 DEBUG: A enviar saudação de renovação para ${senderNum}`);
         await sendWhatsAppMessage(senderNum, `${saudacao}\n\nVejo que já é nosso cliente de *${existing.plataforma}*! Quer renovar?\n\n${formatPriceTable(svcKey)}\n\nQual plano deseja? (${planChoicesText(svcKey)})`);
         return res.status(200).send('OK');
@@ -1250,7 +1259,7 @@ app.post('/', async (req, res) => {
 
       state.step = 'captura_nome';
       console.log(`📤 DEBUG: A enviar saudação inicial para ${senderNum}`);
-      await sendWhatsAppMessage(senderNum, 'Olá! Sou o Assistente de IA da StreamZone 🤖. Com quem tenho o prazer de falar?');
+      await sendWhatsAppMessage(senderNum, `Olá! Sou o Assistente de IA da ${branding.nome} 🤖. Com quem tenho o prazer de falar?`);
       return res.status(200).send('OK');
     }
 
@@ -1451,7 +1460,7 @@ app.post('/', async (req, res) => {
       try {
         const availPlans = Object.entries(CATALOGO[state.serviceKey].planos).map(([p, price]) => `- ${p.charAt(0).toUpperCase() + p.slice(1)}: ${PLAN_SLOTS[p] || 1} perfil(s), ${price.toLocaleString('pt')} Kz`).join('\n');
         const choicesStr = planChoicesText(state.serviceKey);
-        const planContext = `Tu és o Assistente de IA da StreamZone 🤖. O cliente está a escolher um plano de ${state.plataforma}.\n\nPlanos disponíveis:\n${availPlans}\n\nResponde à pergunta do cliente em 1-2 frases curtas e termina SEMPRE com: "Qual plano preferes? (${choicesStr})"`;
+        const planContext = `Tu és o Assistente de IA da ${branding.nome} 🤖. O cliente está a escolher um plano de ${state.plataforma}.\n\nPlanos disponíveis:\n${availPlans}\n\nResponde à pergunta do cliente em 1-2 frases curtas e termina SEMPRE com: "Qual plano preferes? (${choicesStr})"`;
 
         const model = genAI.getGenerativeModel({
           model: 'gemini-2.5-flash',
@@ -1757,7 +1766,7 @@ adminRouter.post('/clientes/mensagem', async (req, res) => {
 adminRouter.get('/financeiro', async (req, res) => {
   try {
     const rows = await fetchAllRows();
-    const precos = { 'Netflix': 5000, 'Prime Video': 3000 };
+    const precos = { 'Netflix': branding.precos.netflix.individual, 'Prime Video': branding.precos.prime.individual };
 
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -1931,6 +1940,10 @@ adminRouter.get('/financeiro-db', async (req, res) => {
   }
 });
 
+app.get('/api/branding', (req, res) => {
+  res.json(branding);
+});
+
 app.use('/api/admin', adminRouter);
 
-app.listen(port, '0.0.0.0', () => console.log(`Bot v16.0 (StreamZone) rodando na porta ${port}`));
+app.listen(port, '0.0.0.0', () => console.log(`Bot v16.0 (${branding.nome}) rodando na porta ${port}`));
