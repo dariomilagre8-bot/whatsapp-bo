@@ -1719,6 +1719,108 @@ adminRouter.post('/clientes/mensagem', async (req, res) => {
   res.json({ success: true });
 });
 
+// GET /api/admin/financeiro
+adminRouter.get('/financeiro', async (req, res) => {
+  try {
+    const rows = await fetchAllRows();
+    const precos = { 'Netflix': 5000, 'Prime Video': 3000 };
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const thisMonth = today.getMonth();
+    const thisYear = today.getFullYear();
+    const lastMonth = thisMonth === 0 ? 11 : thisMonth - 1;
+    const lastMonthYear = thisMonth === 0 ? thisYear - 1 : thisYear;
+
+    const fin = {
+      hoje: { vendas: 0, receita: 0 },
+      esteMes: { vendas: 0, receita: 0 },
+      mesPassado: { vendas: 0, receita: 0 },
+      totalAtivo: { clientes: 0, receita: 0 },
+      porPlataforma: {
+        'Netflix': { vendas: 0, receita: 0 },
+        'Prime Video': { vendas: 0, receita: 0 },
+      },
+      ultimos7Dias: [],
+    };
+
+    // Mapa dos últimos 7 dias (incluindo hoje)
+    const dias7 = {};
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      const key = `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
+      dias7[key] = { data: key, receita: 0, vendas: 0 };
+    }
+
+    const clientesSet = new Set();
+
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!isIndisponivel(row[5])) continue;
+
+      const plataforma = (row[0] || '').trim();
+      const cliente    = row[6] || '';
+      const dataVendaStr = row[7] || '';
+      const quantidade = parseInt(row[8]) || 1;
+
+      if (!dataVendaStr || !cliente) continue;
+
+      const parts = dataVendaStr.split('/');
+      if (parts.length !== 3) continue;
+      const dataVenda = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+      if (isNaN(dataVenda.getTime())) continue;
+      dataVenda.setHours(0, 0, 0, 0);
+
+      const preco = (precos[plataforma] || 0) * quantidade;
+
+      // Clientes activos (receita recorrente)
+      clientesSet.add(cliente);
+      fin.totalAtivo.receita += preco;
+
+      // Por plataforma
+      if (fin.porPlataforma[plataforma]) {
+        fin.porPlataforma[plataforma].vendas += quantidade;
+        fin.porPlataforma[plataforma].receita += preco;
+      }
+
+      // Hoje
+      if (dataVenda.getTime() === today.getTime()) {
+        fin.hoje.vendas += quantidade;
+        fin.hoje.receita += preco;
+      }
+
+      // Este mês
+      if (dataVenda.getMonth() === thisMonth && dataVenda.getFullYear() === thisYear) {
+        fin.esteMes.vendas += quantidade;
+        fin.esteMes.receita += preco;
+      }
+
+      // Mês passado
+      if (dataVenda.getMonth() === lastMonth && dataVenda.getFullYear() === lastMonthYear) {
+        fin.mesPassado.vendas += quantidade;
+        fin.mesPassado.receita += preco;
+      }
+
+      // Últimos 7 dias
+      const dayKey = `${String(dataVenda.getDate()).padStart(2,'0')}/${String(dataVenda.getMonth()+1).padStart(2,'0')}`;
+      if (dias7[dayKey]) {
+        dias7[dayKey].receita += preco;
+        dias7[dayKey].vendas += quantidade;
+      }
+    }
+
+    fin.totalAtivo.clientes = clientesSet.size;
+    fin.ultimos7Dias = Object.values(dias7);
+
+    res.json({ success: true, financeiro: fin });
+  } catch (err) {
+    console.error('Erro GET /financeiro:', err.message);
+    res.status(500).json({ error: 'Erro ao calcular financeiro' });
+  }
+});
+
 app.use('/api/admin', adminRouter);
 
 app.listen(port, '0.0.0.0', () => console.log(`Bot v16.0 (StreamZone) rodando na porta ${port}`));
