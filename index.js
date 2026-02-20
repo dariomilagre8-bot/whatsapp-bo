@@ -9,9 +9,10 @@ const fs = require('fs');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const {
   cleanNumber, todayDate,
-  updateSheetCell, markProfileSold, markProfileAvailable,
+  fetchAllRows, updateSheetCell, markProfileSold, markProfileAvailable,
   checkClientInSheet, findAvailableProfile, findAvailableProfiles, findClientProfiles,
   hasAnyStock, countAvailableProfiles, appendLostSale,
+  isIndisponivel,
 } = require('./googleSheets');
 
 const app = express();
@@ -1569,9 +1570,74 @@ adminRouter.post('/recover', async (req, res) => {
 });
 
 // GET /api/admin/expiracoes
-adminRouter.get('/expiracoes', (req, res) => {
-  // Leitura de expirações via Google Sheets será implementada quando o endpoint estiver disponível
-  res.json({ expiracoes: [] });
+adminRouter.get('/expiracoes', async (req, res) => {
+  try {
+    const rows = await fetchAllRows();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const msPerDay = 24 * 60 * 60 * 1000;
+
+    const expiracoes = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const plataforma = row[0] || '';
+      const nomePerfil = row[3] || '';
+      const status    = row[5] || '';
+      const cliente   = row[6] || '';
+      const dataVendaStr = row[7] || '';
+      const tipoConta = row[9] || '';
+
+      // Apenas perfis vendidos com cliente e data preenchidos
+      if (!isIndisponivel(status) || !cliente || !dataVendaStr) continue;
+
+      // Parse DD/MM/YYYY
+      const parts = dataVendaStr.split('/');
+      if (parts.length !== 3) continue;
+      const dataVenda = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+      if (isNaN(dataVenda.getTime())) continue;
+
+      // Expiração = dataVenda + 30 dias
+      const expiry = new Date(dataVenda);
+      expiry.setDate(expiry.getDate() + 30);
+      expiry.setHours(0, 0, 0, 0);
+
+      const diasRestantes = Math.round((expiry - today) / msPerDay);
+
+      // Mostrar apenas expirados ou a expirar em ≤ 7 dias
+      if (diasRestantes > 7) continue;
+
+      // Classificar estado
+      let estado;
+      if (diasRestantes < 0)      estado = 'expirado';
+      else if (diasRestantes <= 3) estado = 'urgente';
+      else                         estado = 'aviso';
+
+      // Separar nome e telefone do campo "Nome - Numero"
+      const clienteParts = cliente.split(' - ');
+      const nome  = clienteParts.length > 1 ? clienteParts.slice(0, -1).join(' - ') : cliente;
+      const phone = clienteParts.length > 1 ? clienteParts[clienteParts.length - 1] : '';
+
+      expiracoes.push({
+        id: i + 1, // rowIndex na Sheet
+        nome,
+        phone,
+        plataforma,
+        plano: nomePerfil || tipoConta,
+        diasRestantes,
+        estado,
+        dataVenda: dataVendaStr,
+      });
+    }
+
+    // Ordenar: expirados primeiro, depois por diasRestantes crescente
+    expiracoes.sort((a, b) => a.diasRestantes - b.diasRestantes);
+
+    console.log('[expiracoes]', expiracoes);
+    res.json({ expiracoes });
+  } catch (err) {
+    console.error('Erro GET /expiracoes:', err.message);
+    res.status(500).json({ error: 'Erro ao ler expirações' });
+  }
 });
 
 // POST /api/admin/expiracoes/avisar
