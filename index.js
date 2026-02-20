@@ -1683,16 +1683,46 @@ adminRouter.get('/expiracoes', async (req, res) => {
   }
 });
 
-// POST /api/admin/expiracoes/avisar
+// POST /api/admin/expiracoes/avisar — aviso manual com templates de marketing
 adminRouter.post('/expiracoes/avisar', async (req, res) => {
   const item = req.body;
-  if (item.phone) {
-    const dias = item.diasRestantes != null ? item.diasRestantes : '?';
-    const msg = `⏰ *Aviso de Expiração*\n\nOlá${item.nome ? ' ' + item.nome : ''}! O teu plano ${item.plataforma || ''} ${item.plano || ''} expira em *${dias} dia(s)*.\n\nRenova agora para não perder o acesso! 😊`;
-    await sendWhatsAppMessage(item.phone, msg);
+  if (!item.phone) return res.status(400).json({ error: 'phone obrigatório' });
+
+  const nome      = item.nome || '';
+  const plataforma = item.plataforma || '';
+  const dias      = item.diasRestantes != null ? item.diasRestantes : -1;
+  const website   = branding.website;
+
+  let msg;
+  if (dias >= 5) {
+    msg = `Olá ${nome}! 😊\n\nO teu plano 🎬 *${plataforma}* expira daqui a *7 dias*.\n\nAproveita para renovar com antecedência e continua a ver os teus filmes e séries favoritos sem interrupções 🍿\n\n👉 Renova aqui: ${website}\n\nQualquer dúvida estamos aqui! 💬`;
+  } else if (dias >= 1) {
+    msg = `${nome}, atenção! ⏰\n\nO teu plano 🎬 *${plataforma}* expira em apenas *${dias} dia(s)*.\n\nNão percas o acesso às tuas séries a meio — renova agora em menos de 2 minutos 😊\n\n💳 Renova aqui: ${website}\n\nEstamos sempre disponíveis para ajudar! 🙌`;
+  } else {
+    msg = `${nome}, hoje é o último dia! 🚨\n\nO teu plano 🎬 *${plataforma}* expira *hoje*.\n\nRenova agora e continua a ver sem parar 🎬🍿\n\n🔗 ${website}\n\nObrigado por escolheres a ${branding.nome}! ❤️`;
   }
+
+  await sendWhatsAppMessage(item.phone, msg);
   res.json({ success: true });
 });
+
+// Calcula o preço de um plano com base na plataforma e tipo
+function getPrecoDePlano(plataforma, plano) {
+  const pStr  = (plataforma || '').toLowerCase();
+  const plStr = (plano || '').toLowerCase();
+  const p = branding.precos;
+  if (pStr.includes('netflix')) {
+    if (plStr.includes('familia') || plStr.includes('família')) return p.netflix.familia;
+    if (plStr.includes('partilha') || plStr.includes('shared')) return p.netflix.partilha;
+    return p.netflix.individual;
+  }
+  if (pStr.includes('prime')) {
+    if (plStr.includes('familia') || plStr.includes('família')) return p.prime.familia;
+    if (plStr.includes('partilha') || plStr.includes('shared')) return p.prime.partilha;
+    return p.prime.individual;
+  }
+  return 0;
+}
 
 // GET /api/admin/clientes
 adminRouter.get('/clientes', async (req, res) => {
@@ -1735,14 +1765,20 @@ adminRouter.get('/clientes', async (req, res) => {
       const phone = clienteParts.length > 1 ? clienteParts[clienteParts.length - 1] : '';
       const key   = phone || nome;
 
+      const planoNome = nomePerfil || tipoConta;
+      const valorPago = getPrecoDePlano(plataforma, planoNome);
+
       if (!clientMap[key]) clientMap[key] = { phone, nome, planos: [] };
-      clientMap[key].planos.push({ id: i + 1, plataforma, plano: nomePerfil || tipoConta, dataVenda: dataVendaStr, diasRestantes, estado });
+      clientMap[key].planos.push({ id: i + 1, plataforma, plano: planoNome, dataVenda: dataVendaStr, diasRestantes, estado, valorPago });
     }
 
     const estadoRank = { expirado: 0, urgente: 1, aviso: 2, ok: 3 };
     const clientes = Object.values(clientMap).map(c => {
       const worst = c.planos.reduce((w, p) => estadoRank[p.estado] < estadoRank[w.estado] ? p : w, c.planos[0]);
-      return { ...c, totalPlanos: c.planos.length, diasRestantes: worst.diasRestantes, estado: worst.estado };
+      const totalValor = c.planos
+        .filter(p => p.estado !== 'expirado')
+        .reduce((sum, p) => sum + (p.valorPago || 0), 0);
+      return { ...c, totalPlanos: c.planos.length, diasRestantes: worst.diasRestantes, estado: worst.estado, totalValor };
     });
     clientes.sort((a, b) => estadoRank[a.estado] - estadoRank[b.estado] || a.diasRestantes - b.diasRestantes);
 
@@ -1945,5 +1981,15 @@ app.get('/api/branding', (req, res) => {
 });
 
 app.use('/api/admin', adminRouter);
+
+// Scheduler de expiração — avisos automáticos às 9h
+require('./expiracao-modulo').iniciar({
+  sendWhatsAppMessage,
+  MAIN_BOSS,
+  branding,
+  fetchAllRows,
+  markProfileAvailable,
+  isIndisponivel,
+});
 
 app.listen(port, '0.0.0.0', () => console.log(`Bot v16.0 (${branding.nome}) rodando na porta ${port}`));

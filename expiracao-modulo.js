@@ -1,300 +1,170 @@
-<<<<<<< Updated upstream
-// Módulo de expiração: liberta perfis cuja data de venda já passou do período de validade (ex.: 30 dias)
-const { fetchAllRows, todayDate, markProfileAvailable } = require('./googleSheets');
-
-const DIAS_VALIDADE = parseInt(process.env.DIAS_VALIDADE_EXPIRACAO, 10) || 30;
-
-function parseDateDDMMYYYY(str) {
-  if (!str || typeof str !== 'string') return null;
-  const parts = str.trim().split(/[/\-.]/);
-  if (parts.length !== 3) return null;
-  const day = parseInt(parts[0], 10);
-  const month = parseInt(parts[1], 10) - 1;
-  const year = parseInt(parts[2], 10);
-  if (isNaN(day) || isNaN(month) || isNaN(year)) return null;
-  const d = new Date(year, month, day);
-  if (d.getDate() !== day || d.getMonth() !== month || d.getFullYear() !== year) return null;
-  return d;
-}
-
-function isExpired(dataVendaStr) {
-  const dataVenda = parseDateDDMMYYYY(dataVendaStr);
-  if (!dataVenda) return false;
-  const hoje = new Date();
-  hoje.setHours(0, 0, 0, 0);
-  const fimValidade = new Date(dataVenda);
-  fimValidade.setDate(fimValidade.getDate() + DIAS_VALIDADE);
-  fimValidade.setHours(0, 0, 0, 0);
-  return hoje >= fimValidade;
-}
-
-async function checkExpiration() {
-  try {
-    const rows = await fetchAllRows();
-    if (!rows || rows.length <= 1) return;
-    let count = 0;
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      const status = (row[5] || '').toString().toLowerCase();
-      const dataVenda = (row[7] || '').toString().trim();
-      const isIndisponivel = status.includes('indispon');
-      if (isIndisponivel && dataVenda && isExpired(dataVenda)) {
-        await markProfileAvailable(i + 1);
-        count++;
-      }
-    }
-    if (count > 0) console.log(`[Expiracao] ${count} perfil(is) libertado(s) por expiração.`);
-  } catch (e) {
-    console.error('[Expiracao] Erro:', e.message);
-  }
-}
-
-function startExpirationInterval() {
-  const intervalMs = (parseInt(process.env.EXPIRACAO_INTERVAL_MINUTES, 10) || 60) * 60 * 1000;
-  checkExpiration();
-  setInterval(checkExpiration, intervalMs);
-}
-
-module.exports = { checkExpiration, startExpirationInterval };
-=======
 // =====================================================================
 // MÓDULO: NOTIFICAÇÕES DE EXPIRAÇÃO
-// =====================================================================
-// COMO REUTILIZAR ESTE TEMPLATE:
-//
-// Este módulo segue um padrão de 4 partes que podes aplicar a
-// qualquer feature de automação futura:
-//
-//   1. CONFIGURAÇÃO  — variáveis e constantes do módulo
-//   2. LÓGICA CORE   — a função principal que faz o trabalho
-//   3. SCHEDULER     — quando executa (cron/interval)
-//   4. ENDPOINT API  — expõe dados ao dashboard
-//
-// Para criar uma nova feature, copia este ficheiro, muda as 4 partes.
+// Estratégia de marketing em 3 momentos:
+//   7d antes — aviso suave       (UMA VEZ)
+//   3d antes — aviso com urgência (UMA VEZ)
+//   0d        — aviso final       (UMA VEZ)
+//   após exp. — silêncio total, libertar slot
 // =====================================================================
 
-// ─────────────────────────────────────────────────────────────────────
-// PARTE 1 — CONFIGURAÇÃO
-// ─────────────────────────────────────────────────────────────────────
+const DIAS_PLANO = parseInt(process.env.DIAS_VALIDADE_EXPIRACAO, 10) || 30;
 
-const EXPIRACAO_CONFIG = {
-  diasPlano: 30,          // duração do plano em dias
-  avisoDias: 3,           // avisar X dias antes de expirar
-  horaExecucao: 9,        // hora do dia para correr (9 = 9h da manhã)
-  checkIntervalMs: 60 * 60 * 1000, // verificar a cada 1 hora
-};
-
-// Tracking para não enviar avisos duplicados no mesmo dia
-const expiracaoAvisosEnviados = new Set(); // "phone_YYYY-MM-DD"
+// Deduplicação em memória: "phone_dataVenda_tipo" (ex: "244xxx_15/01/2024_7d")
+// Usa dataVenda (não hoje) para sobreviver a múltiplas execuções no mesmo dia
+const avisosEnviados = new Set();
 
 // ─────────────────────────────────────────────────────────────────────
-// PARTE 2 — LÓGICA CORE
+// HELPERS
 // ─────────────────────────────────────────────────────────────────────
-
-// Converte "DD/MM/YYYY" → objeto Date
 function parseDatePT(str) {
   if (!str || typeof str !== 'string') return null;
   const parts = str.trim().split('/');
   if (parts.length !== 3) return null;
-  const [dia, mes, ano] = parts;
-  const d = new Date(parseInt(ano), parseInt(mes) - 1, parseInt(dia));
+  const d = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
   return isNaN(d.getTime()) ? null : d;
 }
 
-// Diferença em dias entre hoje e uma data
-function diasAteExpirar(dataVenda) {
-  const venda = parseDatePT(dataVenda);
+function diasAteExpirar(dataVendaStr) {
+  const venda = parseDatePT(dataVendaStr);
   if (!venda) return null;
-  const expiracao = new Date(venda);
-  expiracao.setDate(expiracao.getDate() + EXPIRACAO_CONFIG.diasPlano);
+  const expiry = new Date(venda);
+  expiry.setDate(expiry.getDate() + DIAS_PLANO);
   const hoje = new Date();
   hoje.setHours(0, 0, 0, 0);
-  expiracao.setHours(0, 0, 0, 0);
-  const diffMs = expiracao - hoje;
-  return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
-}
-
-// Mensagem de aviso — 3 dias antes
-function msgAviso(nome, plataforma, plano, diasRestantes) {
-  const nomeStr = nome ? `Olá ${nome}! 👋` : 'Olá! 👋';
-  const emoji = plataforma.toLowerCase().includes('netflix') ? '🎬' : '📺';
-  return `${nomeStr}\n\n${emoji} O teu plano *${plataforma} ${plano}* expira em *${diasRestantes} dias*.\n\nPara continuares a ver sem interrupções, renova agora! 😊\n\nResponde *renovar* ou clica aqui:\nhttps://streamzone-frontend.vercel.app`;
-}
-
-// Mensagem de último dia
-function msgUltimoDia(nome, plataforma, plano) {
-  const nomeStr = nome ? `${nome}, ` : '';
-  const emoji = plataforma.toLowerCase().includes('netflix') ? '🎬' : '📺';
-  return `⚠️ ${nomeStr}hoje é o *último dia* do teu plano ${emoji} *${plataforma} ${plano}*!\n\nNão percas o acesso — renova agora em segundos:\nhttps://streamzone-frontend.vercel.app\n\nQualquer dúvida estamos aqui. 😊`;
-}
-
-// Mensagem de expirado (enviada ao supervisor)
-function msgSupervisorExpirado(phone, nome, plataforma, plano, rowIndex) {
-  return `🔄 *PLANO EXPIRADO*\n👤 ${nome || phone}\n📱 ${phone}\n${plataforma.toLowerCase().includes('netflix') ? '🎬' : '📺'} ${plataforma} ${plano}\n📋 Linha ${rowIndex} libertada na Sheet\n\nCliente não renovou — slot reposto.`;
+  expiry.setHours(0, 0, 0, 0);
+  return Math.round((expiry - hoje) / (1000 * 60 * 60 * 24));
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// FUNÇÃO PRINCIPAL — corre uma vez por dia
+// MENSAGENS (templates exactos de marketing)
 // ─────────────────────────────────────────────────────────────────────
-async function verificarExpiracoes() {
+function msg7Dias(nome, plataforma, website) {
+  return (
+    `Olá ${nome}! 😊\n\n` +
+    `O teu plano 🎬 *${plataforma}* expira daqui a *7 dias*.\n\n` +
+    `Aproveita para renovar com antecedência e continua a ver os teus filmes e séries favoritos sem interrupções 🍿\n\n` +
+    `👉 Renova aqui: ${website}\n\n` +
+    `Qualquer dúvida estamos aqui! 💬`
+  );
+}
+
+function msg3Dias(nome, plataforma, website) {
+  return (
+    `${nome}, atenção! ⏰\n\n` +
+    `O teu plano 🎬 *${plataforma}* expira em apenas *3 dias*.\n\n` +
+    `Não percas o acesso às tuas séries a meio — renova agora em menos de 2 minutos 😊\n\n` +
+    `💳 Renova aqui: ${website}\n\n` +
+    `Estamos sempre disponíveis para ajudar! 🙌`
+  );
+}
+
+function msg0Dias(nome, plataforma, website, marcaNome) {
+  return (
+    `${nome}, hoje é o último dia! 🚨\n\n` +
+    `O teu plano 🎬 *${plataforma}* expira *hoje*.\n\n` +
+    `Renova agora e continua a ver sem parar 🎬🍿\n\n` +
+    `🔗 ${website}\n\n` +
+    `Obrigado por escolheres a ${marcaNome}! ❤️`
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// FUNÇÃO PRINCIPAL — corre uma vez por dia às 9h
+// ─────────────────────────────────────────────────────────────────────
+async function verificarExpiracoes({ sendWhatsAppMessage, MAIN_BOSS, branding, fetchAllRows, markProfileAvailable, isIndisponivel }) {
   console.log('🔔 [Expiração] A verificar planos...');
-  const hoje = new Date().toISOString().split('T')[0]; // YYYY-MM-DD para dedup
-  let avisados = 0, expirados = 0;
+  let avisados = 0, libertados = 0;
 
   try {
     const rows = await fetchAllRows();
     if (!rows || rows.length <= 1) return;
 
-    // Colunas: A=Plataforma B=Email C=Senha D=NomePerfil E=Pin F=Status G=Cliente H=Data_Venda I=QNTD J=Tipo
+    // Colunas: A=Plataforma B=Email C=Senha D=NomePerfil E=Pin F=Status G=Cliente H=DataVenda I=QNTD J=Tipo
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       const plataforma = row[0] || '';
       const status     = row[5] || '';
       const clienteRaw = row[6] || '';
       const dataVenda  = row[7] || '';
-      const plano      = row[8] || 'Individual';
 
-      // Só processa linhas vendidas (indisponíveis) com data de venda
       if (!isIndisponivel(status) || !dataVenda || !clienteRaw) continue;
 
-      // Extrair número e nome do campo Cliente ("Nome - 244XXXXXXXXX")
+      // Extrair nome e telemóvel do campo "Nome - 244XXXXXXXXX"
       const partes = clienteRaw.split(' - ');
       const nome   = partes[0]?.trim() || '';
-      const phone  = partes[1]?.replace(/\D/g, '') || partes[0]?.replace(/\D/g, '') || '';
+      const phone  = partes.length > 1
+        ? partes[partes.length - 1].replace(/\D/g, '')
+        : partes[0].replace(/\D/g, '');
       if (!phone) continue;
 
       const dias = diasAteExpirar(dataVenda);
       if (dias === null) continue;
 
-      const dedupeKey = `${phone}_${hoje}`;
+      const keyBase = `${phone}_${dataVenda}`;
 
-      // ── CASO 1: Expira em exactamente DIAS_AVISO dias ──
-      if (dias === EXPIRACAO_CONFIG.avisoDias && !expiracaoAvisosEnviados.has(dedupeKey)) {
-        await sendWhatsAppMessage(phone, msgAviso(nome, plataforma, plano, dias));
-        expiracaoAvisosEnviados.add(dedupeKey);
+      if (dias === 7 && !avisosEnviados.has(`${keyBase}_7d`)) {
+        // ── 7 dias antes — aviso suave ──
+        await sendWhatsAppMessage(phone, msg7Dias(nome, plataforma, branding.website));
+        avisosEnviados.add(`${keyBase}_7d`);
         avisados++;
-        console.log(`📩 [Expiração] Aviso enviado: ${phone} (${nome}) — ${plataforma} expira em ${dias} dias`);
-      }
+        console.log(`📩 [Expiração] 7d aviso enviado: ${phone} (${nome}) — ${plataforma}`);
 
-      // ── CASO 2: Último dia ──
-      else if (dias === 1 && !expiracaoAvisosEnviados.has(dedupeKey + '_ultimo')) {
-        await sendWhatsAppMessage(phone, msgUltimoDia(nome, plataforma, plano));
-        expiracaoAvisosEnviados.add(dedupeKey + '_ultimo');
+      } else if (dias === 3 && !avisosEnviados.has(`${keyBase}_3d`)) {
+        // ── 3 dias antes — aviso com urgência ──
+        await sendWhatsAppMessage(phone, msg3Dias(nome, plataforma, branding.website));
+        avisosEnviados.add(`${keyBase}_3d`);
         avisados++;
-        console.log(`⚠️ [Expiração] Último dia: ${phone} (${nome}) — ${plataforma}`);
-      }
+        console.log(`⚠️ [Expiração] 3d aviso enviado: ${phone} (${nome}) — ${plataforma}`);
 
-      // ── CASO 3: Já expirou — libertar slot ──
-      else if (dias < 0) {
-        const rowIndex = i + 1;
-        await markProfileAvailable(rowIndex);
-        expirados++;
-        console.log(`♻️ [Expiração] Slot libertado: linha ${rowIndex} — ${phone} (${plataforma})`);
+      } else if (dias === 0 && !avisosEnviados.has(`${keyBase}_0d`)) {
+        // ── Dia de expiração — aviso final ──
+        await sendWhatsAppMessage(phone, msg0Dias(nome, plataforma, branding.website, branding.nome));
+        avisosEnviados.add(`${keyBase}_0d`);
+        avisados++;
+        console.log(`🚨 [Expiração] Último dia enviado: ${phone} (${nome}) — ${plataforma}`);
 
-        // Notificar supervisor
+      } else if (dias < 0) {
+        // ── Após expiração — silêncio ao cliente, libertar slot ──
+        await markProfileAvailable(i + 1);
+        libertados++;
+        console.log(`♻️ [Expiração] Slot libertado: linha ${i + 1} — ${phone} (${plataforma})`);
+
+        // Notificar apenas o supervisor (não o cliente)
         if (MAIN_BOSS) {
-          await sendWhatsAppMessage(MAIN_BOSS, msgSupervisorExpirado(phone, nome, plataforma, plano, rowIndex));
+          await sendWhatsAppMessage(MAIN_BOSS,
+            `♻️ *PLANO EXPIRADO*\n👤 ${nome || phone}\n📱 ${phone}\n🎬 ${plataforma}\n📋 Linha ${i + 1} libertada na Sheet`
+          );
         }
       }
+      // Qualquer outro valor (dias=6, 5, 4, 2, 1) → silêncio total
     }
 
-    console.log(`✅ [Expiração] Concluído — ${avisados} avisos enviados, ${expirados} slots libertados`);
+    console.log(`✅ [Expiração] Concluído — ${avisados} avisos enviados, ${libertados} slots libertados`);
   } catch (err) {
     console.error('❌ [Expiração] Erro:', err.message);
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// PARTE 3 — SCHEDULER
-// Executa às 9h todos os dias
+// SCHEDULER — executa às 9h todos os dias
 // ─────────────────────────────────────────────────────────────────────
-function iniciarSchedulerExpiracao() {
-  function msAteProximas9h() {
+function iniciar(deps) {
+  function msAte9h() {
     const agora = new Date();
-    const proximas9h = new Date();
-    proximas9h.setHours(EXPIRACAO_CONFIG.horaExecucao, 0, 0, 0);
-    if (proximas9h <= agora) proximas9h.setDate(proximas9h.getDate() + 1);
-    return proximas9h - agora;
+    const prox  = new Date();
+    prox.setHours(9, 0, 0, 0);
+    if (prox <= agora) prox.setDate(prox.getDate() + 1);
+    return prox - agora;
   }
 
-  // Primeiro run — às 9h de hoje (ou amanhã se já passou)
+  const ms = msAte9h();
   setTimeout(() => {
-    verificarExpiracoes();
-    // Depois disso, corre a cada 24h
-    setInterval(verificarExpiracoes, 24 * 60 * 60 * 1000);
-  }, msAteProximas9h());
+    verificarExpiracoes(deps);
+    setInterval(() => verificarExpiracoes(deps), 24 * 60 * 60 * 1000);
+  }, ms);
 
-  const horasAte = Math.round(msAteProximas9h() / 1000 / 60 / 60);
-  console.log(`🕘 [Expiração] Scheduler iniciado — próxima verificação em ${horasAte}h`);
+  const horas = Math.round(ms / 3600000);
+  console.log(`🕘 [Expiração] Scheduler iniciado — próxima verificação em ${horas}h (às 9h)`);
 }
 
-// Arrancar o scheduler quando o bot iniciar
-iniciarSchedulerExpiracao();
-
-// ─────────────────────────────────────────────────────────────────────
-// PARTE 4 — ENDPOINT API (para o Dashboard)
-// ─────────────────────────────────────────────────────────────────────
-
-// GET /api/admin/expiracoes — clientes que expiram nos próximos 7 dias
-app.get('/api/admin/expiracoes', requireAdmin, async (req, res) => {
-  try {
-    const rows = await fetchAllRows();
-    const aExpirar = [];
-    const hoje = new Date();
-    hoje.setHours(0, 0, 0, 0);
-
-    for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      const plataforma = row[0] || '';
-      const status     = row[5] || '';
-      const clienteRaw = row[6] || '';
-      const dataVenda  = row[7] || '';
-      const plano      = row[8] || '';
-
-      if (!isIndisponivel(status) || !dataVenda || !clienteRaw) continue;
-
-      const dias = diasAteExpirar(dataVenda);
-      if (dias === null || dias > 7 || dias < -7) continue;
-
-      const partes = clienteRaw.split(' - ');
-      const nome   = partes[0]?.trim() || '';
-      const phone  = partes[1]?.replace(/\D/g, '') || '';
-
-      aExpirar.push({
-        rowIndex: i + 1,
-        plataforma,
-        plano,
-        nome,
-        phone,
-        dataVenda,
-        diasRestantes: dias,
-        estado: dias < 0 ? 'expirado' : dias === 0 ? 'hoje' : dias <= 3 ? 'urgente' : 'aviso',
-      });
-    }
-
-    // Ordenar por dias restantes (mais urgente primeiro)
-    aExpirar.sort((a, b) => a.diasRestantes - b.diasRestantes);
-
-    res.json({ success: true, expiracoes: aExpirar, total: aExpirar.length });
-  } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
-  }
-});
-
-// POST /api/admin/expiracoes/avisar — enviar aviso manual a um cliente
-app.post('/api/admin/expiracoes/avisar', requireAdmin, async (req, res) => {
-  try {
-    const { phone, nome, plataforma, plano, diasRestantes } = req.body;
-    if (!phone) return res.status(400).json({ success: false, message: 'phone obrigatório' });
-
-    const msg = diasRestantes <= 1
-      ? msgUltimoDia(nome, plataforma, plano)
-      : msgAviso(nome, plataforma, plano, diasRestantes);
-
-    await sendWhatsAppMessage(phone, msg);
-    res.json({ success: true, message: `Aviso enviado para ${phone}` });
-  } catch (e) {
-    res.status(500).json({ success: false, message: e.message });
-  }
-});
->>>>>>> Stashed changes
+module.exports = { iniciar, diasAteExpirar };
