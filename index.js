@@ -1992,6 +1992,10 @@ app.get('/api/branding', (req, res) => {
   res.json(branding);
 });
 
+app.get('/api/version', (req, res) => {
+  res.json({ v: '20260220-expiracao-mrr', started: new Date().toISOString() });
+});
+
 app.use('/api/admin', adminRouter);
 
 // Scheduler de expiração — avisos automáticos às 9h
