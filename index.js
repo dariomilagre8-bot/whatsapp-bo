@@ -14,6 +14,7 @@ const {
   hasAnyStock, countAvailableProfiles, appendLostSale,
   isIndisponivel,
 } = require('./googleSheets');
+const { supabase } = require('./supabase');
 
 const app = express();
 app.use(express.json());
@@ -656,6 +657,39 @@ async function processApproval(targetClient, senderNum) {
             await markProfileSold(p.rowIndex, pedido.clientName || '', targetClient, 1);
           }
         }
+      }
+    }
+
+    // Registo no Supabase (se disponível) — dual-write não-bloqueante
+    if (supabase) {
+      try {
+        // Upsert cliente
+        const { data: cliente } = await supabase
+          .from('clientes')
+          .upsert({ whatsapp: targetClient, nome: pedido.clientName || '' }, { onConflict: 'whatsapp' })
+          .select()
+          .single();
+
+        // Registar uma venda por item do carrinho
+        for (const result of results) {
+          if (result.success) {
+            const svcInfo = CATALOGO[result.item.plataforma.toLowerCase()] || {};
+            const pricePerUnit = svcInfo.planos ? (svcInfo.planos[result.item.plan.toLowerCase()] || 0) : 0;
+            const qty = result.item.quantity || 1;
+
+            await supabase.from('vendas').insert({
+              cliente_id: cliente ? cliente.id : null,
+              whatsapp: targetClient,
+              plataforma: result.item.plataforma,
+              plano: result.item.plan,
+              quantidade: qty,
+              valor_total: pricePerUnit * qty,
+              data_expiracao: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+            });
+          }
+        }
+      } catch (e) {
+        console.error('Supabase registo falhou (não crítico):', e.message);
       }
     }
   }
@@ -1818,6 +1852,82 @@ adminRouter.get('/financeiro', async (req, res) => {
   } catch (err) {
     console.error('Erro GET /financeiro:', err.message);
     res.status(500).json({ error: 'Erro ao calcular financeiro' });
+  }
+});
+
+// GET /api/admin/financeiro-db (Supabase — fallback para mensagem se não configurado)
+adminRouter.get('/financeiro-db', async (req, res) => {
+  if (!supabase) {
+    return res.json({ success: false, message: 'Supabase não configurado' });
+  }
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const thisMonthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString();
+    const lastMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1).toISOString();
+    const lastMonthEnd   = new Date(today.getFullYear(), today.getMonth(), 1).toISOString();
+    const sevenDaysAgo   = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    const [
+      { data: todasVendas },
+      { data: vendasHoje },
+      { data: vendasMes },
+      { data: vendasMesPassado },
+      { data: vendasSemana },
+      { count: totalClientes },
+    ] = await Promise.all([
+      supabase.from('vendas').select('valor_total, plataforma, quantidade').eq('status', 'ativo'),
+      supabase.from('vendas').select('valor_total, quantidade').gte('data_venda', today.toISOString()),
+      supabase.from('vendas').select('valor_total, quantidade').gte('data_venda', thisMonthStart),
+      supabase.from('vendas').select('valor_total, quantidade').gte('data_venda', lastMonthStart).lt('data_venda', lastMonthEnd),
+      supabase.from('vendas').select('valor_total, quantidade, data_venda, plataforma').gte('data_venda', sevenDaysAgo),
+      supabase.from('clientes').select('*', { count: 'exact', head: true }),
+    ]);
+
+    const sum = (arr) => (arr || []).reduce((s, r) => s + (r.valor_total || 0), 0);
+    const cnt = (arr) => (arr || []).reduce((s, r) => s + (r.quantidade || 1), 0);
+
+    // Últimos 7 dias agrupados por dia
+    const dias7 = {};
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      const key = `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
+      dias7[key] = { data: key, receita: 0, vendas: 0 };
+    }
+    (vendasSemana || []).forEach(v => {
+      const d = new Date(v.data_venda);
+      const key = `${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')}`;
+      if (dias7[key]) {
+        dias7[key].receita += v.valor_total || 0;
+        dias7[key].vendas  += v.quantidade || 1;
+      }
+    });
+
+    // Por plataforma
+    const porPlataforma = {};
+    (todasVendas || []).forEach(v => {
+      const p = v.plataforma || 'Outro';
+      if (!porPlataforma[p]) porPlataforma[p] = { vendas: 0, receita: 0 };
+      porPlataforma[p].vendas  += v.quantidade || 1;
+      porPlataforma[p].receita += v.valor_total || 0;
+    });
+
+    res.json({
+      success: true,
+      fonte: 'supabase',
+      financeiro: {
+        hoje:       { vendas: cnt(vendasHoje),       receita: sum(vendasHoje) },
+        esteMes:    { vendas: cnt(vendasMes),         receita: sum(vendasMes) },
+        mesPassado: { vendas: cnt(vendasMesPassado),  receita: sum(vendasMesPassado) },
+        totalAtivo: { clientes: totalClientes || 0,  receita: sum(todasVendas) },
+        porPlataforma,
+        ultimos7Dias: Object.values(dias7),
+      },
+    });
+  } catch (err) {
+    console.error('Erro GET /financeiro-db:', err.message);
+    res.status(500).json({ error: 'Erro ao calcular financeiro via Supabase' });
   }
 });
 
