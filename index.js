@@ -1651,6 +1651,74 @@ adminRouter.post('/expiracoes/avisar', async (req, res) => {
   res.json({ success: true });
 });
 
+// GET /api/admin/clientes
+adminRouter.get('/clientes', async (req, res) => {
+  try {
+    const rows = await fetchAllRows();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const msPerDay = 24 * 60 * 60 * 1000;
+
+    const clientMap = {};
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const plataforma = row[0] || '';
+      const nomePerfil = row[3] || '';
+      const status    = row[5] || '';
+      const cliente   = row[6] || '';
+      const dataVendaStr = row[7] || '';
+      const tipoConta = row[9] || '';
+
+      if (!isIndisponivel(status) || !cliente || !dataVendaStr) continue;
+
+      const parts = dataVendaStr.split('/');
+      if (parts.length !== 3) continue;
+      const dataVenda = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+      if (isNaN(dataVenda.getTime())) continue;
+
+      const expiry = new Date(dataVenda);
+      expiry.setDate(expiry.getDate() + 30);
+      expiry.setHours(0, 0, 0, 0);
+      const diasRestantes = Math.round((expiry - today) / msPerDay);
+
+      let estado;
+      if (diasRestantes < 0)       estado = 'expirado';
+      else if (diasRestantes <= 3) estado = 'urgente';
+      else if (diasRestantes <= 7) estado = 'aviso';
+      else                         estado = 'ok';
+
+      const clienteParts = cliente.split(' - ');
+      const nome  = clienteParts.length > 1 ? clienteParts.slice(0, -1).join(' - ') : cliente;
+      const phone = clienteParts.length > 1 ? clienteParts[clienteParts.length - 1] : '';
+      const key   = phone || nome;
+
+      if (!clientMap[key]) clientMap[key] = { phone, nome, planos: [] };
+      clientMap[key].planos.push({ id: i + 1, plataforma, plano: nomePerfil || tipoConta, dataVenda: dataVendaStr, diasRestantes, estado });
+    }
+
+    const estadoRank = { expirado: 0, urgente: 1, aviso: 2, ok: 3 };
+    const clientes = Object.values(clientMap).map(c => {
+      const worst = c.planos.reduce((w, p) => estadoRank[p.estado] < estadoRank[w.estado] ? p : w, c.planos[0]);
+      return { ...c, totalPlanos: c.planos.length, diasRestantes: worst.diasRestantes, estado: worst.estado };
+    });
+    clientes.sort((a, b) => estadoRank[a.estado] - estadoRank[b.estado] || a.diasRestantes - b.diasRestantes);
+
+    res.json({ clientes });
+  } catch (err) {
+    console.error('Erro GET /clientes:', err.message);
+    res.status(500).json({ error: 'Erro ao ler clientes' });
+  }
+});
+
+// POST /api/admin/clientes/mensagem
+adminRouter.post('/clientes/mensagem', async (req, res) => {
+  const { phone, message } = req.body;
+  if (!phone || !message) return res.status(400).json({ error: 'phone e message obrigatórios' });
+  const result = await sendWhatsAppMessage(phone, message);
+  if (!result.sent) return res.status(500).json({ error: 'Falha ao enviar mensagem' });
+  res.json({ success: true });
+});
+
 app.use('/api/admin', adminRouter);
 
 app.listen(port, '0.0.0.0', () => console.log(`Bot v16.0 (StreamZone) rodando na porta ${port}`));
