@@ -1706,6 +1706,17 @@ adminRouter.post('/expiracoes/avisar', async (req, res) => {
   res.json({ success: true });
 });
 
+// POST /api/admin/expiracoes/verificar-agora — trigger manual para testes
+adminRouter.post('/expiracoes/verificar-agora', async (req, res) => {
+  try {
+    const { verificarExpiracoes } = require('./expiracao-modulo');
+    await verificarExpiracoes({ sendWhatsAppMessage, MAIN_BOSS, branding, fetchAllRows, markProfileAvailable, isIndisponivel });
+    res.json({ success: true, message: 'Verificação concluída — ver logs do servidor para detalhes' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Calcula o preço de um plano com base na plataforma e tipo
 function getPrecoDePlano(plataforma, plano) {
   const pStr  = (plataforma || '').toLowerCase();

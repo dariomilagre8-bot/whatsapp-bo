@@ -167,4 +167,4 @@ function iniciar(deps) {
   console.log(`🕘 [Expiração] Scheduler iniciado — próxima verificação em ${horas}h (às 9h)`);
 }
 
-module.exports = { iniciar, diasAteExpirar };
+module.exports = { iniciar, verificarExpiracoes, diasAteExpirar };
