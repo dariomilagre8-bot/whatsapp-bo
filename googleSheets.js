@@ -18,7 +18,9 @@ function isDisponivel(statusCell) {
   return n.includes('dispon') && !n.includes('indispon');
 }
 function isIndisponivel(statusCell) {
-  return normalizeStatus(statusCell).includes('indispon');
+  const n = normalizeStatus(statusCell);
+  // Slot ocupado: "indisponivel" (padrão) ou "activo" (variante aceite)
+  return n.includes('indispon') || n === 'activo';
 }
 // Normaliza nome de plataforma para comparacao com a Sheet
 function normalizePlataforma(raw) {
