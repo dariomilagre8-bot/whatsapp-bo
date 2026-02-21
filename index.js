@@ -13,7 +13,7 @@ const {
   fetchAllRows, updateSheetCell, markProfileSold, markProfileAvailable,
   checkClientInSheet, findAvailableProfile, findAvailableProfiles, findClientProfiles,
   hasAnyStock, countAvailableProfiles, appendLostSale,
-  isIndisponivel,
+  isIndisponivel, findClientByName, updateClientPhone,
 } = require('./googleSheets');
 const { supabase } = require('./supabase');
 
@@ -151,6 +151,7 @@ const CATALOGO = {
       individual: branding.precos.netflix.individual,
       partilha: branding.precos.netflix.partilha,
       familia: branding.precos.netflix.familia,
+      familia_completa: branding.precos.netflix.familia_completa,
     }
   },
   prime_video: {
@@ -164,8 +165,8 @@ const CATALOGO = {
   }
 };
 
-const PLAN_SLOTS = { individual: 1, partilha: 2, familia: 3 };
-const PLAN_RANK = { individual: 1, partilha: 2, familia: 3 };
+const PLAN_SLOTS = { individual: 1, partilha: 2, familia: 3, familia_completa: 5 };
+const PLAN_RANK = { individual: 1, partilha: 2, familia: 3, familia_completa: 4 };
 
 const PAYMENT = {
   titular: 'Braulio Manuel',
@@ -173,13 +174,19 @@ const PAYMENT = {
   multicaixa: '946014060'
 };
 
-const PLAN_PROFILE_TYPE = { individual: 'full_account', partilha: 'shared_profile', familia: 'shared_profile' };
+const PLAN_PROFILE_TYPE = { individual: 'full_account', partilha: 'shared_profile', familia: 'shared_profile', familia_completa: 'full_account' };
 
 const SUPPORT_KEYWORDS = [
   'não entra', 'nao entra', 'senha errada', 'ajuda', 'travou',
   'não funciona', 'nao funciona', 'problema', 'erro',
   'não consigo', 'nao consigo', 'não abre', 'nao abre'
 ];
+
+// Tarefa H: Detecção de pedido de atendimento humano
+const HUMAN_TRANSFER_PATTERN = /\b(falar com (supervisor|pessoa|humano|atendente)|quero (falar com |)(supervisor|humano|pessoa|atendente)|atendimento (humano|pessoal)|supervisor|fala com (pessoa|humano)|preciso de ajuda humana)\b/i;
+
+// Tarefa G: Detecção de problema de localização Netflix
+const LOCATION_ISSUE_PATTERN = /\b(locali[zs]a[çc][aã]o|locali[zs]ações|locali[zs]oes|casa principal|fora de casa|mudar (localiza[çc][aã]o|casa)|viagem|dispositivo|acesso bloqueado)\b/i;
 
 // ==================== FUNCOES PURAS ====================
 function removeAccents(str) {
@@ -193,21 +200,39 @@ function formatPriceTable(serviceKey) {
   if (svc.planos.individual != null) lines.push(`👤 Individual (1 perfil): ${svc.planos.individual.toLocaleString('pt')} Kz`);
   if (svc.planos.partilha != null) lines.push(`👥 Partilha (2 perfis): ${svc.planos.partilha.toLocaleString('pt')} Kz`);
   if (svc.planos.familia != null) lines.push(`👨‍👩‍👧‍👦 Família (3 perfis): ${svc.planos.familia.toLocaleString('pt')} Kz`);
+  if (svc.planos.familia_completa != null) lines.push(`🏠 Família Completa (5 perfis — conta exclusiva): ${svc.planos.familia_completa.toLocaleString('pt')} Kz`);
   return lines.join('\n');
 }
+
+const PLAN_LABELS = {
+  individual: 'Individual',
+  partilha: 'Partilha',
+  familia: 'Família',
+  familia_completa: 'Família Completa',
+};
 
 function planChoicesText(serviceKey) {
   const svc = CATALOGO[serviceKey];
   if (!svc) return '';
-  return Object.keys(svc.planos).map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' / ');
+  return Object.keys(svc.planos).map(p => PLAN_LABELS[p] || (p.charAt(0).toUpperCase() + p.slice(1))).join(' / ');
 }
+
+// Padrões por ordem de especificidade (mais específico primeiro para evitar conflitos)
+const PLAN_DETECT_PATTERNS = {
+  familia_completa: /(familia|família)\s*(completa|inteira|toda|exclusiva)/,
+  familia: /(familia|família)(?!\s*(completa|inteira|toda|exclusiva))/,
+  partilha: /partilha/,
+  individual: /individual/,
+};
 
 function findPlan(serviceKey, text) {
   const lower = removeAccents(text.toLowerCase());
   const svc = CATALOGO[serviceKey];
   if (!svc) return null;
-  for (const [plan, price] of Object.entries(svc.planos)) {
-    if (lower.includes(plan)) return { plan, price };
+  for (const [plan, pattern] of Object.entries(PLAN_DETECT_PATTERNS)) {
+    if (svc.planos[plan] != null && pattern.test(lower)) {
+      return { plan, price: svc.planos[plan] };
+    }
   }
   return null;
 }
@@ -647,13 +672,15 @@ async function processApproval(targetClient, senderNum) {
           await sendWhatsAppMessage(targetClient, entrega);
         }
       }
-      await sendWhatsAppMessage(targetClient, `Obrigado por escolheres a ${branding.nome}! 🎉\nQualquer dúvida, estamos aqui para ajudar. 😊\n\nPrecisas de mais alguma coisa?`);
-
-      // Enviar email de credenciais se o cliente forneceu email (BUG #1 + BUG #2 resolvidos)
-      if (pedido.email && allCreds.length > 0) {
-        const productName = pedido.cart.map(i => `${i.plataforma} ${i.plan}`).join(', ');
-        await sendCredentialsEmail(pedido.email, pedido.clientName || 'Cliente', productName, allCreds);
+      // Tarefa L: Mensagem de confirmação clara após entrega
+      const emailEnviado = pedido.email && allCreds.length > 0;
+      if (emailEnviado) {
+        await sendCredentialsEmail(pedido.email, pedido.clientName || 'Cliente', pedido.cart.map(i => `${i.plataforma} ${i.plan}`).join(', '), allCreds);
       }
+      const confirmMsg = emailEnviado
+        ? `✅ Credenciais enviadas aqui via WhatsApp e também para o teu email *${pedido.email}*.\n\n💾 *Guarda bem os dados de acesso!* (tira screenshot desta conversa)\n\nObrigado por escolheres a ${branding.nome}! 🎉 Qualquer dúvida, estamos aqui. 😊`
+        : `✅ Credenciais enviadas aqui via WhatsApp.\n\n💾 *Guarda bem os dados de acesso!* (tira screenshot desta conversa)\n\nObrigado por escolheres a ${branding.nome}! 🎉 Qualquer dúvida, estamos aqui. 😊`;
+      await sendWhatsAppMessage(targetClient, confirmMsg);
     }
 
     // Marcar TODOS os perfis na planilha
@@ -945,6 +972,50 @@ app.post('/', async (req, res) => {
         return res.status(200).send('OK');
       }
 
+      // --- Tarefa G: Protocolo localizações distintas Netflix ---
+      if (command === 'localizacao' && parts[1]) {
+        const targetNum = parts[1].replace(/\D/g, '');
+        const targetState = clientStates[targetNum];
+        const nome = targetState?.clientName || '';
+        const msgCliente = (
+          `Olá${nome ? ' ' + nome : ''}! 😊\n\n` +
+          `Detetámos um acesso à tua conta Netflix fora da localização habitual.\n\n` +
+          `*O que deves fazer:*\n` +
+          `1️⃣ Abre o Netflix no teu dispositivo\n` +
+          `2️⃣ Vai a *Conta → Gerir acesso e dispositivos*\n` +
+          `3️⃣ Confirma a tua localização principal\n\n` +
+          `Se não conseguires resolver, responde aqui e nós ajudamos! 🙏`
+        );
+        await sendWhatsAppMessage(targetNum, msgCliente);
+        await sendWhatsAppMessage(senderNum, `✅ Mensagem de localização enviada para ${targetNum}${nome ? ' (' + nome + ')' : ''}.`);
+        return res.status(200).send('OK');
+      }
+
+      // --- Tarefa F: Atualizar PIN de perfil via mensagem do supervisor ---
+      // Formato: "pin: 1234 para NomePerfil" ou "pin 1234 NomePerfil"
+      const pinMatch = textMessage.match(/\bpin\b\s*[:\-]?\s*(\d{4,6})\s+(?:para\s+)?(.+)/i);
+      if (pinMatch) {
+        const novoPin = pinMatch[1];
+        const targetNome = pinMatch[2].trim().toLowerCase();
+        const rows = await fetchAllRows();
+        let updated = false;
+        for (let i = 1; i < rows.length; i++) {
+          const row = rows[i];
+          const nomePerfil = (row[3] || '').toLowerCase();
+          const clienteRaw = (row[6] || '').toLowerCase();
+          if (nomePerfil.includes(targetNome) || clienteRaw.split(' - ')[0].includes(targetNome)) {
+            await updateSheetCell(i + 1, 'E', novoPin);
+            updated = true;
+            await sendWhatsAppMessage(senderNum, `✅ PIN ${novoPin} atualizado para "${row[3] || row[6]}" (linha ${i + 1}).`);
+            break;
+          }
+        }
+        if (!updated) {
+          await sendWhatsAppMessage(senderNum, `⚠️ Perfil "${pinMatch[2].trim()}" não encontrado na Sheet. Verifica o nome.`);
+        }
+        return res.status(200).send('OK');
+      }
+
       // --- Listar vendas perdidas ---
       if (command === 'perdas') {
         const pending = lostSales.filter(s => !s.recovered);
@@ -1035,6 +1106,39 @@ app.post('/', async (req, res) => {
     const state = clientStates[senderNum];
     state.lastActivity = Date.now();
     console.log(`🔍 DEBUG: step="${state.step}" para ${senderNum}`);
+
+    // =====================================================================
+    // TAREFA H: PEDIDO DE ATENDIMENTO HUMANO — interceta em qualquer step
+    // (exceto quando já está pausado ou a aguardar supervisor)
+    // =====================================================================
+    if (textMessage && !pausedClients[senderNum] && state.step !== 'esperando_supervisor' && HUMAN_TRANSFER_PATTERN.test(removeAccents(textMessage.toLowerCase()))) {
+      pausedClients[senderNum] = true;
+      const nome = state.clientName;
+      await sendWhatsAppMessage(senderNum, `Claro${nome ? ', ' + nome : ''}! 😊 Vou transferir-te para a nossa equipa. Um supervisor irá falar contigo em breve.`);
+      if (MAIN_BOSS) {
+        await sendWhatsAppMessage(MAIN_BOSS, `🙋 *PEDIDO DE ATENDIMENTO HUMANO*\n👤 ${senderNum}${nome ? ' (' + nome + ')' : ''}\n📍 Step: ${state.step}\n\nBot pausado. Use *retomar ${senderNum}* quando terminar.`);
+      }
+      return res.status(200).send('OK');
+    }
+
+    // =====================================================================
+    // TAREFA G: PROBLEMA DE LOCALIZAÇÃO NETFLIX — interceta em qualquer step
+    // =====================================================================
+    if (textMessage && LOCATION_ISSUE_PATTERN.test(removeAccents(textMessage.toLowerCase()))) {
+      const nome = state.clientName;
+      await sendWhatsAppMessage(senderNum,
+        `Olá${nome ? ' ' + nome : ''}! 😊 Recebi a tua mensagem sobre localização.\n\n` +
+        `*O que deves fazer:*\n` +
+        `1️⃣ Abre o Netflix no teu dispositivo\n` +
+        `2️⃣ Vai a *Conta → Gerir acesso e dispositivos*\n` +
+        `3️⃣ Confirma a tua localização principal\n\n` +
+        `Se não conseguires resolver em 5 minutos, responde aqui e o nosso supervisor ajuda! 🙏`
+      );
+      if (MAIN_BOSS) {
+        await sendWhatsAppMessage(MAIN_BOSS, `📍 *ERRO LOCALIZAÇÃO NETFLIX*\n👤 ${senderNum}${nome ? ' (' + nome + ')' : ''}\n💬 "${textMessage.substring(0, 80)}"\n\nUse *localizacao ${senderNum}* se precisar de intervir manualmente.`);
+      }
+      return res.status(200).send('OK');
+    }
 
     // =====================================================================
     // FIX #1: HANDLER GLOBAL "MUDEI DE IDEIAS"
@@ -1247,19 +1351,64 @@ app.post('/', async (req, res) => {
         state.isRenewal = true;
         state.interestStack = [svcKey];
         state.currentItemIndex = 0;
-        state.step = 'escolha_plano';
 
-        const saudacao = nome
-          ? `Olá ${nome}! Sou o Assistente de IA da ${branding.nome} 🤖.`
-          : `Olá! Sou o Assistente de IA da ${branding.nome} 🤖.`;
-        console.log(`📤 DEBUG: A enviar saudação de renovação para ${senderNum}`);
-        await sendWhatsAppMessage(senderNum, `${saudacao}\n\nVejo que já é nosso cliente de *${existing.plataforma}*! Quer renovar?\n\n${formatPriceTable(svcKey)}\n\nQual plano deseja? (${planChoicesText(svcKey)})`);
+        // Tarefa I: Deduzir o último plano para oferecer renovação rápida
+        const qntd = parseInt(existing.qntdPerfis, 10) || 1;
+        const tipo = (existing.tipoConta || '').toLowerCase();
+        let lastPlan = 'individual';
+        if (tipo === 'full_account' && qntd >= 5) lastPlan = 'familia_completa';
+        else if (tipo === 'full_account') lastPlan = 'individual';
+        else if (qntd >= 3) lastPlan = 'familia';
+        else if (qntd >= 2) lastPlan = 'partilha';
+        const lastPlanPrice = CATALOGO[svcKey]?.planos[lastPlan] || 0;
+        const lastPlanLabel = lastPlan.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+        state.step = 'confirmacao_renovacao';
+        state.lastPlan = lastPlan;
+        state.lastPlanLabel = lastPlanLabel;
+        state.lastPlanPrice = lastPlanPrice;
+
+        const saudacao = nome ? `Olá ${nome}! 😊` : `Olá! 😊`;
+        console.log(`📤 DEBUG: A enviar saudação de renovação rápida para ${senderNum}`);
+        await sendWhatsAppMessage(senderNum,
+          `${saudacao} Bem-vindo de volta à ${branding.nome}! 🎉\n\n` +
+          `Vi que és nosso cliente de *${existing.plataforma}* — ${lastPlanLabel}.\n\n` +
+          `Queres renovar o mesmo plano por *${lastPlanPrice.toLocaleString('pt')} Kz*?\n\n` +
+          `✅ *Sim* — renovar ${lastPlanLabel}\n🔄 *Outro* — escolher plano diferente`
+        );
         return res.status(200).send('OK');
       }
 
       state.step = 'captura_nome';
       console.log(`📤 DEBUG: A enviar saudação inicial para ${senderNum}`);
-      await sendWhatsAppMessage(senderNum, `Olá! Sou o Assistente de IA da ${branding.nome} 🤖. Com quem tenho o prazer de falar?`);
+      await sendWhatsAppMessage(senderNum, `Olá! 👋 Sou o Assistente de Vendas da ${branding.nome} 🤖.\n\nVendo planos de *Netflix* e *Prime Video* em Angola a preços acessíveis!\n\nCom quem tenho o prazer de falar?`);
+      return res.status(200).send('OK');
+    }
+
+    // ---- STEP: confirmacao_renovacao (Tarefa I) ----
+    if (state.step === 'confirmacao_renovacao') {
+      const lower = removeAccents(textMessage.toLowerCase().trim());
+      if (['sim', 's', 'ok', 'yes', 'quero', 'renovar'].includes(lower) || lower.includes('sim') || lower.includes('renovar')) {
+        const slotsPerUnit = PLAN_SLOTS[state.lastPlan] || 1;
+        state.cart = [{
+          serviceKey: state.serviceKey,
+          plataforma: state.plataforma,
+          plan: state.lastPlanLabel,
+          price: state.lastPlanPrice,
+          quantity: 1,
+          slotsNeeded: slotsPerUnit,
+          totalSlots: slotsPerUnit,
+          totalPrice: state.lastPlanPrice,
+        }];
+        state.totalValor = state.lastPlanPrice;
+        state.step = 'aguardando_comprovativo';
+        await sendWhatsAppMessage(senderNum, `Ótimo${state.clientName ? ', ' + state.clientName : ''}! 🎉`);
+        await sendPaymentMessages(senderNum, state);
+      } else {
+        // Cliente quer escolher outro plano
+        state.step = 'escolha_plano';
+        await sendWhatsAppMessage(senderNum, `Sem problema! Aqui estão os planos disponíveis:\n\n${formatPriceTable(state.serviceKey)}\n\nQual plano deseja? (${planChoicesText(state.serviceKey)})`);
+      }
       return res.status(200).send('OK');
     }
 
@@ -1267,12 +1416,57 @@ app.post('/', async (req, res) => {
     if (state.step === 'captura_nome') {
       const name = textMessage.trim();
       if (name.length < 2) {
-        await sendWhatsAppMessage(senderNum, 'Por favor, diga-me o seu nome para continuarmos. 😊');
+        await sendWhatsAppMessage(senderNum, 'Por favor, diz-me o teu nome para continuarmos. 😊');
         return res.status(200).send('OK');
       }
       state.clientName = name;
-      state.step = 'escolha_servico';
 
+      // Tarefa D: Procurar cliente migrado pelo nome (sem número associado)
+      try {
+        const migrated = await findClientByName(name);
+        if (migrated) {
+          // Associar o número de WhatsApp ao registo existente
+          await updateClientPhone(migrated.rowIndex, migrated.clienteName || name, senderNum);
+          console.log(`✅ [Tarefa D] Número ${senderNum} associado ao cliente "${migrated.clienteName}" (linha ${migrated.rowIndex})`);
+
+          const svcKey = migrated.plataforma.toLowerCase().includes('netflix') ? 'netflix' : 'prime_video';
+          state.serviceKey = svcKey;
+          state.plataforma = migrated.plataforma;
+          state.isRenewal = true;
+          state.interestStack = [svcKey];
+          state.currentItemIndex = 0;
+
+          const qntd = parseInt(migrated.qntdPerfis, 10) || 1;
+          const tipo = (migrated.tipoConta || '').toLowerCase();
+          let lastPlan = 'individual';
+          if (tipo === 'full_account' && qntd >= 5) lastPlan = 'familia_completa';
+          else if (tipo === 'full_account') lastPlan = 'individual';
+          else if (qntd >= 3) lastPlan = 'familia';
+          else if (qntd >= 2) lastPlan = 'partilha';
+          const lastPlanPrice = CATALOGO[svcKey]?.planos[lastPlan] || 0;
+          const lastPlanLabel = lastPlan.replace('_', ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+          state.step = 'confirmacao_renovacao';
+          state.lastPlan = lastPlan;
+          state.lastPlanLabel = lastPlanLabel;
+          state.lastPlanPrice = lastPlanPrice;
+
+          await sendWhatsAppMessage(senderNum,
+            `Prazer${name ? ', ' + name : ''}! 😊 Vi que já és nosso cliente de *${migrated.plataforma}* — ${lastPlanLabel}.\n\n` +
+            `Quer renovar o mesmo plano por *${lastPlanPrice.toLocaleString('pt')} Kz*?\n\n` +
+            `✅ *Sim* — renovar ${lastPlanLabel}\n🔄 *Outro* — escolher plano diferente`
+          );
+
+          if (MAIN_BOSS) {
+            await sendWhatsAppMessage(MAIN_BOSS, `🔗 *CLIENTE ASSOCIADO*\n👤 ${name}\n📱 ${senderNum}\n🎬 ${migrated.plataforma} (linha ${migrated.rowIndex})\n\nNúmero agora registado automaticamente.`);
+          }
+          return res.status(200).send('OK');
+        }
+      } catch (e) {
+        console.error('[Tarefa D] Erro na busca por nome:', e.message);
+      }
+
+      state.step = 'escolha_servico';
       await sendWhatsAppMessage(senderNum, `Prazer, ${name}! 😊\n\nTemos os seguintes serviços:\n\n🎬 *Netflix*\n📺 *Prime Video*\n\nQual te interessa?`);
       return res.status(200).send('OK');
     }
@@ -1794,7 +1988,12 @@ adminRouter.get('/clientes', async (req, res) => {
     });
     clientes.sort((a, b) => estadoRank[a.estado] - estadoRank[b.estado] || a.diasRestantes - b.diasRestantes);
 
-    res.json({ clientes });
+    // Tarefa M: MRR = soma dos planos ativos (não expirados) de todos os clientes
+    const mrr = clientes
+      .filter(c => c.estado !== 'expirado')
+      .reduce((sum, c) => sum + (c.totalValor || 0), 0);
+
+    res.json({ clientes, mrr });
   } catch (err) {
     console.error('Erro GET /clientes:', err.message);
     res.status(500).json({ error: 'Erro ao ler clientes' });

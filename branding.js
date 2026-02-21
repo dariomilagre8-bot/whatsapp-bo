@@ -10,6 +10,7 @@ module.exports = {
       individual: parseInt(process.env.PRECO_NETFLIX_INDIVIDUAL) || 5000,
       partilha: parseInt(process.env.PRECO_NETFLIX_PARTILHA) || 9000,
       familia: parseInt(process.env.PRECO_NETFLIX_FAMILIA) || 13500,
+      familia_completa: parseInt(process.env.PRECO_NETFLIX_FAMILIA_COMPLETA) || 25000,
     },
     prime: {
       individual: parseInt(process.env.PRECO_PRIME_INDIVIDUAL) || 3000,

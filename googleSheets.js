@@ -144,6 +144,51 @@ async function checkClientInSheet(clientNumber) {
   return null;
 }
 
+// ── Tarefa D: Encontra cliente pelo nome (para migração / clientes sem número) ──
+// Procura na coluna G por entradas com nome semelhante ao fornecido.
+// Útil para associar número de WhatsApp a clientes que foram migrados manualmente.
+async function findClientByName(name) {
+  if (!name || name.length < 2) return null;
+  const rows = await fetchAllRows();
+  if (rows.length <= 1) return null;
+  const nameLower = name.toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!isIndisponivel(row[5])) continue;
+    const cliente = row[6] || '';
+    if (!cliente) continue;
+
+    const clienteParts = cliente.split(' - ');
+    const clienteNome = clienteParts[0].trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const temTelefone = clienteParts.length > 1 && /\d{9,}/.test(clienteParts[clienteParts.length - 1]);
+
+    // Corresponde por nome (inclui ou é incluído) — ignora se já tem telefone
+    if (!temTelefone && (clienteNome.includes(nameLower) || nameLower.includes(clienteNome))) {
+      return {
+        rowIndex: i + 1,
+        plataforma: row[0] || '',
+        email: row[1] || '',
+        senha: row[2] || '',
+        nomePerfil: row[3] || '',
+        pin: row[4] || '',
+        status: row[5] || '',
+        cliente: cliente,
+        clienteName: clienteParts[0].trim(),
+        dataVenda: row[7] || '',
+        qntdPerfis: row[8] || '',
+        tipoConta: row[9] || '',
+      };
+    }
+  }
+  return null;
+}
+
+// Atualiza o campo Cliente (coluna G) para associar número ao registo
+async function updateClientPhone(rowIndex, clienteName, phone) {
+  return updateSheetCell(rowIndex, 'G', `${clienteName} - ${phone}`);
+}
+
 // Encontra perfil disponível com slots suficientes
 // profileType: 'full_account' | 'shared_profile' | undefined (backward-compatible)
 async function findAvailableProfile(plataforma, slotsNeeded, profileType) {
@@ -413,4 +458,6 @@ module.exports = {
   isDisponivel,
   isIndisponivel,
   normalizePlataforma,
+  findClientByName,
+  updateClientPhone,
 };
