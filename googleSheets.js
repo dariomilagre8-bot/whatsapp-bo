@@ -215,6 +215,17 @@ async function findAvailableProfile(plataforma, slotsNeeded, profileType) {
   const rows = await fetchAllRows();
   if (rows.length <= 1) return null;
 
+  // Pré-computar total de linhas por email (para o limite dinâmico de slots)
+  const emailTotals = {};
+  for (let j = 1; j < rows.length; j++) {
+    const rEmail = (rows[j][1] || '').toLowerCase().trim();
+    const rPlat  = normalizePlataforma(rows[j][0]);
+    const rType  = (rows[j][11] || '').toLowerCase().trim() || 'shared_profile';
+    if (!rPlat.includes(normalizePlataforma(plataforma))) continue;
+    if (rType !== 'shared_profile') continue;
+    emailTotals[rEmail] = (emailTotals[rEmail] || 0) + 1;
+  }
+
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
     const rowPlat   = normalizePlataforma(row[0]);
@@ -241,9 +252,10 @@ async function findAvailableProfile(plataforma, slotsNeeded, profileType) {
         slotsFree: 1,
       };
     } else {
-      // shared_profile: lógica existente (5 - used >= slotsNeeded)
-      const used = getEmailSlotUsage(rows, email);
-      const free = 5 - used;
+      // shared_profile: limite dinâmico = total de linhas do email (não hardcoded 5)
+      const used  = getEmailSlotUsage(rows, email);
+      const limit = emailTotals[email.toLowerCase().trim()] || 5;
+      const free  = limit - used;
       if (free >= slotsNeeded) {
         return {
           rowIndex: i + 1,
@@ -306,8 +318,9 @@ async function findAvailableProfiles(plataforma, slotsNeeded, profileType) {
 
     const emailKey = email.toLowerCase();
     if (!emailGroups[emailKey]) {
-      emailGroups[emailKey] = { email, availableRows: [] };
+      emailGroups[emailKey] = { email, availableRows: [], totalCount: 0 };
     }
+    emailGroups[emailKey].totalCount++;  // total de linhas (disponivel + indisponivel)
     if (isDisponivel(status)) {
       emailGroups[emailKey].availableRows.push({
         rowIndex: i + 1,
@@ -326,7 +339,7 @@ async function findAvailableProfiles(plataforma, slotsNeeded, profileType) {
     const group = emailGroups[emailKey];
     if (group.availableRows.length === 0) continue;
     const used    = getEmailSlotUsage(rows, group.email);
-    const free    = 5 - used;
+    const free    = group.totalCount - used;  // limite dinâmico, não hardcoded 5
     const canTake = Math.min(group.availableRows.length, free);
     if (canTake <= 0) continue;
     const needed = slotsNeeded - collected.length;
@@ -420,7 +433,8 @@ async function countAvailableProfiles(plataforma, profileType) {
     if (!rowPlat.includes(normalizePlataforma(plataforma))) continue;
     if (rowType !== 'shared_profile') continue;
     const emailKey = email.toLowerCase();
-    if (!emailGroups[emailKey]) emailGroups[emailKey] = { email, availCount: 0 };
+    if (!emailGroups[emailKey]) emailGroups[emailKey] = { email, availCount: 0, totalCount: 0 };
+    emailGroups[emailKey].totalCount++;  // todas as linhas (disponivel + indisponivel)
     if (isDisponivel(status)) emailGroups[emailKey].availCount++;
   }
 
@@ -429,7 +443,7 @@ async function countAvailableProfiles(plataforma, profileType) {
     const group   = emailGroups[emailKey];
     if (group.availCount === 0) continue;
     const used    = getEmailSlotUsage(rows, group.email);
-    const free    = 5 - used;
+    const free    = group.totalCount - used;  // limite dinâmico, não hardcoded 5
     const canTake = Math.min(group.availCount, free);
     if (canTake > 0) total += canTake;
   }
