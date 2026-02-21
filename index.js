@@ -1988,9 +1988,24 @@ adminRouter.get('/clientes', async (req, res) => {
     });
     clientes.sort((a, b) => estadoRank[a.estado] - estadoRank[b.estado] || a.diasRestantes - b.diasRestantes);
 
+    // Clientes antigos (a_verificar) — sem planos activos, vão no fim da lista
+    const seenPhones = new Set(clientes.map(c => c.phone).filter(Boolean));
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const statusRaw = (row[5] || '').toString().toLowerCase().trim()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (!statusRaw.includes('a_verificar')) continue;
+      const nome  = (row[6] || '').trim();
+      const phone = (row[7] || '').toString().replace(/[^0-9]/g, '');
+      if (!nome) continue;
+      if (seenPhones.has(phone)) continue; // já listado como activo
+      seenPhones.add(phone);
+      clientes.push({ phone, nome, planos: [], totalPlanos: 0, diasRestantes: null, estado: 'a_verificar', totalValor: 0 });
+    }
+
     // Tarefa M: MRR = soma dos planos ativos (não expirados) de todos os clientes
     const mrr = clientes
-      .filter(c => c.estado !== 'expirado')
+      .filter(c => c.estado !== 'expirado' && c.estado !== 'a_verificar')
       .reduce((sum, c) => sum + (c.totalValor || 0), 0);
 
     res.json({ clientes, mrr });
