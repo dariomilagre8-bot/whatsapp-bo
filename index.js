@@ -2134,6 +2134,7 @@ adminRouter.get('/financeiro-db', async (req, res) => {
   try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
     const thisMonthStart = new Date(today.getFullYear(), today.getMonth(), 1).toISOString();
     const lastMonthStart = new Date(today.getFullYear(), today.getMonth() - 1, 1).toISOString();
     const lastMonthEnd   = new Date(today.getFullYear(), today.getMonth(), 1).toISOString();
@@ -2145,14 +2146,14 @@ adminRouter.get('/financeiro-db', async (req, res) => {
       { data: vendasMes },
       { data: vendasMesPassado },
       { data: vendasSemana },
-      { count: totalClientes },
+      { data: clientesAtivos },
     ] = await Promise.all([
       supabase.from('vendas').select('valor_total, plataforma, quantidade').eq('status', 'ativo'),
-      supabase.from('vendas').select('valor_total, quantidade').gte('data_venda', today.toISOString()),
-      supabase.from('vendas').select('valor_total, quantidade').gte('data_venda', thisMonthStart),
-      supabase.from('vendas').select('valor_total, quantidade').gte('data_venda', lastMonthStart).lt('data_venda', lastMonthEnd),
-      supabase.from('vendas').select('valor_total, quantidade, data_venda, plataforma').gte('data_venda', sevenDaysAgo),
-      supabase.from('clientes').select('*', { count: 'exact', head: true }),
+      supabase.from('vendas').select('valor_total, quantidade').gte('data_venda', today.toISOString()).lt('data_venda', tomorrow.toISOString()),
+      supabase.from('vendas').select('valor_total, quantidade').gte('data_venda', thisMonthStart).eq('status', 'ativo'),
+      supabase.from('vendas').select('valor_total, quantidade').gte('data_venda', lastMonthStart).lt('data_venda', lastMonthEnd).eq('status', 'ativo'),
+      supabase.from('vendas').select('valor_total, quantidade, data_venda, plataforma').gte('data_venda', sevenDaysAgo).eq('status', 'ativo'),
+      supabase.from('vendas').select('cliente_id').eq('status', 'ativo'),
     ]);
 
     const sum = (arr) => (arr || []).reduce((s, r) => s + (r.valor_total || 0), 0);
@@ -2191,7 +2192,7 @@ adminRouter.get('/financeiro-db', async (req, res) => {
         hoje:       { vendas: cnt(vendasHoje),       receita: sum(vendasHoje) },
         esteMes:    { vendas: cnt(vendasMes),         receita: sum(vendasMes) },
         mesPassado: { vendas: cnt(vendasMesPassado),  receita: sum(vendasMesPassado) },
-        totalAtivo: { clientes: totalClientes || 0,  receita: sum(todasVendas) },
+        totalAtivo: { clientes: new Set((clientesAtivos || []).map(r => r.cliente_id)).size, receita: sum(todasVendas) },
         porPlataforma,
         ultimos7Dias: Object.values(dias7),
       },
