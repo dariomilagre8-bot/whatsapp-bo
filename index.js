@@ -2015,6 +2015,82 @@ adminRouter.get('/clientes', async (req, res) => {
   }
 });
 
+// GET /api/admin/clientes-db — lê clientes + vendas do Supabase
+adminRouter.get('/clientes-db', async (req, res) => {
+  if (!supabase) return res.json({ clientes: [], mrr: 0 });
+  try {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const estadoRank = { expirado: 0, urgente: 1, aviso: 2, ok: 3 };
+
+    // Buscar todos os clientes e todas as vendas activas em paralelo
+    const [
+      { data: todosClientes, error: errC },
+      { data: vendasAtivas,  error: errV },
+    ] = await Promise.all([
+      supabase.from('clientes').select('id, nome, whatsapp').order('nome'),
+      supabase.from('vendas').select('id, cliente_id, plataforma, plano, quantidade, valor_total, data_venda, data_expiracao').eq('status', 'ativo'),
+    ]);
+    if (errC) throw new Error(errC.message);
+    if (errV) throw new Error(errV.message);
+
+    // Indexar vendas por cliente_id
+    const vendasPorCliente = {};
+    for (const v of (vendasAtivas || [])) {
+      if (!vendasPorCliente[v.cliente_id]) vendasPorCliente[v.cliente_id] = [];
+      const expiry = v.data_expiracao ? new Date(v.data_expiracao) : null;
+      const diasRestantes = expiry !== null ? Math.round((expiry - today) / msPerDay) : null;
+      let estado;
+      if (diasRestantes === null || diasRestantes === undefined) estado = 'ok';
+      else if (diasRestantes < 0)  estado = 'expirado';
+      else if (diasRestantes <= 3) estado = 'urgente';
+      else if (diasRestantes <= 7) estado = 'aviso';
+      else                         estado = 'ok';
+      vendasPorCliente[v.cliente_id].push({
+        id:            v.id,
+        plataforma:    v.plataforma,
+        plano:         v.plano,
+        dataVenda:     v.data_venda ? v.data_venda.split('T')[0] : '',
+        diasRestantes: diasRestantes ?? 0,
+        estado,
+        valorPago:     v.valor_total,
+      });
+    }
+
+    // Construir lista de clientes
+    const clientes = [];
+    for (const c of (todosClientes || [])) {
+      const planos = vendasPorCliente[c.id] || [];
+      if (planos.length === 0) {
+        // Cliente sem vendas activas → a_verificar
+        clientes.push({ phone: c.whatsapp, nome: c.nome, planos: [], totalPlanos: 0, diasRestantes: null, estado: 'a_verificar', totalValor: 0 });
+        continue;
+      }
+      const worst = planos.reduce((w, p) => (estadoRank[p.estado] ?? 99) < (estadoRank[w.estado] ?? 99) ? p : w, planos[0]);
+      const totalValor = planos.filter(p => p.estado !== 'expirado').reduce((s, p) => s + (p.valorPago || 0), 0);
+      clientes.push({ phone: c.whatsapp, nome: c.nome, planos, totalPlanos: planos.length, diasRestantes: worst.diasRestantes, estado: worst.estado, totalValor });
+    }
+
+    // Ordenar: activos por diasRestantes, a_verificar no fim
+    clientes.sort((a, b) => {
+      const aV = a.estado === 'a_verificar', bV = b.estado === 'a_verificar';
+      if (aV && !bV) return 1;
+      if (!aV && bV) return -1;
+      if (aV && bV)  return 0;
+      return (estadoRank[a.estado] ?? 99) - (estadoRank[b.estado] ?? 99) || (a.diasRestantes ?? 0) - (b.diasRestantes ?? 0);
+    });
+
+    const mrr = clientes
+      .filter(c => c.estado !== 'expirado' && c.estado !== 'a_verificar')
+      .reduce((s, c) => s + (c.totalValor || 0), 0);
+
+    res.json({ clientes, mrr });
+  } catch (err) {
+    console.error('Erro GET /clientes-db:', err.message);
+    res.status(500).json({ error: 'Erro ao ler clientes do Supabase' });
+  }
+});
+
 // POST /api/admin/clientes/mensagem
 adminRouter.post('/clientes/mensagem', async (req, res) => {
   const { phone, message } = req.body;
