@@ -2192,7 +2192,7 @@ app.get('/api/branding', (req, res) => {
 });
 
 app.get('/api/version', (req, res) => {
-  res.json({ v: '20260220-expiracao-mrr', started: new Date().toISOString() });
+  res.json({ v: '20260221-11features', started: new Date().toISOString() });
 });
 
 app.use('/api/admin', adminRouter);
