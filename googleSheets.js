@@ -36,7 +36,7 @@ const sheetsAPI = google.sheets({ version: 'v4', auth });
 
 // ==================== HELPERS ====================
 function cleanNumber(jid) {
-  return jid ? jid.replace(/\D/g, '') : '';
+  return jid ? String(jid).replace(/\D/g, '') : '';
 }
 
 function todayDate() {
@@ -44,13 +44,23 @@ function todayDate() {
   return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
 }
 
+// Último dia do mês seguinte (Data_Expiracao das novas vendas)
+function nextMonthLastDay() {
+  const d = new Date();
+  const last = new Date(d.getFullYear(), d.getMonth() + 2, 0);
+  return `${String(last.getDate()).padStart(2, '0')}/${String(last.getMonth() + 1).padStart(2, '0')}/${last.getFullYear()}`;
+}
+
 // ==================== LEITURA / ESCRITA ====================
-// Colunas: A=Plataforma B=Email C=Senha D=NomePerfil E=Pin F=Status G=Cliente H=Data_Venda I=QNTD_PERFIS J=Tipo_Conta
+// Schema (A:N):
+//   A=Plataforma[0]  B=Email[1]       C=Senha[2]       D=NomePerfil[3]  E=PIN[4]
+//   F=Status[5]      G=Cliente[6]     H=Telefone[7]    I=Data_Venda[8]  J=Data_Expiracao[9]
+//   K=QNTD[10]       L=Tipo_Conta[11] M=Plano[12]      N=Valor[13]
 async function fetchAllRows() {
   try {
     const res = await sheetsAPI.spreadsheets.values.get({
       spreadsheetId: GOOGLE_SHEET_ID,
-      range: `${SHEET_NAME}!A:J`,
+      range: `${SHEET_NAME}!A:N`,
     });
     return res.data.values || [];
   } catch (error) {
@@ -74,29 +84,34 @@ async function updateSheetCell(row, column, value) {
   }
 }
 
-// FIX: Validacao de null/undefined antes de escrever; H=DD/MM/YYYY, I=inteiro de slots
+// Regista uma venda: actualiza Status, Cliente, Telefone, Data_Venda, Data_Expiracao, QNTD
 async function markProfileSold(rowIndex, clientName, clientNumber, planSlots) {
-  const clientLabel = clientName ? `${clientName} - ${clientNumber}` : (clientNumber || '');
-  const saleDate = todayDate(); // FIX: formato DD/MM/YYYY garantido
-  const slotsInt = parseInt(planSlots, 10) || 0; // FIX: garantir inteiro, nunca undefined
+  const name     = clientName  || '';
+  const phone    = clientNumber ? cleanNumber(clientNumber) : '';
+  const saleDate = todayDate();
+  const expDate  = nextMonthLastDay();
+  const slotsInt = parseInt(planSlots, 10) || 0;
 
-  // FIX: validacao — so escreve se valores sao validos
-  if (!rowIndex || !clientLabel) {
-    console.error('markProfileSold: rowIndex ou clientLabel invalido', { rowIndex, clientLabel });
+  if (!rowIndex) {
+    console.error('markProfileSold: rowIndex inválido', { rowIndex });
     return;
   }
 
   await updateSheetCell(rowIndex, 'F', 'indisponivel');
-  await updateSheetCell(rowIndex, 'G', clientLabel);
-  await updateSheetCell(rowIndex, 'H', saleDate);      // FIX: sempre DD/MM/YYYY
-  await updateSheetCell(rowIndex, 'I', slotsInt);       // FIX: sempre inteiro
+  await updateSheetCell(rowIndex, 'G', name);       // Cliente (nome)
+  await updateSheetCell(rowIndex, 'H', phone);      // Telefone (separado)
+  await updateSheetCell(rowIndex, 'I', saleDate);   // Data_Venda
+  await updateSheetCell(rowIndex, 'J', expDate);    // Data_Expiracao
+  await updateSheetCell(rowIndex, 'K', slotsInt);   // QNTD
 }
 
 async function markProfileAvailable(rowIndex) {
   await updateSheetCell(rowIndex, 'F', 'disponivel');
-  await updateSheetCell(rowIndex, 'G', '');
-  await updateSheetCell(rowIndex, 'H', '');  // Data_Venda
-  await updateSheetCell(rowIndex, 'I', '');  // QNTD_PERFIS
+  await updateSheetCell(rowIndex, 'G', '');  // Cliente
+  await updateSheetCell(rowIndex, 'H', '');  // Telefone
+  await updateSheetCell(rowIndex, 'I', '');  // Data_Venda
+  await updateSheetCell(rowIndex, 'J', '');  // Data_Expiracao
+  await updateSheetCell(rowIndex, 'K', '');  // QNTD
 }
 
 // ==================== CONSULTAS ====================
@@ -115,16 +130,15 @@ function getEmailSlotUsage(rows, email) {
   return used;
 }
 
-// Verifica se cliente já existe na planilha (coluna G)
+// Verifica se cliente já existe na planilha (coluna H = Telefone)
 async function checkClientInSheet(clientNumber) {
   const rows = await fetchAllRows();
   if (rows.length <= 1) return null;
   const cleanNum = cleanNumber(clientNumber);
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
-    const cliente = row[6] || '';
-    if (cleanNumber(cliente) === cleanNum) {
-      const namePart = cliente.split(' - ')[0] || '';
+    const telefone = row[7] || '';  // H = Telefone
+    if (cleanNumber(telefone) === cleanNum) {
       return {
         rowIndex: i + 1,
         plataforma: row[0] || '',
@@ -133,20 +147,21 @@ async function checkClientInSheet(clientNumber) {
         nomePerfil: row[3] || '',
         pin: row[4] || '',
         status: row[5] || '',
-        cliente: cliente,
-        clienteName: namePart.trim(),
-        dataVenda: row[7] || '',
-        qntdPerfis: row[8] || '',
-        tipoConta: row[9] || ''
+        cliente: row[6] || '',
+        clienteName: (row[6] || '').trim(),
+        telefone: row[7] || '',
+        dataVenda: row[8] || '',
+        dataExpiracao: row[9] || '',
+        qntdPerfis: row[10] || '',
+        tipoConta: row[11] || '',
       };
     }
   }
   return null;
 }
 
-// ── Tarefa D: Encontra cliente pelo nome (para migração / clientes sem número) ──
+// ── Encontra cliente pelo nome (para migração / clientes sem número) ──
 // Procura na coluna G por entradas com nome semelhante ao fornecido.
-// Útil para associar número de WhatsApp a clientes que foram migrados manualmente.
 async function findClientByName(name) {
   if (!name || name.length < 2) return null;
   const rows = await fetchAllRows();
@@ -156,15 +171,14 @@ async function findClientByName(name) {
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
     if (!isIndisponivel(row[5])) continue;
-    const cliente = row[6] || '';
-    if (!cliente) continue;
+    const clienteNome = (row[6] || '').trim();
+    if (!clienteNome) continue;
 
-    const clienteParts = cliente.split(' - ');
-    const clienteNome = clienteParts[0].trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-    const temTelefone = clienteParts.length > 1 && /\d{9,}/.test(clienteParts[clienteParts.length - 1]);
+    const clienteNomeLower = clienteNome.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const temTelefone = !!(row[7] && /\d{9,}/.test(String(row[7])));  // H = Telefone
 
-    // Corresponde por nome (inclui ou é incluído) — ignora se já tem telefone
-    if (!temTelefone && (clienteNome.includes(nameLower) || nameLower.includes(clienteNome))) {
+    // Corresponde por nome — ignora se já tem telefone
+    if (!temTelefone && (clienteNomeLower.includes(nameLower) || nameLower.includes(clienteNomeLower))) {
       return {
         rowIndex: i + 1,
         plataforma: row[0] || '',
@@ -173,20 +187,24 @@ async function findClientByName(name) {
         nomePerfil: row[3] || '',
         pin: row[4] || '',
         status: row[5] || '',
-        cliente: cliente,
-        clienteName: clienteParts[0].trim(),
-        dataVenda: row[7] || '',
-        qntdPerfis: row[8] || '',
-        tipoConta: row[9] || '',
+        cliente: row[6] || '',
+        clienteName: clienteNome,
+        telefone: row[7] || '',
+        dataVenda: row[8] || '',
+        dataExpiracao: row[9] || '',
+        qntdPerfis: row[10] || '',
+        tipoConta: row[11] || '',
       };
     }
   }
   return null;
 }
 
-// Atualiza o campo Cliente (coluna G) para associar número ao registo
+// Actualiza o campo Telefone (coluna H) para associar número ao registo
+// e garante que o nome em G está correcto
 async function updateClientPhone(rowIndex, clienteName, phone) {
-  return updateSheetCell(rowIndex, 'G', `${clienteName} - ${phone}`);
+  await updateSheetCell(rowIndex, 'G', clienteName);
+  return updateSheetCell(rowIndex, 'H', phone);
 }
 
 // Encontra perfil disponível com slots suficientes
@@ -197,11 +215,11 @@ async function findAvailableProfile(plataforma, slotsNeeded, profileType) {
 
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
-    const rowPlat = normalizePlataforma(row[0]);
-    const status = (row[5] || '').toLowerCase();
-    const email = (row[1] || '');
-    const tipoConta = (row[9] || '').toLowerCase().trim();
-    const rowType = tipoConta || 'shared_profile'; // Linhas sem coluna J = shared_profile
+    const rowPlat   = normalizePlataforma(row[0]);
+    const status    = (row[5] || '').toLowerCase();
+    const email     = (row[1] || '');
+    const tipoConta = (row[11] || '').toLowerCase().trim();  // L = Tipo_Conta
+    const rowType   = tipoConta || 'shared_profile';
 
     if (!rowPlat.includes(normalizePlataforma(plataforma)) || !isDisponivel(status)) continue;
 
@@ -218,7 +236,7 @@ async function findAvailableProfile(plataforma, slotsNeeded, profileType) {
         nomePerfil: row[3] || '',
         pin: row[4] || '',
         slotsUsed: 0,
-        slotsFree: 1
+        slotsFree: 1,
       };
     } else {
       // shared_profile: lógica existente (5 - used >= slotsNeeded)
@@ -233,7 +251,7 @@ async function findAvailableProfile(plataforma, slotsNeeded, profileType) {
           nomePerfil: row[3] || '',
           pin: row[4] || '',
           slotsUsed: used,
-          slotsFree: free
+          slotsFree: free,
         };
       }
     }
@@ -252,10 +270,10 @@ async function findAvailableProfiles(plataforma, slotsNeeded, profileType) {
     const accounts = [];
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const rowPlat = normalizePlataforma(row[0]);
-      const status = (row[5] || '').toLowerCase();
-      const tipoConta = (row[9] || '').toLowerCase().trim();
-      const rowType = tipoConta || 'shared_profile';
+      const rowPlat   = normalizePlataforma(row[0]);
+      const status    = (row[5] || '').toLowerCase();
+      const tipoConta = (row[11] || '').toLowerCase().trim();  // L = Tipo_Conta
+      const rowType   = tipoConta || 'shared_profile';
       if (!rowPlat.includes(normalizePlataforma(plataforma)) || !isDisponivel(status)) continue;
       if (rowType !== 'full_account') continue;
       accounts.push({
@@ -275,11 +293,11 @@ async function findAvailableProfiles(plataforma, slotsNeeded, profileType) {
   const emailGroups = {};
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
-    const rowPlat = normalizePlataforma(row[0]);
-    const status = (row[5] || '').toLowerCase();
-    const email = (row[1] || '').trim();
-    const tipoConta = (row[9] || '').toLowerCase().trim();
-    const rowType = tipoConta || 'shared_profile';
+    const rowPlat   = normalizePlataforma(row[0]);
+    const status    = (row[5] || '').toLowerCase();
+    const email     = (row[1] || '').trim();
+    const tipoConta = (row[11] || '').toLowerCase().trim();  // L = Tipo_Conta
+    const rowType   = tipoConta || 'shared_profile';
 
     if (!rowPlat.includes(normalizePlataforma(plataforma))) continue;
     if (rowType !== 'shared_profile') continue;
@@ -301,24 +319,24 @@ async function findAvailableProfiles(plataforma, slotsNeeded, profileType) {
   }
 
   // FIX: Recolher perfis de MULTIPLOS emails quando um so nao tem slots suficientes
-  // Isto resolve o problema de Qtd=2 Partilha (4 slots) quando nenhum email tem 4 livres
   const collected = [];
   for (const emailKey of Object.keys(emailGroups)) {
     const group = emailGroups[emailKey];
     if (group.availableRows.length === 0) continue;
-    const used = getEmailSlotUsage(rows, group.email);
-    const free = 5 - used;
+    const used    = getEmailSlotUsage(rows, group.email);
+    const free    = 5 - used;
     const canTake = Math.min(group.availableRows.length, free);
     if (canTake <= 0) continue;
     const needed = slotsNeeded - collected.length;
-    const take = Math.min(canTake, needed);
+    const take   = Math.min(canTake, needed);
     collected.push(...group.availableRows.slice(0, take));
     if (collected.length >= slotsNeeded) return collected;
   }
-  return null; // Nao ha stock suficiente em nenhuma combinacao de emails
+  return null;
 }
 
 // Encontra todos os perfis existentes de um cliente (para renovações)
+// Pesquisa pela coluna H (Telefone)
 async function findClientProfiles(clientNumber) {
   const rows = await fetchAllRows();
   if (rows.length <= 1) return null;
@@ -326,8 +344,8 @@ async function findClientProfiles(clientNumber) {
   const profiles = [];
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
-    const cliente = row[6] || '';
-    if (cleanNumber(cliente) === cleanNum) {
+    const telefone = row[7] || '';  // H = Telefone
+    if (cleanNumber(telefone) === cleanNum) {
       profiles.push({
         rowIndex: i + 1,
         plataforma: row[0] || '',
@@ -336,10 +354,12 @@ async function findClientProfiles(clientNumber) {
         nomePerfil: row[3] || '',
         pin: row[4] || '',
         status: row[5] || '',
-        cliente: cliente,
-        dataVenda: row[7] || '',
-        qntdPerfis: row[8] || '',
-        tipoConta: row[9] || ''
+        cliente: row[6] || '',
+        telefone: row[7] || '',
+        dataVenda: row[8] || '',
+        dataExpiracao: row[9] || '',
+        qntdPerfis: row[10] || '',
+        tipoConta: row[11] || '',
       });
     }
   }
@@ -352,9 +372,9 @@ async function hasAnyStock(plataforma, profileType) {
   const rows = await fetchAllRows();
   if (rows.length <= 1) return false;
   for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    const tipoConta = (row[9] || '').toLowerCase().trim();
-    const rowType = tipoConta || 'shared_profile';
+    const row       = rows[i];
+    const tipoConta = (row[11] || '').toLowerCase().trim();  // L = Tipo_Conta
+    const rowType   = tipoConta || 'shared_profile';
 
     if ((row[0] || '').toLowerCase().includes(plataforma.toLowerCase()) &&
         isDisponivel(row[5])) {
@@ -366,7 +386,7 @@ async function hasAnyStock(plataforma, profileType) {
   return false;
 }
 
-// FIX: Conta perfis disponiveis para uma plataforma e tipo (para mensagem de stock insuficiente)
+// Conta perfis disponiveis para uma plataforma e tipo (para mensagem de stock insuficiente)
 async function countAvailableProfiles(plataforma, profileType) {
   const rows = await fetchAllRows();
   if (rows.length <= 1) return 0;
@@ -374,11 +394,11 @@ async function countAvailableProfiles(plataforma, profileType) {
   if (profileType === 'full_account') {
     let count = 0;
     for (let i = 1; i < rows.length; i++) {
-      const row = rows[i];
-      const rowPlat = normalizePlataforma(row[0]);
-      const status = (row[5] || '').toLowerCase();
-      const tipoConta = (row[9] || '').toLowerCase().trim();
-      const rowType = tipoConta || 'shared_profile';
+      const row       = rows[i];
+      const rowPlat   = normalizePlataforma(row[0]);
+      const status    = (row[5] || '').toLowerCase();
+      const tipoConta = (row[11] || '').toLowerCase().trim();  // L = Tipo_Conta
+      const rowType   = tipoConta || 'shared_profile';
       if (!rowPlat.includes(normalizePlataforma(plataforma)) || !isDisponivel(status)) continue;
       if (rowType !== 'full_account') continue;
       count++;
@@ -389,12 +409,12 @@ async function countAvailableProfiles(plataforma, profileType) {
   // shared_profile: contar slots livres considerando limite de 5 por email
   const emailGroups = {};
   for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
-    const rowPlat = normalizePlataforma(row[0]);
-    const status = (row[5] || '').toLowerCase();
-    const email = (row[1] || '').trim();
-    const tipoConta = (row[9] || '').toLowerCase().trim();
-    const rowType = tipoConta || 'shared_profile';
+    const row       = rows[i];
+    const rowPlat   = normalizePlataforma(row[0]);
+    const status    = (row[5] || '').toLowerCase();
+    const email     = (row[1] || '').trim();
+    const tipoConta = (row[11] || '').toLowerCase().trim();  // L = Tipo_Conta
+    const rowType   = tipoConta || 'shared_profile';
     if (!rowPlat.includes(normalizePlataforma(plataforma))) continue;
     if (rowType !== 'shared_profile') continue;
     const emailKey = email.toLowerCase();
@@ -404,10 +424,10 @@ async function countAvailableProfiles(plataforma, profileType) {
 
   let total = 0;
   for (const emailKey of Object.keys(emailGroups)) {
-    const group = emailGroups[emailKey];
+    const group   = emailGroups[emailKey];
     if (group.availCount === 0) continue;
-    const used = getEmailSlotUsage(rows, group.email);
-    const free = 5 - used;
+    const used    = getEmailSlotUsage(rows, group.email);
+    const free    = 5 - used;
     const canTake = Math.min(group.availCount, free);
     if (canTake > 0) total += canTake;
   }
@@ -429,9 +449,9 @@ async function appendLostSale(sale) {
           sale.interests.join(', '),
           sale.lastState,
           sale.reason,
-          new Date(sale.timestamp).toLocaleString('pt-PT')
-        ]]
-      }
+          new Date(sale.timestamp).toLocaleString('pt-PT'),
+        ]],
+      },
     });
     return true;
   } catch (error) {
@@ -444,6 +464,7 @@ async function appendLostSale(sale) {
 module.exports = {
   cleanNumber,
   todayDate,
+  nextMonthLastDay,
   fetchAllRows,
   updateSheetCell,
   markProfileSold,

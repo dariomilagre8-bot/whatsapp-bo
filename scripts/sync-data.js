@@ -68,36 +68,42 @@ function parseCSV(filePath) {
 }
 
 function csvRowToSheetRow(row) {
-  // CSV cols: Plataforma,Email,Senha,NomePerfil,PIN,Status,Cliente,Data_Venda,QNTD,Tipo_Conta
-  // Sheet cols: A=Plataforma B=Email C=Senha D=NomePerfil E=Pin F=Status G=Cliente H=DataVenda I=QNTD J=Tipo
+  // Schema A:N (14 colunas)
+  // A=Plataforma B=Email C=Senha D=NomePerfil E=PIN F=Status G=Cliente
+  // H=Telefone I=Data_Venda J=Data_Expiracao K=QNTD L=Tipo_Conta M=Plano N=Valor
+  const telefone = row['Telefone'] || '';
   return [
-    row['Plataforma']  || '',
-    row['Email']       || '',
-    row['Senha']       || '',
-    row['NomePerfil']  || '',
-    row['PIN']         || '',
-    row['Status']      || 'indisponivel',
-    row['Cliente']     || '',  // "Nome - Numero" ou só "Nome" se sem número
-    row['Data_Venda']  || '',
-    row['QNTD']        || '1',
-    row['Tipo_Conta']  || 'shared_profile',
+    row['Plataforma']      || '',
+    row['Email']           || '',
+    row['Senha']           || '',
+    row['NomePerfil']      || '',
+    row['PIN']             || '',
+    row['Status']          || 'indisponivel',
+    row['Cliente']         || '',
+    telefone ? `'${telefone}` : '',  // prefixo ' para forçar texto
+    row['Data_Venda']      || '',
+    row['Data_Expiracao']  || '',
+    row['QNTD']            || '1',
+    row['Tipo_Conta']      || 'shared_profile',
+    row['Plano']           || '',
+    row['Valor']           || '',
   ];
 }
 
 async function getExistingRows() {
   const res = await sheetsAPI.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: `${sheetName}!A:J`,
+    range: `${sheetName}!A:N`,
   });
   return res.data.values || [];
 }
 
 function isDuplicate(existingRows, newRow) {
-  // Considera duplicado se mesmo Email + NomePerfil + Cliente
+  // Considera duplicado se mesmo Email + NomePerfil + Telefone
   return existingRows.some(r =>
     (r[1] || '') === newRow[1] &&
     (r[3] || '') === newRow[3] &&
-    (r[6] || '').split(' - ')[0].trim() === newRow[6].split(' - ')[0].trim()
+    String(r[7] || '').replace(/\D/g, '') === String(newRow[7] || '').replace(/['\s]/g, '').replace(/\D/g, '')
   );
 }
 
@@ -139,6 +145,7 @@ async function main() {
   console.log('Preview das linhas a inserir:');
   toInsert.forEach((r, i) => {
     console.log(`  ${i + 1}. ${r[0]} | ${r[1]} | ${r[3]} | ${r[6]} | ${r[7]}`);
+    // cols: Plataforma[0] | Email[1] | NomePerfil[3] | Cliente[6] | Telefone[7]
   });
   console.log('');
 
@@ -161,8 +168,8 @@ async function main() {
       // Inserir após a última linha preenchida
       await sheetsAPI.spreadsheets.values.append({
         spreadsheetId: SHEET_ID,
-        range: `${sheetName}!A:J`,
-        valueInputOption: 'RAW',
+        range: `${sheetName}!A:N`,
+        valueInputOption: 'USER_ENTERED',
         insertDataOption: 'INSERT_ROWS',
         requestBody: { values: toInsert },
       });
