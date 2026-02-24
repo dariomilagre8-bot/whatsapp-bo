@@ -3,7 +3,7 @@ module.exports = {
   slogan: process.env.BRAND_SLOGAN || 'Streaming Premium em Angola',
   emoji: process.env.BRAND_EMOJI || '🎬',
   corPrincipal: process.env.BRAND_COR || '#E50914',
-  whatsappSuporte: process.env.BRAND_WHATSAPP || '244946014060',
+  whatsappSuporte: process.env.BRAND_WHATSAPP || '244941522947',
   website: process.env.BRAND_WEBSITE || 'https://streamzone-frontend.vercel.app',
   precos: {
     netflix: {

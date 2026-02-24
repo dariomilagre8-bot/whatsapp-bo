@@ -271,8 +271,12 @@ function detectQuantity(text) {
   return 1;
 }
 
+// ==================== IDENTIDADE DO BOT ====================
+const BOT_NAME = 'Zara';
+const BOT_IDENTITY = `Chamas-te *${BOT_NAME}* e és a Assistente Virtual de Atendimento da ${branding.nome} 🤖. O teu papel é ajudar clientes a comprar e gerir planos de streaming (Netflix e Prime Video) em Angola. Apresentas-te sempre como "${BOT_NAME}, Assistente Virtual da ${branding.nome}".`;
+
 // ==================== PROMPTS GEMINI ====================
-const SYSTEM_PROMPT = `Tu és o assistente de vendas da ${branding.nome} 🤖. Vendes planos de streaming Netflix e Prime Video em Angola.
+const SYSTEM_PROMPT = `${BOT_IDENTITY}
 
 CATÁLOGO (memoriza — usa SEMPRE estes preços):
 Netflix:
@@ -293,11 +297,12 @@ REGRAS ABSOLUTAS:
 6. NUNCA reveles o IBAN ou dados de pagamento antes do cliente escolher um plano.
 7. NUNCA sugiras serviços que não existem (Disney+, HBO, Spotify, etc.).
 8. Guia a conversa para escolher Netflix ou Prime Video.
-9. Sê caloroso, simpático e profissional. Máximo 2-3 frases por resposta.
+9. Sê calorosa, simpática e profissional. Máximo 2-3 frases por resposta.
 10. Responde sempre em Português.
-11. Redireciona temas fora do contexto para os nossos serviços.`;
+11. Redireciona temas fora do contexto para os nossos serviços.
+12. Apresenta-te sempre pelo nome "${BOT_NAME}" quando o cliente perguntar quem és.`;
 
-const SYSTEM_PROMPT_COMPROVATIVO = `Tu és o assistente de vendas da ${branding.nome} 🤖. O cliente já escolheu um plano e está na fase de pagamento.
+const SYSTEM_PROMPT_COMPROVATIVO = `${BOT_IDENTITY} O cliente já escolheu um plano e está na fase de pagamento.
 
 CATÁLOGO (para referência):
 Netflix: Individual ${branding.precos.netflix.individual.toLocaleString('pt')} Kz (1 perfil) | Partilha ${branding.precos.netflix.partilha.toLocaleString('pt')} Kz (2 perfis) | Família ${branding.precos.netflix.familia.toLocaleString('pt')} Kz (3 perfis)
@@ -308,7 +313,21 @@ REGRAS:
 - NUNCA inventes dados de pagamento (IBAN, Multicaixa) — o cliente já os recebeu.
 - NÃO menciones PDFs, comprovativos ou documentos. NÃO pressiones o envio de nada.
 - NUNCA digas "vou verificar", "vou consultar" ou "vou perguntar à equipa". Tu SABES as respostas.
+- Apresenta-te como "${BOT_NAME}" se te perguntarem quem és.
 - Termina com: "Estou aqui se precisares de mais alguma coisa! 😊"`;
+
+const SYSTEM_PROMPT_CHAT_WEB = `${BOT_IDENTITY} Estás no site ${branding.nome} a responder dúvidas de visitantes.
+
+CATÁLOGO:
+Netflix: Individual ${branding.precos.netflix.individual.toLocaleString('pt')} Kz | Partilha ${branding.precos.netflix.partilha.toLocaleString('pt')} Kz | Família ${branding.precos.netflix.familia.toLocaleString('pt')} Kz
+Prime Video: Individual ${branding.precos.prime.individual.toLocaleString('pt')} Kz | Partilha ${branding.precos.prime.partilha.toLocaleString('pt')} Kz | Família ${branding.precos.prime.familia.toLocaleString('pt')} Kz
+
+REGRAS:
+- Responde em 1-3 frases curtas e directas.
+- Se perguntarem como comprar → diz "Clica em 'Comprar Agora' no site ou fala connosco no WhatsApp".
+- NUNCA reveles dados bancários no chat do site.
+- Apresenta-te como "${BOT_NAME}, Assistente Virtual da ${branding.nome}".
+- Responde sempre em Português de Angola.`;
 
 // ==================== ESTADOS ====================
 const chatHistories = {};
@@ -316,6 +335,54 @@ const clientStates = {};
 const pendingVerifications = {};
 const pausedClients = {};
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+
+// ==================== GEMINI VISION: NETFLIX HOUSEHOLD ====================
+// Deteta imagens de erro "dispositivo não faz parte da residência Netflix"
+// Usa o thumbnail JPEG enviado pelo Evolution API (baixo custo, rápido)
+async function detectNetflixHouseholdError(jpegThumbnailBase64) {
+  if (!jpegThumbnailBase64) return false;
+  try {
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    const cleanBase64 = jpegThumbnailBase64.replace(/^data:image\/\w+;base64,/, '');
+    const result = await model.generateContent([
+      { inlineData: { data: cleanBase64, mimeType: 'image/jpeg' } },
+      'Does this image show a Netflix or Prime Video error about "not part of household", "dispositivo não faz parte da residência", "Ver temporariamente", or any streaming device/residence restriction screen? Answer only YES or NO.',
+    ]);
+    return (result.response.text() || '').trim().toUpperCase().startsWith('YES');
+  } catch (e) {
+    console.error('⚠️ Erro análise imagem Gemini Vision:', e.message);
+    return false;
+  }
+}
+
+// ==================== /api/chat (ChatWidget do site) ====================
+const webChatHistories = {};
+
+app.post('/api/chat', async (req, res) => {
+  try {
+    const { message, sessionId } = req.body;
+    if (!message || !sessionId) return res.status(400).json({ reply: 'Dados em falta.' });
+    if (!webChatHistories[sessionId]) webChatHistories[sessionId] = [];
+
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash',
+      systemInstruction: { parts: [{ text: SYSTEM_PROMPT_CHAT_WEB }] },
+    });
+    const chat = model.startChat({ history: webChatHistories[sessionId] });
+    const result = await chat.sendMessage(message);
+    const reply = result.response.text();
+
+    webChatHistories[sessionId].push({ role: 'user', parts: [{ text: message }] });
+    webChatHistories[sessionId].push({ role: 'model', parts: [{ text: reply }] });
+    if (webChatHistories[sessionId].length > 20) webChatHistories[sessionId] = webChatHistories[sessionId].slice(-20);
+    setTimeout(() => { delete webChatHistories[sessionId]; }, 60 * 60 * 1000);
+
+    res.json({ reply });
+  } catch (e) {
+    console.error('❌ Erro /api/chat:', e.message);
+    res.json({ reply: `Olá! Sou ${BOT_NAME}, assistente virtual da ${branding.nome}. Para ajuda imediata, fala connosco no WhatsApp! 😊` });
+  }
+});
 
 // ==================== VENDAS PERDIDAS ====================
 const lostSales = [];
@@ -1158,7 +1225,7 @@ app.post('/', async (req, res) => {
         state.repeatTracker.count++;
         if (state.repeatTracker.count >= 3) {
           pausedClients[senderNum] = true;
-          await sendWhatsAppMessage(senderNum, 'Parece que estou com dificuldades em entender. Vou chamar um suporte humano para te ajudar! 🛠️');
+          await sendWhatsAppMessage(senderNum, `Parece que estou com dificuldades em entender. Vou chamar o nosso suporte humano para te ajudar! 🛠️\n\n— *${BOT_NAME}*, Assistente Virtual ${branding.nome}`);
           if (MAIN_BOSS) {
             await sendWhatsAppMessage(MAIN_BOSS, `🔁 *LOOP DETETADO*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n💬 "${textMessage}" (repetido ${state.repeatTracker.count}x)\n📍 Step: ${state.step}\n\nBot pausado. Use *retomar ${senderNum}* quando resolver.`);
           }
@@ -1167,6 +1234,69 @@ app.post('/', async (req, res) => {
       } else {
         state.repeatTracker = { lastMsg: normalizedMsg, count: 1 };
       }
+    }
+
+    // =====================================================================
+    // HANDLER GLOBAL — Deteta menção textual ao erro Netflix "Ver temporariamente"
+    // Cobre o caso em que o cliente descreve o problema sem enviar imagem
+    // =====================================================================
+    const NETFLIX_RESIDENCE_KEYWORDS = [
+      'ver temporariamente', 'temporariamente', 'residencia', 'residência',
+      'dispositivo nao faz parte', 'dispositivo não faz parte', 'nao faz parte da residencia',
+      'fora de casa', 'codigo temporario', 'codigo de acesso', 'acesso temporario',
+      'bloqueado netflix', 'netflix bloqueou', 'netflix bloqueo',
+    ];
+    if (textMessage && state.step !== 'inicio' && state.step !== 'captura_nome') {
+      const lowerText = removeAccents(textMessage.toLowerCase());
+      const isNetflixResidenceText = NETFLIX_RESIDENCE_KEYWORDS.some(kw => lowerText.includes(removeAccents(kw)));
+      if (isNetflixResidenceText) {
+        await sendWhatsAppMessage(senderNum,
+          `📱 *Problema de Localização Netflix!*\n\nA Netflix está a verificar se o teu dispositivo faz parte da residência. Sigue estes passos simples:\n\n1️⃣ Clica em *"Ver temporariamente"* no ecrã\n2️⃣ Vai aparecer um código numérico\n3️⃣ Insere o código na app quando pedido\n4️⃣ Acesso restaurado! ✅\n\nEste processo é normal quando acedes de um novo local. Se o problema persistir, avisa-me! 😊\n\n— *${BOT_NAME}*, Assistente Virtual ${branding.nome}`
+        );
+        if (MAIN_BOSS) {
+          await sendWhatsAppMessage(MAIN_BOSS,
+            `📱 *SUPORTE — ERRO DE RESIDÊNCIA*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n💬 "${textMessage.substring(0, 100)}"\n\n✅ Cliente orientado com o passo a passo.\nSe não resolver, use *assumir ${senderNum}*.`
+          );
+        }
+        return res.status(200).send('OK');
+      }
+    }
+
+    // =====================================================================
+    // HANDLER GLOBAL DE IMAGENS — corre em TODOS os steps
+    // 1. Usa Gemini Vision para detetar erro Netflix "residência"
+    // 2. Se detetado → orienta cliente + notifica supervisor
+    // 3. Se não detetado → passa ao handler do step atual (aguardando_comprovativo)
+    //    ou responde genericamente noutros steps
+    // =====================================================================
+    if (isImage) {
+      const thumbnailB64 = messageData.message?.imageMessage?.jpegThumbnail || null;
+      const isNetflixError = await detectNetflixHouseholdError(thumbnailB64);
+
+      if (isNetflixError) {
+        await sendWhatsAppMessage(senderNum,
+          `📱 *Erro de Localização Netflix detetado!*\n\nA tua Netflix está a pedir verificação de localização. Sigue estes passos:\n\n1️⃣ Clica em *"Ver temporariamente"* no ecrã\n2️⃣ Vai aparecer um código de acesso numérico\n3️⃣ Insere o código quando a app pedir\n4️⃣ Já consegues ver normalmente! ✅\n\nSe o problema persistir, responde aqui e o nosso suporte ajuda imediatamente. 😊\n\n— *${BOT_NAME}*, Assistente Virtual ${branding.nome}`
+        );
+        if (MAIN_BOSS) {
+          await sendWhatsAppMessage(MAIN_BOSS,
+            `📱 *AVISO — ERRO DE RESIDÊNCIA NETFLIX*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n📍 Step: ${state.step}\n\n✅ Cliente orientado. Se não resolver, use *assumir ${senderNum}*.`
+          );
+        }
+        return res.status(200).send('OK');
+      }
+
+      // Imagem não é erro Netflix — se não estamos em aguardando_comprovativo, responder genericamente
+      if (state.step !== 'aguardando_comprovativo') {
+        if (state.step === 'esperando_supervisor') {
+          await sendWhatsAppMessage(senderNum, '⏳ O teu comprovativo está em análise. Aguarda a confirmação, por favor. 😊');
+        } else {
+          await sendWhatsAppMessage(senderNum,
+            `Recebi a tua imagem! 📷\n\nSe tens algum problema com a tua conta, descreve-o em texto que trato de imediato.\nSe queres comprar ou renovar um plano, é só dizer! 😊\n\n— *${BOT_NAME}*, Assistente Virtual ${branding.nome}`
+          );
+        }
+        return res.status(200).send('OK');
+      }
+      // isImage && step === 'aguardando_comprovativo' → deixa cair para o handler do step
     }
 
     // ---- STEP: esperando_supervisor ----
@@ -1368,10 +1498,10 @@ app.post('/', async (req, res) => {
         state.lastPlanLabel = lastPlanLabel;
         state.lastPlanPrice = lastPlanPrice;
 
-        const saudacao = nome ? `Olá ${nome}! 😊` : `Olá! 😊`;
+        const saudacao = nome ? `Olá ${nome}! 😊 Sou *${BOT_NAME}*, Assistente Virtual da ${branding.nome}.` : `Olá! 😊 Sou *${BOT_NAME}*, Assistente Virtual da ${branding.nome}.`;
         console.log(`📤 DEBUG: A enviar saudação de renovação rápida para ${senderNum}`);
         await sendWhatsAppMessage(senderNum,
-          `${saudacao} Bem-vindo de volta à ${branding.nome}! 🎉\n\n` +
+          `${saudacao} Bem-vindo de volta! 🎉\n\n` +
           `Vi que és nosso cliente de *${existing.plataforma}* — ${lastPlanLabel}.\n\n` +
           `Queres renovar o mesmo plano por *${lastPlanPrice.toLocaleString('pt')} Kz*?\n\n` +
           `✅ *Sim* — renovar ${lastPlanLabel}\n🔄 *Outro* — escolher plano diferente`
@@ -1381,7 +1511,7 @@ app.post('/', async (req, res) => {
 
       state.step = 'captura_nome';
       console.log(`📤 DEBUG: A enviar saudação inicial para ${senderNum}`);
-      await sendWhatsAppMessage(senderNum, `Olá! 👋 Sou o Assistente de Vendas da ${branding.nome} 🤖.\n\nVendo planos de *Netflix* e *Prime Video* em Angola a preços acessíveis!\n\nCom quem tenho o prazer de falar?`);
+      await sendWhatsAppMessage(senderNum, `Olá! 👋 Sou *${BOT_NAME}*, a Assistente Virtual de Atendimento da ${branding.nome} 🤖.\n\nEstou aqui para te ajudar a contratar ou renovar planos de *Netflix* e *Prime Video* em Angola!\n\nCom quem tenho o prazer de falar?`);
       return res.status(200).send('OK');
     }
 
