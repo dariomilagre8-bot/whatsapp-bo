@@ -336,23 +336,22 @@ const pendingVerifications = {};
 const pausedClients = {};
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-// ==================== GEMINI VISION: NETFLIX HOUSEHOLD ====================
-// Deteta imagens de erro "dispositivo não faz parte da residência Netflix"
-// Usa o thumbnail JPEG enviado pelo Evolution API (baixo custo, rápido)
-async function detectNetflixHouseholdError(jpegThumbnailBase64) {
-  if (!jpegThumbnailBase64) return false;
-  try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-    const cleanBase64 = jpegThumbnailBase64.replace(/^data:image\/\w+;base64,/, '');
-    const result = await model.generateContent([
-      { inlineData: { data: cleanBase64, mimeType: 'image/jpeg' } },
-      'Does this image show a Netflix or Prime Video error about "not part of household", "dispositivo não faz parte da residência", "Ver temporariamente", or any streaming device/residence restriction screen? Answer only YES or NO.',
-    ]);
-    return (result.response.text() || '').trim().toUpperCase().startsWith('YES');
-  } catch (e) {
-    console.error('⚠️ Erro análise imagem Gemini Vision:', e.message);
-    return false;
-  }
+// ==================== NETFLIX HOUSEHOLD: DETEÇÃO POR KEYWORDS ====================
+// Verifica se nas últimas 3 mensagens do cliente há referência ao erro de residência Netflix
+const NETFLIX_HOUSEHOLD_KEYWORDS = [
+  'ver temporariamente', 'dispositivo', 'fora de casa',
+  'residência', 'residencia', 'não faz parte', 'nao faz parte', 'código',
+];
+
+function recentMessagesHaveNetflixKeyword(senderNum) {
+  const history = chatHistories[senderNum] || [];
+  const lastUserMessages = history
+    .filter(m => m.role === 'user')
+    .slice(-3)
+    .map(m => removeAccents((m.parts[0]?.text || '').toLowerCase()));
+  return lastUserMessages.some(text =>
+    NETFLIX_HOUSEHOLD_KEYWORDS.some(kw => text.includes(removeAccents(kw)))
+  );
 }
 
 // ==================== /api/chat (ChatWidget do site) ====================
@@ -1264,39 +1263,30 @@ app.post('/', async (req, res) => {
 
     // =====================================================================
     // HANDLER GLOBAL DE IMAGENS — corre em TODOS os steps
-    // 1. Usa Gemini Vision para detetar erro Netflix "residência"
-    // 2. Se detetado → orienta cliente + notifica supervisor
-    // 3. Se não detetado → passa ao handler do step atual (aguardando_comprovativo)
-    //    ou responde genericamente noutros steps
+    // 1. Se step = aguardando_comprovativo → aceita normalmente (cai para o handler do step)
+    // 2. Caso contrário → verifica keywords Netflix nas últimas 3 mensagens do cliente
+    //    - Se sim → envia guia + notifica supervisor
+    //    - Se não → pede comprovativo em PDF
     // =====================================================================
     if (isImage) {
-      const thumbnailB64 = messageData.message?.imageMessage?.jpegThumbnail || null;
-      const isNetflixError = await detectNetflixHouseholdError(thumbnailB64);
-
-      if (isNetflixError) {
-        await sendWhatsAppMessage(senderNum,
-          `📱 *Erro de Localização Netflix detetado!*\n\nA tua Netflix está a pedir verificação de localização. Sigue estes passos:\n\n1️⃣ Clica em *"Ver temporariamente"* no ecrã\n2️⃣ Vai aparecer um código de acesso numérico\n3️⃣ Insere o código quando a app pedir\n4️⃣ Já consegues ver normalmente! ✅\n\nSe o problema persistir, responde aqui e o nosso suporte ajuda imediatamente. 😊\n\n— *${BOT_NAME}*, Assistente Virtual ${branding.nome}`
-        );
-        if (MAIN_BOSS) {
-          await sendWhatsAppMessage(MAIN_BOSS,
-            `📱 *AVISO — ERRO DE RESIDÊNCIA NETFLIX*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n📍 Step: ${state.step}\n\n✅ Cliente orientado. Se não resolver, use *assumir ${senderNum}*.`
-          );
-        }
-        return res.status(200).send('OK');
-      }
-
-      // Imagem não é erro Netflix — se não estamos em aguardando_comprovativo, responder genericamente
-      if (state.step !== 'aguardando_comprovativo') {
-        if (state.step === 'esperando_supervisor') {
-          await sendWhatsAppMessage(senderNum, '⏳ O teu comprovativo está em análise. Aguarda a confirmação, por favor. 😊');
-        } else {
+      if (state.step === 'aguardando_comprovativo') {
+        // deixa cair para o handler do step
+      } else {
+        const hasNetflixContext = recentMessagesHaveNetflixKeyword(senderNum);
+        if (hasNetflixContext) {
           await sendWhatsAppMessage(senderNum,
-            `Recebi a tua imagem! 📷\n\nSe tens algum problema com a tua conta, descreve-o em texto que trato de imediato.\nSe queres comprar ou renovar um plano, é só dizer! 😊\n\n— *${BOT_NAME}*, Assistente Virtual ${branding.nome}`
+            `📱 *Erro de Localização Netflix detetado!*\n\nA tua Netflix está a pedir verificação de localização. Sigue estes passos:\n\n1️⃣ Clica em *"Ver temporariamente"* no ecrã\n2️⃣ Vai aparecer um código de acesso numérico\n3️⃣ Insere o código quando a app pedir\n4️⃣ Já consegues ver normalmente! ✅\n\nSe o problema persistir, responde aqui e o nosso suporte ajuda imediatamente. 😊\n\n— *${BOT_NAME}*, Assistente Virtual ${branding.nome}`
           );
+          if (MAIN_BOSS) {
+            await sendWhatsAppMessage(MAIN_BOSS,
+              `📱 *AVISO — ERRO DE RESIDÊNCIA NETFLIX*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n📍 Step: ${state.step}\n\n✅ Cliente orientado. Se não resolver, use *assumir ${senderNum}*.`
+            );
+          }
+        } else {
+          await sendWhatsAppMessage(senderNum, `Envia o teu comprovativo em PDF 📄`);
         }
         return res.status(200).send('OK');
       }
-      // isImage && step === 'aguardando_comprovativo' → deixa cair para o handler do step
     }
 
     // ---- STEP: esperando_supervisor ----
