@@ -402,12 +402,18 @@ app.post('/api/chat', async (req, res) => {
     if (!message || !sessionId) return res.status(400).json({ reply: 'Dados em falta.' });
     if (!webChatHistories[sessionId]) webChatHistories[sessionId] = [];
 
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+
+    // Constrói o array de contents com o histórico + mensagem actual
+    const contents = [
+      ...webChatHistories[sessionId],
+      { role: 'user', parts: [{ text: message }] },
+    ];
+
+    const result = await model.generateContent({
+      contents,
       systemInstruction: { parts: [{ text: SYSTEM_PROMPT_CHAT_WEB }] },
     });
-    const chat = model.startChat({ history: webChatHistories[sessionId] });
-    const result = await chat.sendMessage(message);
     const reply = result.response.text();
 
     webChatHistories[sessionId].push({ role: 'user', parts: [{ text: message }] });
@@ -417,8 +423,8 @@ app.post('/api/chat', async (req, res) => {
 
     res.json({ reply });
   } catch (e) {
-    console.error('❌ Erro /api/chat:', e.message);
-    res.json({ reply: `Olá! Sou ${BOT_NAME}, assistente virtual da ${branding.nome}. Para ajuda imediata, fala connosco no WhatsApp! 😊` });
+    console.error('❌ Erro /api/chat:', e.message, e.stack);
+    res.json({ reply: `Olá! Sou ${BOT_NAME}, assistente virtual da ${branding.nome}. Como posso ajudar? Fala connosco também pelo WhatsApp! 😊` });
   }
 });
 
