@@ -1596,7 +1596,7 @@ app.post('/', async (req, res) => {
             const qtyLabel = qty > 1 ? `${qty}x ` : '';
             return `${qtyLabel}${i.plataforma} ${i.plan} (${(i.totalPrice || i.price)} Kz, ${i.totalSlots || i.slotsNeeded} perfis)`;
           }).join(', ');
-          const contextPrompt = `${SYSTEM_PROMPT_COMPROVATIVO}\n\nPedido atual do cliente: ${cartInfo}. Total: ${state.totalValor} Kz.\n\nREGRA CRÍTICA: NUNCA digas "consulte a conversa anterior" nem "os dados já foram partilhados". Se o cliente pedir os dados de pagamento, responde apenas: "Claro! Vou reenviar os dados agora mesmo 😊" — o sistema enviará automaticamente.`;
+          const contextPrompt = `${SYSTEM_PROMPT_COMPROVATIVO}\n\nPEDIDO ACTUAL DO CLIENTE (usa SEMPRE estes dados — NÃO inventes outros serviços): ${cartInfo}. Total: ${state.totalValor} Kz.\n\nREGRA CRÍTICA 1: NUNCA menciones um serviço diferente do pedido actual. Se o pedido é Prime Video, fala APENAS de Prime Video. Se for Netflix, fala APENAS de Netflix.\nREGRA CRÍTICA 2: NUNCA digas "consulte a conversa anterior" nem "os dados já foram partilhados".\nREGRA CRÍTICA 3: Se o cliente pedir os dados de pagamento, responde apenas: "Claro! Vou reenviar os dados agora mesmo 😊" — o sistema enviará automaticamente.\nREGRA CRÍTICA 4: Se o cliente perguntar "já tem disponível?" ou similar, responde afirmativamente para o serviço do pedido acima.`;
           const model = genAI.getGenerativeModel({
             model: 'gemini-2.5-flash',
             systemInstruction: { parts: [{ text: contextPrompt }] }
