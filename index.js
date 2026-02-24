@@ -1472,14 +1472,14 @@ app.post('/', async (req, res) => {
 
     // =====================================================================
     // HANDLER GLOBAL DE IMAGENS — corre em TODOS os steps
-    // 1. Se step = aguardando_comprovativo → aceita normalmente (cai para o handler do step)
-    // 2. Caso contrário → verifica keywords Netflix nas últimas 3 mensagens do cliente
-    //    - Se sim → envia guia + notifica supervisor
-    //    - Se não → pede comprovativo em PDF
+    // 1. Se step = aguardando_comprovativo → cai para o handler do step (só aceita PDF)
+    // 2. Verifica contexto Netflix → guia de localização
+    // 3. Qualquer outra imagem → pede descrição em texto (sem custo de OCR/Vision API)
+    //    O ESCALATION_PATTERN existente intercepta automaticamente a descrição e escala.
     // =====================================================================
     if (isImage) {
       if (state.step === 'aguardando_comprovativo') {
-        // deixa cair para o handler do step
+        // deixa cair para o handler do step (rejeitará a imagem e pedirá PDF)
       } else {
         const hasNetflixContext = recentMessagesHaveNetflixKeyword(senderNum);
         if (hasNetflixContext) {
@@ -1492,7 +1492,16 @@ app.post('/', async (req, res) => {
             );
           }
         } else {
-          await sendWhatsAppMessage(senderNum, `Envia o teu comprovativo em PDF 📄`);
+          // Não consigo ler imagens — pedir ao cliente que descreva em texto.
+          // Isso permite que o ESCALATION_PATTERN existente intercepte e escale automaticamente.
+          await sendWhatsAppMessage(senderNum,
+            `📷 Recebi a tua imagem, mas infelizmente não consigo ver o conteúdo de imagens.\n\nPodes descrever em *texto* o que aparece no ecrã? Por exemplo:\n• _"Aparece erro de verificação de email"_\n• _"Pede para confirmar um código"_\n• _"Diz que a conta está bloqueada"_\n• _"Não consigo entrar na conta"_\n\nAssim consigo ajudar-te imediatamente! 😊`
+          );
+          if (MAIN_BOSS) {
+            await sendWhatsAppMessage(MAIN_BOSS,
+              `📷 *IMAGEM RECEBIDA (não lida)*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n📍 Step: ${state.step}\n\nCliente enviou imagem (provavelmente erro/screenshot). Bot pediu descrição em texto.\nSe quiser intervir agora: *assumir ${senderNum}*`
+            );
+          }
         }
         return res.status(200).send('OK');
       }
