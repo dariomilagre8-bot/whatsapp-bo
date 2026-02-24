@@ -352,6 +352,85 @@ const pausedClients = {};
 const lastIntroTimes = {};   // { [phone]: timestamp } — persiste fora do ciclo de sessão
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
+// ==================== PERSISTÊNCIA DE SESSÕES (SUPABASE) ====================
+// Sessões são guardadas no Supabase a cada 15s. Ao reiniciar, são restauradas.
+// Assim conversas em curso não se perdem após redeploy no EasyPanel.
+
+const dirtySessions = new Set();
+
+function markDirty(phone) {
+  dirtySessions.add(phone);
+}
+
+async function persistSession(phone) {
+  if (!supabase) return;
+  try {
+    await supabase.from('sessoes').upsert({
+      whatsapp: phone,
+      client_state: clientStates[phone] || null,
+      chat_history: chatHistories[phone] ? chatHistories[phone].slice(-20) : null,
+      pending_verification: pendingVerifications[phone] || null,
+      is_paused: !!pausedClients[phone],
+      last_intro_ts: lastIntroTimes[phone] || null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'whatsapp' });
+  } catch (e) {
+    console.error(`⚠️ persistSession ${phone}:`, e.message);
+  }
+}
+
+// Remove sessão da memória e do Supabase
+function cleanupSession(phone) {
+  delete clientStates[phone];
+  delete chatHistories[phone];
+  delete pendingVerifications[phone];
+  delete pausedClients[phone];
+  dirtySessions.delete(phone);
+  if (supabase) {
+    supabase.from('sessoes').delete().eq('whatsapp', phone)
+      .then(() => {})
+      .catch(e => console.error(`⚠️ cleanupSession Supabase ${phone}:`, e.message));
+  }
+}
+
+// Restaura todas as sessões activas do Supabase (chamado ao iniciar)
+async function loadSessionsOnStartup() {
+  if (!supabase) return;
+  try {
+    const { data, error } = await supabase.from('sessoes').select('*');
+    if (error) throw new Error(error.message);
+    const now = Date.now();
+    const TWO_HOURS = 2 * 60 * 60 * 1000;
+    let count = 0;
+    for (const row of (data || [])) {
+      const phone = row.whatsapp;
+      const hasPending = !!row.pending_verification;
+      const lastAct = row.client_state?.lastActivity || 0;
+      // Descartar sessões inactivas há mais de 2h sem pagamento pendente
+      if (!hasPending && (now - lastAct) > TWO_HOURS) continue;
+      if (row.client_state) clientStates[phone] = row.client_state;
+      if (row.chat_history) chatHistories[phone] = row.chat_history;
+      if (row.pending_verification) pendingVerifications[phone] = row.pending_verification;
+      if (row.is_paused) pausedClients[phone] = true;
+      if (row.last_intro_ts) lastIntroTimes[phone] = row.last_intro_ts;
+      count++;
+    }
+    console.log(`✅ Sessões restauradas do Supabase: ${count}`);
+  } catch (e) {
+    console.error('❌ Erro ao restaurar sessões:', e.message);
+  }
+}
+
+// Flush periódico — persiste sessões modificadas a cada 15s
+setInterval(async () => {
+  if (dirtySessions.size === 0) return;
+  const phones = [...dirtySessions];
+  dirtySessions.clear();
+  for (const phone of phones) {
+    await persistSession(phone);
+  }
+}, 15 * 1000);
+
 // ==================== NETFLIX HOUSEHOLD: DETEÇÃO POR KEYWORDS ====================
 // Verifica se nas últimas 3 mensagens do cliente há referência ao erro de residência Netflix
 const NETFLIX_HOUSEHOLD_KEYWORDS = [
@@ -494,8 +573,7 @@ setInterval(async () => {
       if (MAIN_BOSS) {
         await sendWhatsAppMessage(MAIN_BOSS, `⏰ *TIMEOUT 2H* — Stock não reposto\n👤 ${num} (${nome || ''})\n📦 ${recovery.qty > 1 ? recovery.qty + 'x ' : ''}${recovery.service} ${recovery.plan}\nSessão limpa automaticamente.`);
       }
-      delete clientStates[num];
-      delete chatHistories[num];
+      cleanupSession(num);
     }
   }
 }, 5 * 60 * 1000);
@@ -508,8 +586,7 @@ setInterval(() => {
     if (state.lastActivity && (now - state.lastActivity) > TWO_HOURS) {
       if (state.step !== 'inicio' && state.step !== 'esperando_supervisor' && state.step !== 'aguardando_reposicao' && state.step !== 'aguardando_resposta_alternativa' && !pendingVerifications[num]) {
         logLostSale(num, state.clientName, state.interestStack || [], state.step, 'Timeout (2h sem atividade)');
-        delete clientStates[num];
-        delete chatHistories[num];
+        cleanupSession(num);
       }
     }
   }
@@ -882,13 +959,11 @@ async function processApproval(targetClient, senderNum) {
     }
   }
 
-  // Limpar estado
-  delete pendingVerifications[targetClient];
-  if (clientStates[targetClient]) {
-    const savedName = clientStates[targetClient].clientName;
-    clientStates[targetClient] = initClientState({ clientName: savedName, step: 'escolha_servico' });
-  }
-  delete chatHistories[targetClient];
+  // Limpar estado — reinicia sessão após entrega bem-sucedida
+  const savedNameAfter = clientStates[targetClient]?.clientName;
+  cleanupSession(targetClient);
+  clientStates[targetClient] = initClientState({ clientName: savedNameAfter || '', step: 'escolha_servico' });
+  markDirty(targetClient);
   return { success: true, allSuccess, totalDelivered: results.filter(r => r.success).length };
 }
 
@@ -965,10 +1040,7 @@ app.post('/', async (req, res) => {
         const existing = await checkClientInSheet(targetNum);
         if (existing) {
           await markProfileAvailable(existing.rowIndex);
-          delete clientStates[targetNum];
-          delete pendingVerifications[targetNum];
-          delete chatHistories[targetNum];
-          delete pausedClients[targetNum];
+          cleanupSession(targetNum);
           await sendWhatsAppMessage(senderNum, `🔓 Perfil de ${targetNum} libertado (${existing.plataforma}).`);
         } else {
           await sendWhatsAppMessage(senderNum, `⚠️ Nenhum perfil encontrado para ${targetNum}.`);
@@ -1069,8 +1141,7 @@ app.post('/', async (req, res) => {
           const nome = targetState.clientName;
           await sendWhatsAppMessage(targetNum, `😔 ${nome ? nome + ', l' : 'L'}amentamos mas não foi possível processar o teu pedido desta vez. Esperamos ver-te em breve!\n\nSe precisares de algo, estamos aqui. 😊`);
           logLostSale(targetNum, nome, targetState.interestStack || [], targetState.step, 'Cancelado pelo supervisor');
-          delete clientStates[targetNum];
-          delete chatHistories[targetNum];
+          cleanupSession(targetNum);
           await sendWhatsAppMessage(senderNum, `✅ Pedido de ${targetNum} cancelado e cliente notificado.`);
         } else {
           await sendWhatsAppMessage(senderNum, `⚠️ Cliente ${targetNum} não tem pedido pendente de reposição.`);
@@ -1232,6 +1303,7 @@ app.post('/', async (req, res) => {
 
     const state = clientStates[senderNum];
     state.lastActivity = Date.now();
+    markDirty(senderNum);
     console.log(`🔍 DEBUG: step="${state.step}" para ${senderNum}`);
 
     // =====================================================================
@@ -1240,10 +1312,18 @@ app.post('/', async (req, res) => {
     // =====================================================================
     if (textMessage && !pausedClients[senderNum] && state.step !== 'esperando_supervisor' && HUMAN_TRANSFER_PATTERN.test(removeAccents(textMessage.toLowerCase()))) {
       pausedClients[senderNum] = true;
+      markDirty(senderNum);
       const nome = state.clientName;
       await sendWhatsAppMessage(senderNum, `Claro${nome ? ', ' + nome : ''}! 😊 Vou transferir-te para a nossa equipa. Um supervisor irá falar contigo em breve.`);
       if (MAIN_BOSS) {
-        await sendWhatsAppMessage(MAIN_BOSS, `🙋 *PEDIDO DE ATENDIMENTO HUMANO*\n👤 ${senderNum}${nome ? ' (' + nome + ')' : ''}\n📍 Step: ${state.step}\n\nBot pausado. Use *retomar ${senderNum}* quando terminar.`);
+        let planInfo = '';
+        try {
+          const existing = await checkClientInSheet(senderNum);
+          if (existing) planInfo = `\n📦 Plano na base: *${existing.plataforma}* (${existing.tipoConta || 'N/A'})`;
+        } catch (_) {}
+        await sendWhatsAppMessage(MAIN_BOSS,
+          `🙋 *PEDIDO DE ATENDIMENTO HUMANO*\n👤 ${senderNum}${nome ? ' (' + nome + ')' : ''}${planInfo}\n📍 Step: ${state.step}\n💬 "${(textMessage || '').substring(0, 150)}"\n\nBot pausado. Use *retomar ${senderNum}* quando terminar.`
+        );
       }
       return res.status(200).send('OK');
     }
@@ -1254,13 +1334,19 @@ app.post('/', async (req, res) => {
     // =====================================================================
     if (textMessage && !pausedClients[senderNum] && state.step !== 'esperando_supervisor' && ESCALATION_PATTERN.test(removeAccents(textMessage.toLowerCase()))) {
       pausedClients[senderNum] = true;
+      markDirty(senderNum);
       const nome = state.clientName || pushName || '';
       await sendWhatsAppMessage(senderNum,
         `${nome ? nome + ', o' : 'O'} teu pedido foi recebido! 🙏\nUm membro da nossa equipa irá contactar-te em breve para resolver a situação.\n\n— *${BOT_NAME}*, Assistente Virtual ${branding.nome}`
       );
       if (MAIN_BOSS) {
+        let planInfo = '';
+        try {
+          const existing = await checkClientInSheet(senderNum);
+          if (existing) planInfo = `\n📦 Plano na base: *${existing.plataforma}* (${existing.tipoConta || 'N/A'})`;
+        } catch (_) {}
         await sendWhatsAppMessage(MAIN_BOSS,
-          `🔔 *ESCALAÇÃO AUTOMÁTICA*\n👤 ${senderNum}${nome ? ' (' + nome + ')' : ''}\n📍 Step: ${state.step}\n💬 "${textMessage.substring(0, 200)}"\n\n⚠️ Bot pausado. Use *retomar ${senderNum}* quando terminar.`
+          `🔔 *ESCALAÇÃO AUTOMÁTICA*\n👤 ${senderNum}${nome ? ' (' + nome + ')' : ''}${planInfo}\n📍 Step: ${state.step}\n💬 "${textMessage.substring(0, 200)}"\n\n⚠️ Bot pausado. Use *retomar ${senderNum}* quando terminar.`
         );
       }
       return res.status(200).send('OK');
@@ -2463,6 +2549,38 @@ adminRouter.get('/financeiro', async (req, res) => {
   }
 });
 
+// GET /api/admin/chat/:phone — devolve histórico e estado de um cliente (para dashboard)
+adminRouter.get('/chat/:phone', (req, res) => {
+  const phone = (req.params.phone || '').replace(/\D/g, '');
+  if (!phone) return res.status(400).json({ error: 'phone obrigatório' });
+  const history = (chatHistories[phone] || []).map(m => ({
+    role: m.role,
+    text: m.parts?.[0]?.text || '',
+  }));
+  res.json({
+    phone,
+    state: clientStates[phone] || null,
+    history,
+    pending: pendingVerifications[phone] || null,
+    paused: !!pausedClients[phone],
+    lastIntro: lastIntroTimes[phone] || null,
+  });
+});
+
+// GET /api/admin/active-sessions — lista todas as sessões activas em memória
+adminRouter.get('/active-sessions', (req, res) => {
+  const sessions = Object.entries(clientStates).map(([phone, state]) => ({
+    phone,
+    step: state.step,
+    clientName: state.clientName || '',
+    lastActivity: state.lastActivity || null,
+    paused: !!pausedClients[phone],
+    hasPending: !!pendingVerifications[phone],
+  }));
+  sessions.sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
+  res.json({ total: sessions.length, sessions });
+});
+
 // POST /api/admin/broadcast — envia mensagem para lista de números
 // Body: { numbers: ["244XXXXXXXXX", ...], message: "texto", delay_ms: 2000 }
 adminRouter.post('/broadcast', async (req, res) => {
@@ -2578,7 +2696,7 @@ app.get('/api/branding', (req, res) => {
 });
 
 app.get('/api/version', (req, res) => {
-  res.json({ v: '20260224-mlphase-humano-broadcast', started: new Date().toISOString() });
+  res.json({ v: '20260224-persist-sessions-dashboard', started: new Date().toISOString() });
 });
 
 app.use('/api/admin', adminRouter);
@@ -2593,4 +2711,7 @@ require('./expiracao-modulo').iniciar({
   isIndisponivel,
 });
 
-app.listen(port, '0.0.0.0', () => console.log(`Bot v16.0 (${branding.nome}) rodando na porta ${port}`));
+// Restaurar sessões activas do Supabase antes de começar a aceitar mensagens
+loadSessionsOnStartup().then(() => {
+  app.listen(port, '0.0.0.0', () => console.log(`Bot v17.0 (${branding.nome}) rodando na porta ${port}`));
+});

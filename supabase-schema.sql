@@ -37,3 +37,15 @@ CREATE TABLE IF NOT EXISTS perfis_entregues (
 CREATE INDEX IF NOT EXISTS idx_vendas_whatsapp ON vendas(whatsapp);
 CREATE INDEX IF NOT EXISTS idx_vendas_data ON vendas(data_venda);
 CREATE INDEX IF NOT EXISTS idx_vendas_status ON vendas(status);
+
+-- Tabela de sessões ativas (persistência de conversas entre restarts do bot)
+CREATE TABLE IF NOT EXISTS sessoes (
+  whatsapp TEXT PRIMARY KEY,
+  client_state JSONB,
+  chat_history JSONB,
+  pending_verification JSONB,
+  is_paused BOOLEAN DEFAULT FALSE,
+  last_intro_ts BIGINT,
+  updated_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_sessoes_updated ON sessoes(updated_at);
