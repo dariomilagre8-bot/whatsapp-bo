@@ -133,6 +133,7 @@ function getEmailSlotUsage(rows, email) {
 }
 
 // Verifica se cliente já existe na planilha (coluna H = Telefone)
+// Só conta como cliente se o status for Vendido/Indisponível — ignora linhas disponíveis
 async function checkClientInSheet(clientNumber) {
   const rows = await fetchAllRows();
   if (rows.length <= 1) return null;
@@ -140,7 +141,7 @@ async function checkClientInSheet(clientNumber) {
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
     const telefone = row[7] || '';  // H = Telefone
-    if (cleanNumber(telefone) === cleanNum) {
+    if (cleanNumber(telefone) === cleanNum && isIndisponivel(row[5])) {
       return {
         rowIndex: i + 1,
         plataforma: row[0] || '',
