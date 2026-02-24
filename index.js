@@ -2647,21 +2647,25 @@ adminRouter.get('/financeiro', async (req, res) => {
   }
 });
 
-// GET /api/admin/chat/:phone — devolve histórico e estado de um cliente (para dashboard)
+// GET /api/admin/chat/:phone — histórico e estado completo de um cliente
 adminRouter.get('/chat/:phone', (req, res) => {
   const phone = (req.params.phone || '').replace(/\D/g, '');
   if (!phone) return res.status(400).json({ error: 'phone obrigatório' });
+  const state = clientStates[phone] || null;
+  if (!state) return res.status(404).json({ error: 'Sem sessão activa para este número.' });
   const history = (chatHistories[phone] || []).map(m => ({
     role: m.role,
     text: m.parts?.[0]?.text || '',
   }));
   res.json({
     phone,
-    state: clientStates[phone] || null,
+    step: state.step || '—',
+    clientName: state.clientName || '',
+    isPaused: !!pausedClients[phone],
+    cart: state.cart || [],
+    totalValor: state.totalValor || 0,
     history,
     pending: pendingVerifications[phone] || null,
-    paused: !!pausedClients[phone],
-    lastIntro: lastIntroTimes[phone] || null,
   });
 });
 
@@ -2672,11 +2676,29 @@ adminRouter.get('/active-sessions', (req, res) => {
     step: state.step,
     clientName: state.clientName || '',
     lastActivity: state.lastActivity || null,
-    paused: !!pausedClients[phone],
+    isPaused: !!pausedClients[phone],
     hasPending: !!pendingVerifications[phone],
   }));
   sessions.sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
   res.json({ total: sessions.length, sessions });
+});
+
+// POST /api/admin/session/pausar — pausa o bot para um número via API
+adminRouter.post('/session/pausar', (req, res) => {
+  const phone = ((req.body.phone || '')).replace(/\D/g, '');
+  if (!phone) return res.status(400).json({ error: 'phone obrigatório' });
+  pausedClients[phone] = true;
+  console.log(`[Admin API] Bot pausado para ${phone}`);
+  res.json({ success: true, phone, isPaused: true });
+});
+
+// POST /api/admin/session/retomar — retoma o bot para um número via API
+adminRouter.post('/session/retomar', (req, res) => {
+  const phone = ((req.body.phone || '')).replace(/\D/g, '');
+  if (!phone) return res.status(400).json({ error: 'phone obrigatório' });
+  delete pausedClients[phone];
+  console.log(`[Admin API] Bot retomado para ${phone}`);
+  res.json({ success: true, phone, isPaused: false });
 });
 
 // POST /api/admin/broadcast — envia mensagem para lista de números
