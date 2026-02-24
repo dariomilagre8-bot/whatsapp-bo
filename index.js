@@ -1426,16 +1426,31 @@ app.post('/', async (req, res) => {
           return res.status(200).send('OK');
         }
 
-        // Qualquer outra pergunta/texto → IA responde
+        // Keywords que indicam pedido de reenvio de dados de pagamento
+        const PAYMENT_REQUEST_KEYWORDS = [
+          'dados', 'iban', 'pagamento', 'pagar', 'multicaixa', 'transferencia',
+          'transferência', 'como pago', 'como pagar', 'reenviar', 'envia de novo',
+          'manda de novo', 'manda outra vez', 'não recebi', 'nao recebi',
+          'conta', 'número de conta', 'numero de conta', 'referencia', 'referência',
+        ];
+        const normalizedLower = removeAccents(textMessage.toLowerCase());
+        const wantsPaymentData = PAYMENT_REQUEST_KEYWORDS.some(kw => normalizedLower.includes(removeAccents(kw)));
+
+        if (wantsPaymentData) {
+          await sendPaymentMessages(senderNum, state);
+          return res.status(200).send('OK');
+        }
+
+        // Qualquer outra pergunta → IA responde (nunca diz "consulte a conversa anterior")
         try {
           const cartInfo = state.cart.map(i => {
             const qty = i.quantity || 1;
             const qtyLabel = qty > 1 ? `${qty}x ` : '';
             return `${qtyLabel}${i.plataforma} ${i.plan} (${(i.totalPrice || i.price)} Kz, ${i.totalSlots || i.slotsNeeded} perfis)`;
           }).join(', ');
-          const contextPrompt = `${SYSTEM_PROMPT_COMPROVATIVO}\n\nPedido atual do cliente: ${cartInfo}. Total: ${state.totalValor} Kz.`;
+          const contextPrompt = `${SYSTEM_PROMPT_COMPROVATIVO}\n\nPedido atual do cliente: ${cartInfo}. Total: ${state.totalValor} Kz.\n\nREGRA CRÍTICA: NUNCA digas "consulte a conversa anterior" nem "os dados já foram partilhados". Se o cliente pedir os dados de pagamento, responde apenas: "Claro! Vou reenviar os dados agora mesmo 😊" — o sistema enviará automaticamente.`;
           const model = genAI.getGenerativeModel({
-            model: 'gemini-2.5-flash',
+            model: 'gemini-2.0-flash',
             systemInstruction: { parts: [{ text: contextPrompt }] }
           });
           const chat = model.startChat({ history: chatHistories[senderNum] || [] });
@@ -1447,7 +1462,7 @@ app.post('/', async (req, res) => {
           await sendWhatsAppMessage(senderNum, aiText);
         } catch (e) {
           console.error('Erro AI comprovativo:', e.message);
-          await sendWhatsAppMessage(senderNum, 'Estou aqui se precisares de mais alguma coisa! 😊');
+          await sendPaymentMessages(senderNum, state);
         }
         return res.status(200).send('OK');
       }
