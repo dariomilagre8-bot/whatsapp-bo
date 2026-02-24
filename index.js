@@ -166,6 +166,27 @@ const CATALOGO = {
 };
 
 const PLAN_SLOTS = { individual: 1, partilha: 2, familia: 3, familia_completa: 5 };
+
+// Constrói a mensagem de selecção de serviço com base no stock REAL
+// Se só um serviço tem stock → vai directo para esse serviço (muda o state)
+// Se nenhum tem stock → mensagem de sem stock
+async function buildServiceMenuMsg(state, clientName) {
+  const nome = clientName ? `, ${clientName}` : '';
+  const netflixOk = await hasAnyStock('Netflix');
+  const primeOk   = await hasAnyStock('Prime Video');
+  if (netflixOk && primeOk) {
+    return { msg: `Sem problemas${nome}! O que gostarias de escolher?\n\n🎬 *Netflix*\n📺 *Prime Video*`, step: 'escolha_servico' };
+  }
+  if (netflixOk) {
+    if (state) { state.serviceKey = 'netflix'; state.plataforma = 'Netflix'; }
+    return { msg: `Sem problemas${nome}! Temos *Netflix* disponível:\n\n${formatPriceTable('netflix')}\n\nQual plano preferes? (${planChoicesText('netflix')})`, step: 'escolha_plano' };
+  }
+  if (primeOk) {
+    if (state) { state.serviceKey = 'prime_video'; state.plataforma = 'Prime Video'; }
+    return { msg: `Sem problemas${nome}! Temos *Prime Video* disponível:\n\n${formatPriceTable('prime_video')}\n\nQual plano preferes? (${planChoicesText('prime_video')})`, step: 'escolha_plano' };
+  }
+  return { msg: `Lamentamos${nome}! De momento não temos stock disponível. Vamos notificar-te assim que houver disponibilidade. 😔`, step: 'escolha_servico' };
+}
 const PLAN_RANK = { individual: 1, partilha: 2, familia: 3, familia_completa: 4 };
 
 const PAYMENT = {
@@ -1377,8 +1398,9 @@ app.post('/', async (req, res) => {
     // esperando_supervisor). Limpa pedido, mantém nome, NÃO reinicia saudação.
     // =====================================================================
     if (textMessage && handleChangeMind(senderNum, state, textMessage)) {
-      const nome = state.clientName;
-      await sendWhatsAppMessage(senderNum, `Sem problemas${nome ? ', ' + nome : ''}! O que gostarias de escolher agora?\n\n🎬 *Netflix*\n📺 *Prime Video*`);
+      const { msg, step } = await buildServiceMenuMsg(state, state.clientName);
+      state.step = step;
+      await sendWhatsAppMessage(senderNum, msg);
       return res.status(200).send('OK');
     }
 
@@ -1542,8 +1564,9 @@ app.post('/', async (req, res) => {
           logLostSale(senderNum, state.clientName, state.interestStack || [], state.step, 'Cliente cancelou');
           const nome = state.clientName;
           clientStates[senderNum] = initClientState({ clientName: nome });
-          clientStates[senderNum].step = 'escolha_servico';
-          await sendWhatsAppMessage(senderNum, 'Pedido cancelado. Como posso ajudar?\n\n🎬 *Netflix*\n📺 *Prime Video*');
+          const { msg: cancelCompMsg, step: cancelCompStep } = await buildServiceMenuMsg(clientStates[senderNum], nome);
+          clientStates[senderNum].step = cancelCompStep;
+          await sendWhatsAppMessage(senderNum, `Pedido cancelado. ${cancelCompMsg}`);
           return res.status(200).send('OK');
         }
 
@@ -1568,8 +1591,9 @@ app.post('/', async (req, res) => {
             msg += `${formatPriceTable(services[0])}\n\nQual plano deseja? (${planChoicesText(services[0])})`;
             await sendWhatsAppMessage(senderNum, msg);
           } else {
-            newState.step = 'escolha_servico';
-            await sendWhatsAppMessage(senderNum, `Sem problema${nome ? ', ' + nome : ''}! Qual serviço prefere?\n\n🎬 *Netflix*\n📺 *Prime Video*`);
+            const { msg, step } = await buildServiceMenuMsg(newState, nome);
+            newState.step = step;
+            await sendWhatsAppMessage(senderNum, msg);
           }
           return res.status(200).send('OK');
         }
@@ -1831,8 +1855,9 @@ app.post('/', async (req, res) => {
         console.error('[Tarefa D] Erro na busca por nome:', e.message);
       }
 
-      state.step = 'escolha_servico';
-      await sendWhatsAppMessage(senderNum, `Prazer, ${name}! 😊\n\nTemos os seguintes serviços:\n\n🎬 *Netflix*\n📺 *Prime Video*\n\nQual te interessa?`);
+      const { msg: svcMsg, step: svcStep } = await buildServiceMenuMsg(state, null);
+      state.step = svcStep;
+      await sendWhatsAppMessage(senderNum, `Prazer, ${name}! 😊\n\n${svcMsg.replace(/^Sem problemas[^!]*! /, '')}`);
       return res.status(200).send('OK');
     }
 
@@ -2089,8 +2114,9 @@ app.post('/', async (req, res) => {
         state.totalValor = 0;
         state.interestStack = [];
         state.currentItemIndex = 0;
-        state.step = 'escolha_servico';
-        await sendWhatsAppMessage(senderNum, 'Pedido cancelado. Como posso ajudar?\n\n🎬 *Netflix*\n📺 *Prime Video*');
+        const { msg: cancelMsg, step: cancelStep } = await buildServiceMenuMsg(state, state.clientName);
+        state.step = cancelStep;
+        await sendWhatsAppMessage(senderNum, `Pedido cancelado. ${cancelMsg}`);
       } else {
         await sendWhatsAppMessage(senderNum, 'Por favor, confirme com *sim* ou cancele com *não*.');
       }
