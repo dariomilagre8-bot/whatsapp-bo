@@ -1767,9 +1767,15 @@ app.post('/', async (req, res) => {
       console.log(`📤 DEBUG: A enviar saudação inicial para ${senderNum}`);
       if (shouldSendIntro(senderNum)) {
         markIntroSent(senderNum);
+        // Construir lista de serviços disponíveis dinamicamente (não hardcodar)
+        const [nfOk, pvOk] = await Promise.all([hasAnyStock('Netflix'), hasAnyStock('Prime Video')]);
+        const svcList = [nfOk ? '*Netflix*' : null, pvOk ? '*Prime Video*' : null].filter(Boolean).join(' e ');
+        const svcLine = svcList
+          ? `Estou aqui para te ajudar a contratar ou renovar planos de ${svcList} em Angola!\n\n`
+          : `Estou aqui para te ajudar com os nossos serviços de streaming em Angola!\n\n`;
         await sendWhatsAppMessage(senderNum,
           `Olá! 👋 Sou *${BOT_NAME}*, a Assistente Virtual da ${branding.nome} 🤖\n\n` +
-          `Estou aqui para te ajudar a contratar ou renovar planos de *Netflix* e *Prime Video* em Angola!\n\n` +
+          svcLine +
           `⚠️ *Nota importante:* Estou em fase de implementação e utilizo Inteligência Artificial (Machine Learning). ` +
           `Posso cometer erros enquanto estou em aprendizagem — se isso acontecer, a equipa humana está disponível imediatamente.\n\n` +
           `👉 A qualquer momento, escreve *#humano* para falar com um supervisor.\n\n` +
@@ -2704,6 +2710,92 @@ adminRouter.post('/broadcast', async (req, res) => {
 
   console.log(`📢 BROADCAST: ${sent} enviadas, ${failed} falharam (de ${batch.length})`);
   res.json({ success: true, sent, failed, total: batch.length, results });
+});
+
+// POST /api/admin/broadcast/expiracoes — broadcast de renovação filtrado por proximidade de expiração
+// Body: { dias_ate?: number (default 7), delay_ms?: number, mensagem_custom?: string }
+// Envia automaticamente o template correto a cada cliente com expiração <= dias_ate
+adminRouter.post('/broadcast/expiracoes', async (req, res) => {
+  const diasAte = parseInt(req.body.dias_ate, 10) || 7;
+  const delayMs = parseInt(req.body.delay_ms, 10) || 3000;
+  const mensagemCustom = (req.body.mensagem_custom || '').trim();
+
+  try {
+    const rows = await fetchAllRows();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const msPerDay = 24 * 60 * 60 * 1000;
+
+    const targets = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const plataforma  = row[0] || '';
+      const status      = row[5] || '';
+      const cliente     = row[6] || '';
+      const dataVendaStr = row[8] || '';
+
+      if (!isIndisponivel(status) || !cliente || !dataVendaStr) continue;
+
+      const parts = dataVendaStr.split('/');
+      if (parts.length !== 3) continue;
+      const dataVenda = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+      if (isNaN(dataVenda.getTime())) continue;
+
+      const expiry = new Date(dataVenda);
+      expiry.setDate(expiry.getDate() + 30);
+      expiry.setHours(0, 0, 0, 0);
+
+      const diasRestantes = Math.round((expiry - today) / msPerDay);
+      if (diasRestantes > diasAte) continue;
+
+      const clienteParts = cliente.split(' - ');
+      const nome  = clienteParts.length > 1 ? clienteParts.slice(0, -1).join(' - ') : cliente;
+      const phone = clienteParts.length > 1 ? clienteParts[clienteParts.length - 1].replace(/\D/g, '') : '';
+
+      if (!phone || phone.length < 9) continue;
+
+      let estado;
+      if (diasRestantes < 0)       estado = 'expirado';
+      else if (diasRestantes <= 3) estado = 'urgente';
+      else                          estado = 'aviso';
+
+      targets.push({ phone, nome, plataforma, diasRestantes, estado });
+    }
+
+    if (targets.length === 0) {
+      return res.json({ success: true, sent: 0, failed: 0, total: 0, message: `Nenhum cliente com expiração em ≤ ${diasAte} dias.` });
+    }
+
+    let sent = 0, failed = 0;
+    const results = [];
+
+    for (const t of targets) {
+      let msg;
+      if (mensagemCustom) {
+        msg = mensagemCustom
+          .replace('{nome}', t.nome)
+          .replace('{plataforma}', t.plataforma)
+          .replace('{dias}', String(t.diasRestantes));
+      } else if (t.diasRestantes >= 5) {
+        msg = `Olá ${t.nome}! 😊\n\nO teu plano 🎬 *${t.plataforma}* expira daqui a *7 dias*.\n\nAproveita para renovar com antecedência e continua a ver os teus filmes e séries favoritos sem interrupções 🍿\n\n👉 Renova aqui: ${branding.website}\n\nQualquer dúvida estamos aqui! 💬`;
+      } else if (t.diasRestantes >= 1) {
+        msg = `${t.nome}, atenção! ⏰\n\nO teu plano 🎬 *${t.plataforma}* expira em apenas *${t.diasRestantes} dia(s)*.\n\nNão percas o acesso às tuas séries a meio — renova agora em menos de 2 minutos 😊\n\n💳 Renova aqui: ${branding.website}\n\nEstamos sempre disponíveis para ajudar! 🙌`;
+      } else {
+        msg = `${t.nome}, hoje é o último dia! 🚨\n\nO teu plano 🎬 *${t.plataforma}* expira *hoje*.\n\nRenova agora e continua a ver sem parar 🎬🍿\n\n🔗 ${branding.website}\n\nObrigado por escolheres a ${branding.nome}! ❤️`;
+      }
+
+      const result = await sendWhatsAppMessage(t.phone, msg);
+      if (result.sent) { sent++; results.push({ ...t, status: 'sent' }); }
+      else { failed++; results.push({ ...t, status: 'failed' }); }
+      if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
+    }
+
+    console.log(`📢 BROADCAST EXPIRACOES: ${sent} enviadas, ${failed} falharam (filtro: ≤${diasAte} dias)`);
+    res.json({ success: true, sent, failed, total: targets.length, results });
+  } catch (err) {
+    console.error('Erro broadcast/expiracoes:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // GET /api/admin/financeiro-db (Supabase — fallback para mensagem se não configurado)
