@@ -1574,6 +1574,30 @@ app.post('/', async (req, res) => {
           return res.status(200).send('OK');
         }
 
+        // Pergunta sobre serviço DIFERENTE do pedido actual → verificar stock real
+        const mentionedInComprov = detectServices(textMessage || '');
+        const currentSvcKey = state.cart[0]?.serviceKey || state.serviceKey;
+        const otherSvcInComprov = mentionedInComprov.find(s => s !== currentSvcKey);
+        if (otherSvcInComprov) {
+          const currentPlatLabel = state.cart[0]?.plataforma || state.plataforma || '';
+          const otherPlatLabel = CATALOGO[otherSvcInComprov].nome;
+          const hasOtherStock = await hasAnyStock(otherPlatLabel);
+          if (!hasOtherStock) {
+            await sendWhatsAppMessage(senderNum,
+              `De momento não temos *${otherPlatLabel}* disponível. 😔\n\n` +
+              `O teu pedido actual é de *${currentPlatLabel}* — assim que enviares o comprovativo, os acessos são entregues imediatamente! 😊`
+            );
+          } else {
+            await sendWhatsAppMessage(senderNum,
+              `Temos *${otherPlatLabel}* disponível! 🎉\n\n` +
+              `Neste momento o teu pedido é de *${currentPlatLabel}*. Podes:\n\n` +
+              `• Completar o pagamento actual e depois fazer um novo pedido de ${otherPlatLabel}\n` +
+              `• Ou escreve *cancelar* se preferires trocar de serviço agora`
+            );
+          }
+          return res.status(200).send('OK');
+        }
+
         // Keywords que indicam pedido de reenvio de dados de pagamento
         const PAYMENT_REQUEST_KEYWORDS = [
           'dados', 'iban', 'pagamento', 'pagar', 'multicaixa', 'transferencia',
