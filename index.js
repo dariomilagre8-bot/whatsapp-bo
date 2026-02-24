@@ -1991,11 +1991,44 @@ app.post('/', async (req, res) => {
         return res.status(200).send('OK');
       }
 
-      // Texto não é um plano — verificar se é uma pergunta
+      // Texto não é um plano — verificar primeiro se o cliente mudou de serviço
+      const mentionedServices = detectServices(textMessage || '');
+      const switchedService = mentionedServices.find(s => s !== state.serviceKey);
+      if (switchedService) {
+        const hasSwStock = await hasAnyStock(CATALOGO[switchedService].nome);
+        if (!hasSwStock) {
+          await sendWhatsAppMessage(senderNum,
+            `😔 De momento não temos *${CATALOGO[switchedService].nome}* disponível.\n\n` +
+            `Mas temos *${CATALOGO[state.serviceKey].nome}* disponível! Qual plano preferes?\n\n` +
+            `${formatPriceTable(state.serviceKey)}`
+          );
+          if (MAIN_BOSS) {
+            await sendWhatsAppMessage(MAIN_BOSS,
+              `⚠️ *STOCK ESGOTADO* de ${CATALOGO[switchedService].nome}!\nCliente: ${senderNum} (${state.clientName || 'sem nome'}) solicitou em mid-flow.\nMantido no fluxo de ${CATALOGO[state.serviceKey].nome}.`
+            );
+          }
+        } else {
+          state.serviceKey = switchedService;
+          state.plataforma = CATALOGO[switchedService].nome;
+          if (!state.interestStack.includes(switchedService)) {
+            state.interestStack = [switchedService];
+            state.currentItemIndex = 0;
+          } else {
+            state.currentItemIndex = state.interestStack.indexOf(switchedService);
+          }
+          await sendWhatsAppMessage(senderNum,
+            `${formatPriceTable(switchedService)}\n\nQual plano preferes? (${planChoicesText(switchedService)})`
+          );
+        }
+        return res.status(200).send('OK');
+      }
+
+      // Não é plano nem mudança de serviço — responder com IA sobre o serviço ACTUAL
       try {
         const availPlans = Object.entries(CATALOGO[state.serviceKey].planos).map(([p, price]) => `- ${p.charAt(0).toUpperCase() + p.slice(1)}: ${PLAN_SLOTS[p] || 1} perfil(s), ${price.toLocaleString('pt')} Kz`).join('\n');
         const choicesStr = planChoicesText(state.serviceKey);
-        const planContext = `Tu és o Assistente de IA da ${branding.nome} 🤖. O cliente está a escolher um plano de ${state.plataforma}.\n\nPlanos disponíveis:\n${availPlans}\n\nResponde à pergunta do cliente em 1-2 frases curtas e termina SEMPRE com: "Qual plano preferes? (${choicesStr})"`;
+        const otherSvc = state.serviceKey === 'netflix' ? 'Prime Video' : 'Netflix';
+        const planContext = `Tu és o Assistente de IA da ${branding.nome} 🤖. O cliente está a escolher um plano de *${state.plataforma}* APENAS.\n\nPLANOS DE ${state.plataforma.toUpperCase()} DISPONÍVEIS:\n${availPlans}\n\nREGRAS ABSOLUTAS:\n1. Fala APENAS sobre ${state.plataforma}. NUNCA menciones ${otherSvc} nem outros serviços nesta resposta.\n2. NUNCA confirmes ou negues disponibilidade de stock — isso é gerido automaticamente pelo sistema.\n3. Responde à dúvida do cliente em 1-2 frases curtas.\n4. Termina SEMPRE com: "Qual plano preferes? (${choicesStr})"`;
 
         const model = genAI.getGenerativeModel({
           model: 'gemini-2.5-flash',
@@ -2012,7 +2045,7 @@ app.post('/', async (req, res) => {
         await sendWhatsAppMessage(senderNum, aiReplyPlan);
       } catch (e) {
         console.error('Erro AI plano:', e.message);
-        const fallbackLines = ['Por favor, escolha um dos planos:'];
+        const fallbackLines = [`Por favor, escolhe um dos planos de *${state.plataforma}*:`];
         if (CATALOGO[state.serviceKey].planos.individual != null) fallbackLines.push('👤 *Individual*');
         if (CATALOGO[state.serviceKey].planos.partilha != null) fallbackLines.push('👥 *Partilha*');
         if (CATALOGO[state.serviceKey].planos.familia != null) fallbackLines.push('👨‍👩‍👧‍👦 *Família*');
