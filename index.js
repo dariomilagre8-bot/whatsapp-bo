@@ -497,7 +497,7 @@ app.post('/api/chat', async (req, res) => {
     if (!message || !sessionId) return res.status(400).json({ reply: 'Dados em falta.' });
     if (!webChatHistories[sessionId]) webChatHistories[sessionId] = [];
 
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-001' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
 
     // Constrói o array de contents com o histórico + mensagem actual
     const contents = [
@@ -1598,7 +1598,7 @@ app.post('/', async (req, res) => {
           }).join(', ');
           const contextPrompt = `${SYSTEM_PROMPT_COMPROVATIVO}\n\nPedido atual do cliente: ${cartInfo}. Total: ${state.totalValor} Kz.\n\nREGRA CRÍTICA: NUNCA digas "consulte a conversa anterior" nem "os dados já foram partilhados". Se o cliente pedir os dados de pagamento, responde apenas: "Claro! Vou reenviar os dados agora mesmo 😊" — o sistema enviará automaticamente.`;
           const model = genAI.getGenerativeModel({
-            model: 'gemini-2.0-flash-001',
+            model: 'gemini-2.0-flash',
             systemInstruction: { parts: [{ text: contextPrompt }] }
           });
           const chat = model.startChat({ history: chatHistories[senderNum] || [] });
@@ -1857,7 +1857,7 @@ app.post('/', async (req, res) => {
       // Nenhum serviço detetado — usar Gemini
       try {
         const model = genAI.getGenerativeModel({
-          model: 'gemini-2.0-flash-001',
+          model: 'gemini-2.0-flash',
           systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] }
         });
         const chat = model.startChat({ history: chatHistories[senderNum] });
@@ -1998,7 +1998,7 @@ app.post('/', async (req, res) => {
         const planContext = `Tu és o Assistente de IA da ${branding.nome} 🤖. O cliente está a escolher um plano de ${state.plataforma}.\n\nPlanos disponíveis:\n${availPlans}\n\nResponde à pergunta do cliente em 1-2 frases curtas e termina SEMPRE com: "Qual plano preferes? (${choicesStr})"`;
 
         const model = genAI.getGenerativeModel({
-          model: 'gemini-2.0-flash-001',
+          model: 'gemini-2.0-flash',
           systemInstruction: { parts: [{ text: planContext }] }
         });
         const recentHistory = (chatHistories[senderNum] || []).slice(-10);
@@ -2696,7 +2696,7 @@ app.get('/api/branding', (req, res) => {
 });
 
 app.get('/api/version', (req, res) => {
-  res.json({ v: '20260224-persist-sessions-dashboard', started: new Date().toISOString() });
+  res.json({ v: '20260224-gemini-flash-fix', started: new Date().toISOString() });
 });
 
 app.use('/api/admin', adminRouter);
