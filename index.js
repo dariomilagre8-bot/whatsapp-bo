@@ -188,6 +188,19 @@ const HUMAN_TRANSFER_PATTERN = /\b(falar com (supervisor|pessoa|humano|atendente
 // Tarefa G: Detecção de problema de localização Netflix
 const LOCATION_ISSUE_PATTERN = /\b(locali[zs]a[çc][aã]o|locali[zs]ações|locali[zs]oes|casa principal|fora de casa|mudar (localiza[çc][aã]o|casa)|viagem|dispositivo|acesso bloqueado)\b/i;
 
+// Escalação automática — tópicos que o bot não resolve e o supervisor deve tratar
+const ESCALATION_PATTERN = /\b(email|e-mail|e mail|atualiz(ar|a) (email|e-mail|e mail)|verific(ar|a) (email|e-mail|e mail)|mud(ar|a) (email|e-mail)|tro(car|ca) (email|e-mail)|c[oó]dig[oa].*(email|e-mail)|senha|password|credenci(ais|al)|minha (conta|senha)|perfil.*(n[aã]o|nao).*(abre|funciona|entra)|conta (bloqueada|suspensa|desativada)|acesso (negado|bloqueado|suspenso)|n[aã]o.*(consigo|posso).*(entrar|aceder|acessar|ver)|tem.*(um |)problema|tenho.*(um |)problema|n[aã]o.*funciona|n[aã]o.*reconhece|reembolso|devolu[çc][aã]o|reclama[çc][aã]o|insatisfeit|n[aã]o.*receb(i|eu)|n[aã]o.*cheg(ou|a).*acesso)\b/i;
+
+// Intro throttle — só apresenta Zara 1 vez por hora por número
+const INTRO_COOLDOWN_MS = 60 * 60 * 1000; // 1 hora
+function shouldSendIntro(phone) {
+  const last = lastIntroTimes[phone];
+  return !last || (Date.now() - last) > INTRO_COOLDOWN_MS;
+}
+function markIntroSent(phone) {
+  lastIntroTimes[phone] = Date.now();
+}
+
 // ==================== FUNCOES PURAS ====================
 function removeAccents(str) {
   return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -334,6 +347,7 @@ const chatHistories = {};
 const clientStates = {};
 const pendingVerifications = {};
 const pausedClients = {};
+const lastIntroTimes = {};   // { [phone]: timestamp } — persiste fora do ciclo de sessão
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 // ==================== NETFLIX HOUSEHOLD: DETEÇÃO POR KEYWORDS ====================
@@ -1233,6 +1247,24 @@ app.post('/', async (req, res) => {
     }
 
     // =====================================================================
+    // ESCALAÇÃO AUTOMÁTICA — email, senha, problemas, credenciais
+    // Pausa o bot e avisa o supervisor — cliente recebe confirmação imediata
+    // =====================================================================
+    if (textMessage && !pausedClients[senderNum] && state.step !== 'esperando_supervisor' && ESCALATION_PATTERN.test(removeAccents(textMessage.toLowerCase()))) {
+      pausedClients[senderNum] = true;
+      const nome = state.clientName || pushName || '';
+      await sendWhatsAppMessage(senderNum,
+        `${nome ? nome + ', o' : 'O'} teu pedido foi recebido! 🙏\nUm membro da nossa equipa irá contactar-te em breve para resolver a situação.\n\n— *${BOT_NAME}*, Assistente Virtual ${branding.nome}`
+      );
+      if (MAIN_BOSS) {
+        await sendWhatsAppMessage(MAIN_BOSS,
+          `🔔 *ESCALAÇÃO AUTOMÁTICA*\n👤 ${senderNum}${nome ? ' (' + nome + ')' : ''}\n📍 Step: ${state.step}\n💬 "${textMessage.substring(0, 200)}"\n\n⚠️ Bot pausado. Use *retomar ${senderNum}* quando terminar.`
+        );
+      }
+      return res.status(200).send('OK');
+    }
+
+    // =====================================================================
     // TAREFA G: PROBLEMA DE LOCALIZAÇÃO NETFLIX — interceta em qualquer step
     // =====================================================================
     if (textMessage && LOCATION_ISSUE_PATTERN.test(removeAccents(textMessage.toLowerCase()))) {
@@ -1262,21 +1294,43 @@ app.post('/', async (req, res) => {
       return res.status(200).send('OK');
     }
 
-    // ---- DETEÇÃO DE LOOP: 3 mensagens iguais seguidas → suporte humano ----
+    // ---- DETEÇÃO DE LOOP: 2 mensagens iguais seguidas → suporte humano ----
     if (textMessage && state.step !== 'esperando_supervisor') {
       const normalizedMsg = textMessage.trim().toLowerCase();
       if (state.repeatTracker && normalizedMsg === state.repeatTracker.lastMsg) {
         state.repeatTracker.count++;
-        if (state.repeatTracker.count >= 3) {
+        if (state.repeatTracker.count >= 2) {
           pausedClients[senderNum] = true;
-          await sendWhatsAppMessage(senderNum, `Parece que estou com dificuldades em entender. Vou chamar o nosso suporte humano para te ajudar! 🛠️\n\n— *${BOT_NAME}*, Assistente Virtual ${branding.nome}`);
+          await sendWhatsAppMessage(senderNum, `Parece que estou com dificuldades em entender o teu pedido. Vou chamar a nossa equipa para te ajudar! 🛠️\n\n— *${BOT_NAME}*, Assistente Virtual ${branding.nome}`);
           if (MAIN_BOSS) {
-            await sendWhatsAppMessage(MAIN_BOSS, `🔁 *LOOP DETETADO*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n💬 "${textMessage}" (repetido ${state.repeatTracker.count}x)\n📍 Step: ${state.step}\n\nBot pausado. Use *retomar ${senderNum}* quando resolver.`);
+            await sendWhatsAppMessage(MAIN_BOSS, `🔁 *LOOP / PEDIDO NÃO PERCEBIDO*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n💬 "${textMessage}" (repetido ${state.repeatTracker.count}x)\n📍 Step: ${state.step}\n\nBot pausado. Use *retomar ${senderNum}* quando resolver.`);
           }
           return res.status(200).send('OK');
         }
       } else {
         state.repeatTracker = { lastMsg: normalizedMsg, count: 1 };
+      }
+    }
+
+    // ---- PEDIDO FORA DE CONTEXTO: texto longo ou off-topic em steps de escolha ----
+    // Se o cliente está num step de escolha e manda algo completamente irrelevante → pausa + supervisor
+    const OUT_OF_CONTEXT_STEPS = ['escolha_servico', 'escolha_plano', 'escolha_quantidade', 'confirmacao_renovacao'];
+    const OUT_OF_CONTEXT_PATTERN = /^(boa (tarde|noite|manha)|ol[aá]|bom dia|como est[aá]s|tudo bem|ok|certo|entendido|sim|n[aã]o|obrigad[oa])$/i;
+    if (textMessage && OUT_OF_CONTEXT_STEPS.includes(state.step) && textMessage.length > 40 && !OUT_OF_CONTEXT_PATTERN.test(textMessage.trim())) {
+      // Mensagem longa num step de escolha — provavelmente off-topic
+      const isKnownKeyword = ['netflix', 'prime', 'individual', 'partilha', 'familia', 'sim', 'nao', 'outro', 'cancelar', 'renovar']
+        .some(kw => removeAccents(textMessage.toLowerCase()).includes(kw));
+      if (!isKnownKeyword) {
+        pausedClients[senderNum] = true;
+        await sendWhatsAppMessage(senderNum,
+          `Não consegui perceber o teu pedido. A nossa equipa irá ajudar-te em breve! 🙏\n\n— *${BOT_NAME}*, Assistente Virtual ${branding.nome}`
+        );
+        if (MAIN_BOSS) {
+          await sendWhatsAppMessage(MAIN_BOSS,
+            `❓ *PEDIDO DESCONHECIDO / FORA DE CONTEXTO*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n📍 Step: ${state.step}\n💬 "${textMessage.substring(0, 200)}"\n\nBot pausado. Use *retomar ${senderNum}* quando resolver.`
+          );
+        }
+        return res.status(200).send('OK');
       }
     }
 
@@ -1548,10 +1602,14 @@ app.post('/', async (req, res) => {
         state.lastPlanLabel = lastPlanLabel;
         state.lastPlanPrice = lastPlanPrice;
 
-        const saudacao = nome ? `Olá ${nome}! 😊 Sou *${BOT_NAME}*, Assistente Virtual da ${branding.nome}.` : `Olá! 😊 Sou *${BOT_NAME}*, Assistente Virtual da ${branding.nome}.`;
+        const introOk = shouldSendIntro(senderNum);
+        if (introOk) markIntroSent(senderNum);
+        const saudacao = introOk
+          ? (nome ? `Olá ${nome}! 😊 Sou *${BOT_NAME}*, Assistente Virtual da ${branding.nome}. Bem-vindo de volta! 🎉` : `Olá! 😊 Sou *${BOT_NAME}*, Assistente Virtual da ${branding.nome}. Bem-vindo de volta! 🎉`)
+          : (nome ? `Olá ${nome}! 😊` : `Olá! 😊`);
         console.log(`📤 DEBUG: A enviar saudação de renovação rápida para ${senderNum}`);
         await sendWhatsAppMessage(senderNum,
-          `${saudacao} Bem-vindo de volta! 🎉\n\n` +
+          `${saudacao}\n\n` +
           `Vi que és nosso cliente de *${existing.plataforma}* — ${lastPlanLabel}.\n\n` +
           `Queres renovar o mesmo plano por *${lastPlanPrice.toLocaleString('pt')} Kz*?\n\n` +
           `✅ *Sim* — renovar ${lastPlanLabel}\n🔄 *Outro* — escolher plano diferente`
@@ -1561,7 +1619,12 @@ app.post('/', async (req, res) => {
 
       state.step = 'captura_nome';
       console.log(`📤 DEBUG: A enviar saudação inicial para ${senderNum}`);
-      await sendWhatsAppMessage(senderNum, `Olá! 👋 Sou *${BOT_NAME}*, a Assistente Virtual de Atendimento da ${branding.nome} 🤖.\n\nEstou aqui para te ajudar a contratar ou renovar planos de *Netflix* e *Prime Video* em Angola!\n\nCom quem tenho o prazer de falar?`);
+      if (shouldSendIntro(senderNum)) {
+        markIntroSent(senderNum);
+        await sendWhatsAppMessage(senderNum, `Olá! 👋 Sou *${BOT_NAME}*, a Assistente Virtual de Atendimento da ${branding.nome} 🤖.\n\nEstou aqui para te ajudar a contratar ou renovar planos de *Netflix* e *Prime Video* em Angola!\n\nCom quem tenho o prazer de falar?`);
+      } else {
+        await sendWhatsAppMessage(senderNum, `Olá! 😊 Com quem tenho o prazer de falar?`);
+      }
       return res.status(200).send('OK');
     }
 
