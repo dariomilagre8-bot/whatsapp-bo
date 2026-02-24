@@ -183,13 +183,15 @@ const SUPPORT_KEYWORDS = [
 ];
 
 // Tarefa H: Detecção de pedido de atendimento humano
-const HUMAN_TRANSFER_PATTERN = /\b(falar com (supervisor|pessoa|humano|atendente)|quero (falar com |)(supervisor|humano|pessoa|atendente)|atendimento (humano|pessoal)|supervisor|fala com (pessoa|humano)|preciso de ajuda humana)\b/i;
+// #humano é o comando oficial; os outros padrões cobrem linguagem natural
+const HUMAN_TRANSFER_PATTERN = /(#humano|\bhumano\b|\bfalar com (supervisor|pessoa|humano|atendente)\b|\bquero (falar com |)(supervisor|humano|pessoa|atendente)\b|\batendimento (humano|pessoal)\b|\bfala com (pessoa|humano)\b|\bpreciso de ajuda humana\b|\bquero supervisor\b|\bchamar supervisor\b)/i;
 
 // Tarefa G: Detecção de problema de localização Netflix
 const LOCATION_ISSUE_PATTERN = /\b(locali[zs]a[çc][aã]o|locali[zs]ações|locali[zs]oes|casa principal|fora de casa|mudar (localiza[çc][aã]o|casa)|viagem|dispositivo|acesso bloqueado)\b/i;
 
 // Escalação automática — tópicos que o bot não resolve e o supervisor deve tratar
-const ESCALATION_PATTERN = /\b(email|e-mail|e mail|atualiz(ar|a) (email|e-mail|e mail)|verific(ar|a) (email|e-mail|e mail)|mud(ar|a) (email|e-mail)|tro(car|ca) (email|e-mail)|c[oó]dig[oa].*(email|e-mail)|senha|password|credenci(ais|al)|minha (conta|senha)|perfil.*(n[aã]o|nao).*(abre|funciona|entra)|conta (bloqueada|suspensa|desativada)|acesso (negado|bloqueado|suspenso)|n[aã]o.*(consigo|posso).*(entrar|aceder|acessar|ver)|tem.*(um |)problema|tenho.*(um |)problema|n[aã]o.*funciona|n[aã]o.*reconhece|reembolso|devolu[çc][aã]o|reclama[çc][aã]o|insatisfeit|n[aã]o.*receb(i|eu)|n[aã]o.*cheg(ou|a).*acesso)\b/i;
+// Cobre erros pós-venda: acesso, senha, conta, credenciais, não funciona, erros de login
+const ESCALATION_PATTERN = /\b(email|e-mail|e mail|atualiz(ar|a) (email|e-mail|e mail)|verific(ar|a) (email|e-mail|e mail)|mud(ar|a) (email|e-mail)|tro(car|ca) (email|e-mail)|c[oó]dig[oa].*(email|e-mail)|senha|password|credenci(ais|al)|minha (conta|senha)|perfil.*(n[aã]o|nao).*(abre|funciona|entra)|conta (bloqueada|suspensa|desativada|cancelada|errada)|acesso (negado|bloqueado|suspenso|perdido|expirado)|n[aã]o.*(consigo|posso).*(entrar|aceder|acessar|ver|logar|abrir)|tem.*(um |)problema|tenho.*(um |)problema|n[aã]o.*funciona|n[aã]o.*reconhece|reembolso|devolu[çc][aã]o|reclama[çc][aã]o|insatisfeit|n[aã]o.*receb(i|eu)|n[aã]o.*cheg(ou|a).*acesso|n[aã]o (entra|abre|carrega|liga|conecta)|deu erro|dando erro|erro (de |)(acesso|login|senha|conta)|n[aã]o tenho acesso|perdeu acesso|perdi (o |)acesso|expirou|minha conta (n[aã]o|foi|est[aá])|n[aã]o (est[aá]|esta) (a |)funciona(ndo|r)|nao (entra|abre|funciona|carrega|liga)|nao consigo (entrar|ver|aceder|acessar|logar)|conta (foi |)(bloqueada|suspensa|desativada|encerrada))\b/i;
 
 // Intro throttle — só apresenta Zara 1 vez por hora por número
 const INTRO_COOLDOWN_MS = 60 * 60 * 1000; // 1 hora
@@ -1612,7 +1614,8 @@ app.post('/', async (req, res) => {
           `${saudacao}\n\n` +
           `Vi que és nosso cliente de *${existing.plataforma}* — ${lastPlanLabel}.\n\n` +
           `Queres renovar o mesmo plano por *${lastPlanPrice.toLocaleString('pt')} Kz*?\n\n` +
-          `✅ *Sim* — renovar ${lastPlanLabel}\n🔄 *Outro* — escolher plano diferente`
+          `✅ *Sim* — renovar ${lastPlanLabel}\n🔄 *Outro* — escolher plano diferente\n\n` +
+          `_Escreve *#humano* se tiveres algum problema e precisares de ajuda humana._`
         );
         return res.status(200).send('OK');
       }
@@ -1621,9 +1624,18 @@ app.post('/', async (req, res) => {
       console.log(`📤 DEBUG: A enviar saudação inicial para ${senderNum}`);
       if (shouldSendIntro(senderNum)) {
         markIntroSent(senderNum);
-        await sendWhatsAppMessage(senderNum, `Olá! 👋 Sou *${BOT_NAME}*, a Assistente Virtual de Atendimento da ${branding.nome} 🤖.\n\nEstou aqui para te ajudar a contratar ou renovar planos de *Netflix* e *Prime Video* em Angola!\n\nCom quem tenho o prazer de falar?`);
+        await sendWhatsAppMessage(senderNum,
+          `Olá! 👋 Sou *${BOT_NAME}*, a Assistente Virtual da ${branding.nome} 🤖\n\n` +
+          `Estou aqui para te ajudar a contratar ou renovar planos de *Netflix* e *Prime Video* em Angola!\n\n` +
+          `⚠️ *Nota importante:* Estou em fase de implementação e utilizo Inteligência Artificial (Machine Learning). ` +
+          `Posso cometer erros enquanto estou em aprendizagem — se isso acontecer, a equipa humana está disponível imediatamente.\n\n` +
+          `👉 A qualquer momento, escreve *#humano* para falar com um supervisor.\n\n` +
+          `Com quem tenho o prazer de falar? 😊`
+        );
       } else {
-        await sendWhatsAppMessage(senderNum, `Olá! 😊 Com quem tenho o prazer de falar?`);
+        await sendWhatsAppMessage(senderNum,
+          `Olá! 😊 Como posso ajudar?\n\n_Escreve *#humano* a qualquer momento para falar com um supervisor._`
+        );
       }
       return res.status(200).send('OK');
     }
@@ -1903,9 +1915,15 @@ app.post('/', async (req, res) => {
           model: 'gemini-2.0-flash-001',
           systemInstruction: { parts: [{ text: planContext }] }
         });
-        const chat = model.startChat({ history: [] });
+        const recentHistory = (chatHistories[senderNum] || []).slice(-10);
+        const chat = model.startChat({ history: recentHistory });
         const resAI = await chat.sendMessage(textMessage);
-        await sendWhatsAppMessage(senderNum, resAI.response.text());
+        const aiReplyPlan = resAI.response.text();
+        chatHistories[senderNum] = chatHistories[senderNum] || [];
+        chatHistories[senderNum].push({ role: 'user', parts: [{ text: textMessage }] });
+        chatHistories[senderNum].push({ role: 'model', parts: [{ text: aiReplyPlan }] });
+        if (chatHistories[senderNum].length > 20) chatHistories[senderNum] = chatHistories[senderNum].slice(-20);
+        await sendWhatsAppMessage(senderNum, aiReplyPlan);
       } catch (e) {
         console.error('Erro AI plano:', e.message);
         const fallbackLines = ['Por favor, escolha um dos planos:'];
@@ -2445,6 +2463,39 @@ adminRouter.get('/financeiro', async (req, res) => {
   }
 });
 
+// POST /api/admin/broadcast — envia mensagem para lista de números
+// Body: { numbers: ["244XXXXXXXXX", ...], message: "texto", delay_ms: 2000 }
+adminRouter.post('/broadcast', async (req, res) => {
+  const { numbers, message, delay_ms } = req.body;
+  if (!numbers || !Array.isArray(numbers) || numbers.length === 0) {
+    return res.status(400).json({ error: 'Lista de números obrigatória.' });
+  }
+  if (!message || !message.trim()) {
+    return res.status(400).json({ error: 'Mensagem obrigatória.' });
+  }
+  const delayBetween = parseInt(delay_ms, 10) || 2500;
+  const MAX_NUMBERS = 500;
+  const batch = numbers.slice(0, MAX_NUMBERS);
+
+  let sent = 0, failed = 0;
+  const results = [];
+  for (const num of batch) {
+    const clean = (num || '').toString().replace(/\D/g, '');
+    if (!clean || clean.length < 9 || clean.length > 15) {
+      failed++;
+      results.push({ num: clean || num, status: 'invalid' });
+      continue;
+    }
+    const result = await sendWhatsAppMessage(clean, message);
+    if (result.sent) { sent++; results.push({ num: clean, status: 'sent' }); }
+    else { failed++; results.push({ num: clean, status: result.invalidNumber ? 'no_whatsapp' : 'failed' }); }
+    if (delayBetween > 0) await new Promise(r => setTimeout(r, delayBetween));
+  }
+
+  console.log(`📢 BROADCAST: ${sent} enviadas, ${failed} falharam (de ${batch.length})`);
+  res.json({ success: true, sent, failed, total: batch.length, results });
+});
+
 // GET /api/admin/financeiro-db (Supabase — fallback para mensagem se não configurado)
 adminRouter.get('/financeiro-db', async (req, res) => {
   if (!supabase) {
@@ -2527,7 +2578,7 @@ app.get('/api/branding', (req, res) => {
 });
 
 app.get('/api/version', (req, res) => {
-  res.json({ v: '20260221-11features', started: new Date().toISOString() });
+  res.json({ v: '20260224-mlphase-humano-broadcast', started: new Date().toISOString() });
 });
 
 app.use('/api/admin', adminRouter);
