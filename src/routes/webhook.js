@@ -41,6 +41,17 @@ const {
 const { clientStates, chatHistories, pendingVerifications, pausedClients, initClientState, markDirty, cleanupSession } = estados;
 const { logLostSale } = notif;
 
+const FEW_SHOT_EXAMPLES = [
+  { role: 'user',  parts: [{ text: 'Está caro' }] },
+  { role: 'model', parts: [{ text: '3.000 Kz dá para 31 dias de Prime Video sem interrupções. É menos de 100 Kz por dia — menos que um refrigerante. Queres experimentar este mês? 😊' }] },
+  { role: 'user',  parts: [{ text: 'Vou pensar' }] },
+  { role: 'model', parts: [{ text: 'Claro! Só aviso que os slots esgotam rápido — temos poucos perfis disponíveis agora. Queres que te reserve um por 24h? 😊' }] },
+  { role: 'user',  parts: [{ text: 'É de confiança?' }] },
+  { role: 'model', parts: [{ text: 'Somos angolanos a vender para angolanos 🇦🇴 Já temos clientes activos este mês. Após o pagamento recebes os dados em minutos.' }] },
+  { role: 'user',  parts: [{ text: 'Não tenho dinheiro agora' }] },
+  { role: 'model', parts: [{ text: 'Sem problema! Quando quiseres estamos aqui. Posso enviar-te um lembrete amanhã? 😊' }] },
+];
+
 const CHANGE_MIND_PATTERNS = /\b(mudei de ideias|mudei de ideia|quero outro|quero outra|cancela|cancelar|desistir|trocar|mudar de plano|quero mudar|outro plano|comecar de novo|começar de novo|recomeçar|recomecar)\b/i;
 
 const EXIT_INTENT_PATTERNS = [
@@ -346,9 +357,10 @@ async function handleWebhook(req, res) {
           const contextPrompt = `${SYSTEM_PROMPT_COMPROVATIVO}\n\nPEDIDO ACTUAL DO CLIENTE (usa SEMPRE estes dados — NÃO inventes outros serviços): ${cartInfo}. Total: ${state.totalValor} Kz.\n\nREGRA CRÍTICA 1: NUNCA menciones um serviço diferente do pedido actual. Se o pedido é Prime Video, fala APENAS de Prime Video. Se for Netflix, fala APENAS de Netflix.\nREGRA CRÍTICA 2: NUNCA digas "consulte a conversa anterior" nem "os dados já foram partilhados".\nREGRA CRÍTICA 3: Se o cliente pedir os dados de pagamento, responde apenas: "Claro! Vou reenviar os dados agora mesmo 😊" — o sistema enviará automaticamente.\nREGRA CRÍTICA 4: Se o cliente perguntar "já tem disponível?" ou similar, responde afirmativamente para o serviço do pedido acima.`;
           const model = genAI.getGenerativeModel({
             model: 'gemini-2.5-flash',
-            systemInstruction: { parts: [{ text: contextPrompt }] }
+            systemInstruction: { parts: [{ text: contextPrompt }] },
+            generationConfig: { temperature: 0.3, maxOutputTokens: 150 },
           });
-          const chat = model.startChat({ history: chatHistories[senderNum] || [] });
+          const chat = model.startChat({ history: [...FEW_SHOT_EXAMPLES, ...(chatHistories[senderNum] || [])] });
           const resAI = await chat.sendMessage(textMessage);
           const aiText = resAI.response.text();
           chatHistories[senderNum] = chatHistories[senderNum] || [];
@@ -574,12 +586,19 @@ async function handleWebhook(req, res) {
       const objKey = detectObjectionKey(textMessage);
       if (objKey && state.objeccoes && !state.objeccoes.includes(objKey)) state.objeccoes.push(objKey);
       const objeccoesLine = (state.objeccoes && state.objeccoes.length > 0) ? `\nObjecções já levantadas por este cliente (não repetir a mesma resposta, varia ou aprofunda): ${state.objeccoes.join(', ')}.` : '';
+      const [netflixSlots, primeSlots] = await Promise.all([
+        countAvailableProfiles('netflix').catch(() => '?'),
+        countAvailableProfiles('prime_video').catch(() => '?'),
+      ]);
+      const stockInfo = `Netflix: ${netflixSlots} perfis disponíveis | Prime Video: ${primeSlots} perfis disponíveis`;
+      const promptFinal = SYSTEM_PROMPT.replace('[STOCK_PLACEHOLDER]', stockInfo) + objeccoesLine;
       try {
         const model = genAI.getGenerativeModel({
           model: 'gemini-2.5-flash',
-          systemInstruction: { parts: [{ text: SYSTEM_PROMPT + objeccoesLine }] }
+          systemInstruction: { parts: [{ text: promptFinal }] },
+          generationConfig: { temperature: 0.3, maxOutputTokens: 150 },
         });
-        const chat = model.startChat({ history: chatHistories[senderNum] });
+        const chat = model.startChat({ history: [...FEW_SHOT_EXAMPLES, ...(chatHistories[senderNum] || [])] });
         const resAI = await chat.sendMessage(textMessage || 'Olá');
         const aiText = resAI.response.text();
         chatHistories[senderNum].push({ role: 'user', parts: [{ text: textMessage || 'Olá' }] });
