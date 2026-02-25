@@ -1,0 +1,22 @@
+name: Deploy para EasyPanel
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Redeploy EasyPanel
+    runs-on: ubuntu-latest
+    steps:
+      - name: Disparar redeploy
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X GET "${{ secrets.EASYPANEL_DEPLOY_WEBHOOK }}")
+          echo "HTTP Status: $STATUS"
+          if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 400 ]; then
+            echo "✅ Redeploy disparado com sucesso"
+          else
+            echo "❌ Falhou com status $STATUS"
+            exit 1
+          fi
