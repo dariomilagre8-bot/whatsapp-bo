@@ -36,6 +36,8 @@ const {
   detectClientType,
   SYSTEM_PROMPT,
   SYSTEM_PROMPT_COMPROVATIVO,
+  RESPOSTAS_FIXAS,
+  RESPOSTAS_TEXTO,
 } = config;
 
 const { clientStates, chatHistories, pendingVerifications, pausedClients, initClientState, markDirty, cleanupSession } = estados;
@@ -51,6 +53,55 @@ const FEW_SHOT_EXAMPLES = [
   { role: 'user',  parts: [{ text: 'Não tenho dinheiro agora' }] },
   { role: 'model', parts: [{ text: 'Sem problema! Quando quiseres estamos aqui. Posso enviar-te um lembrete amanhã? 😊' }] },
 ];
+
+function interceptarMensagem(texto, state, stockInfoObj) {
+  if (!texto) return null;
+  const plano = (state.plataforma && state.plano)
+    ? `${state.plataforma} ${state.plano}`
+    : (state.plataforma || 'Prime Video Individual');
+  const preco = state.valor || 3000;
+  const diasRestantes = state.daysRemaining || 0;
+
+  for (const [tipo, padroes] of Object.entries(RESPOSTAS_FIXAS)) {
+    if (!Array.isArray(padroes)) continue;
+    if (!padroes.some(p => p.test(texto))) continue;
+
+    if (!state.objeccoes) state.objeccoes = [];
+    if (['preco', 'saida', 'confianca'].includes(tipo) && state.objeccoes.includes(tipo)) {
+      return { tipo, resposta: null, escalar: true };
+    }
+    if (!state.objeccoes.includes(tipo)) state.objeccoes.push(tipo);
+
+    switch (tipo) {
+      case 'preco':          return { tipo, resposta: RESPOSTAS_TEXTO.preco(plano, preco) };
+      case 'saida':          return { tipo, resposta: RESPOSTAS_TEXTO.saida() };
+      case 'confianca':      return { tipo, resposta: RESPOSTAS_TEXTO.confianca() };
+      case 'ja_tem':         return { tipo, resposta: RESPOSTAS_TEXTO.ja_tem() };
+      case 'stock_esgotado_netflix': return { tipo, resposta: RESPOSTAS_TEXTO.stock_esgotado_netflix((stockInfoObj.prime || 0) > 0) };
+      case 'nao_entra':      return { tipo, resposta: RESPOSTAS_TEXTO.nao_entra(), pausar: true };
+      case 'localizacao':    return { tipo, resposta: RESPOSTAS_TEXTO.localizacao() };
+      case 'pin':            return { tipo, resposta: RESPOSTAS_TEXTO.pin(), pausar: true };
+      case 'email_senha':    return { tipo, resposta: RESPOSTAS_TEXTO.email_senha() };
+      case 'renovacao':      return { tipo, resposta: RESPOSTAS_TEXTO.renovacao(diasRestantes) };
+    }
+  }
+  return null;
+}
+
+function validarResposta(texto) {
+  const INVALIDAS = [
+    /^oh\??[.!]?$/i, /^ok[.!]?$/i, /^sim[.!]?$/i,
+    /^compreendo[.!]?$/i, /^entendo[.!]?$/i,
+    /^certo[.!]?$/i, /^claro[.!]?$/i, /^\s*$/,
+  ];
+  if (INVALIDAS.some(p => p.test(texto.trim()))) {
+    return `Estou aqui para te ajudar! Tens alguma dúvida sobre os nossos planos? 😊`;
+  }
+  if (texto.trim().length < 15) {
+    return `Podes dar-me mais detalhes? Quero garantir que te ajudo correctamente. 😊`;
+  }
+  return texto;
+}
 
 const CHANGE_MIND_PATTERNS = /\b(mudei de ideias|mudei de ideia|quero outro|quero outra|cancela|cancelar|desistir|trocar|mudar de plano|quero mudar|outro plano|comecar de novo|começar de novo|recomeçar|recomecar)\b/i;
 
@@ -583,15 +634,33 @@ async function handleWebhook(req, res) {
         await sendWhatsAppMessage(senderNum, msg);
         return res.status(200).send('OK');
       }
+      const [netflixSlots, primeSlots] = await Promise.all([
+        countAvailableProfiles('netflix').catch(() => 0),
+        countAvailableProfiles('prime_video').catch(() => 0),
+      ]);
+      const stockInfoObj = { netflix: netflixSlots, prime: primeSlots };
+
+      // Interceptar objecções e problemas conhecidos antes do Gemini
+      const interceptado = interceptarMensagem(textMessage, state, stockInfoObj);
+      if (interceptado) {
+        if (interceptado.escalar) {
+          state.paused = true;
+          await sendWhatsAppMessage(senderNum, `Vou ligar-te com um colega agora. Um momento! 😊`);
+          if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ Escalar: cliente ${senderNum} repetiu objecção "${interceptado.tipo}"`);
+          return res.status(200).send('OK');
+        }
+        if (interceptado.pausar && MAIN_BOSS) {
+          await sendWhatsAppMessage(MAIN_BOSS, `🔧 Problema técnico: ${interceptado.tipo} — ${senderNum}: ${textMessage}`);
+        }
+        await sendWhatsAppMessage(senderNum, interceptado.resposta);
+        return res.status(200).send('OK');
+      }
+
       const objKey = detectObjectionKey(textMessage);
       if (objKey && state.objeccoes && !state.objeccoes.includes(objKey)) state.objeccoes.push(objKey);
       const objeccoesLine = (state.objeccoes && state.objeccoes.length > 0) ? `\nObjecções já levantadas por este cliente (não repetir a mesma resposta, varia ou aprofunda): ${state.objeccoes.join(', ')}.` : '';
-      const [netflixSlots, primeSlots] = await Promise.all([
-        countAvailableProfiles('netflix').catch(() => '?'),
-        countAvailableProfiles('prime_video').catch(() => '?'),
-      ]);
-      const stockInfo = `Netflix: ${netflixSlots} perfis disponíveis | Prime Video: ${primeSlots} perfis disponíveis`;
-      const promptFinal = SYSTEM_PROMPT.replace('[STOCK_PLACEHOLDER]', stockInfo) + objeccoesLine;
+      const stockInfoStr = `Netflix: ${netflixSlots} perfis disponíveis | Prime Video: ${primeSlots} perfis disponíveis`;
+      const promptFinal = SYSTEM_PROMPT.replace('[STOCK_PLACEHOLDER]', stockInfoStr) + objeccoesLine;
       try {
         const model = genAI.getGenerativeModel({
           model: 'gemini-2.5-flash',
@@ -600,14 +669,14 @@ async function handleWebhook(req, res) {
         });
         const chat = model.startChat({ history: [...FEW_SHOT_EXAMPLES, ...(chatHistories[senderNum] || [])] });
         const resAI = await chat.sendMessage(textMessage || 'Olá');
-        const aiText = resAI.response.text();
+        const aiText = validarResposta(resAI.response.text());
         chatHistories[senderNum].push({ role: 'user', parts: [{ text: textMessage || 'Olá' }] });
         chatHistories[senderNum].push({ role: 'model', parts: [{ text: aiText }] });
         if (state.score) state.score.mensagens_enviadas = (state.score.mensagens_enviadas || 0) + 1;
         await sendWhatsAppMessage(senderNum, aiText);
       } catch (e) {
         console.error('Erro AI:', e.message);
-        await sendWhatsAppMessage(senderNum, `${state.clientName || ''}, temos *Netflix* e *Prime Video*. Qual te interessa?`);
+        await sendWhatsAppMessage(senderNum, `${state.clientName || ''}, temos Netflix e Prime Video. Qual te interessa?`);
       }
       return res.status(200).send('OK');
     }

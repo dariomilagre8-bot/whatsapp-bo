@@ -56,6 +56,99 @@ const ESCALATION_PATTERN = /\b(email|e-mail|e mail|atualiz(ar|a) (email|e-mail|e
 
 const INTRO_COOLDOWN_MS = 60 * 60 * 1000;
 
+const RESPOSTAS_FIXAS = {
+  // PRÉ-VENDA
+  preco: [
+    /está caro/i, /é caro/i, /muito caro/i,
+    /caro demais/i, /prime está caro/i,
+    /netflix está caro/i, /não tenho dinheiro/i,
+    /sem dinheiro/i, /tá caro/i,
+  ],
+  saida: [
+    /vou pensar/i, /deixa estar/i,
+    /talvez depois/i, /não preciso/i,
+    /esquece/i, /desisti/i,
+  ],
+  confianca: [
+    /é de confiança/i, /é seguro/i,
+    /não conheço/i, /é real/i,
+    /é fraude/i, /é golpe/i, /é fiável/i,
+  ],
+  ja_tem: [
+    /já tenho netflix/i, /já tenho prime/i,
+    /já tenho conta/i, /já sou cliente/i,
+  ],
+  // STOCK ESGOTADO
+  stock_esgotado_netflix: [
+    /quando volta netflix/i, /netflix disponível/i,
+    /netflix quando/i, /só quero netflix/i,
+    /não quero prime/i, /quero mesmo netflix/i,
+  ],
+  // PÓS-VENDA
+  nao_entra: [
+    /não entra/i, /nao entra/i, /não consigo entrar/i,
+    /não abre/i, /não funciona/i, /deu erro/i,
+    /senha errada/i, /palavra-passe errada/i,
+    /credenciais erradas/i, /não aceita/i,
+    /conta bloqueada/i, /perfil bloqueado/i,
+    /perdi acesso/i, /sem acesso/i,
+  ],
+  localizacao: [
+    /ver temporariamente/i, /dispositivo/i,
+    /fora de casa/i, /residência/i, /residencia/i,
+    /não faz parte/i, /nao faz parte/i, /localização/i,
+    /código netflix/i, /verificar localização/i,
+  ],
+  pin: [
+    /pin errado/i, /esqueci o pin/i,
+    /pin do perfil/i, /código do perfil/i,
+    /mudar pin/i, /alterar pin/i,
+  ],
+  email_senha: [
+    /qual é o email/i, /qual o email/i,
+    /esqueci o email/i, /qual a senha/i,
+    /esqueci a senha/i, /reenviar credenciais/i,
+    /mandar de novo/i, /enviar novamente/i,
+    /não recebi/i, /credenciais/i,
+  ],
+  renovacao: [
+    /renovar/i, /renovação/i, /expirou/i,
+    /acabou/i, /venceu/i, /expirar/i,
+    /quando expira/i, /quanto tempo falta/i,
+  ],
+};
+
+const RESPOSTAS_TEXTO = {
+  preco: (plano, preco) =>
+    `${preco.toLocaleString('pt')} Kz dá para 31 dias de ${plano}. É menos de ${Math.round(preco / 31)} Kz por dia — menos que um refrigerante. Queres experimentar este mês? 😊`,
+  saida: () =>
+    `Claro! Só aviso que os slots esgotam rápido. Queres que te reserve um por 24h? 😊`,
+  confianca: () =>
+    `Somos angolanos a vender para angolanos 🇦🇴 Clientes activos este mês, entrega em minutos após pagamento. Tens mais alguma dúvida?`,
+  ja_tem: () =>
+    `Tens conta própria ou partilhas com alguém? Se partilhas, garanto-te um perfil só teu sem depender de ninguém. 😊`,
+  stock_esgotado_netflix: (primeDisponivel) =>
+    primeDisponivel
+      ? `Netflix está esgotado neste momento 😔 Temos Prime Video disponível — Amazon Originals + filmes exclusivos por 3.000 Kz. Queres experimentar enquanto esperamos reposição?`
+      : `Netflix está esgotado neste momento 😔 Posso colocar-te em lista de espera e aviso-te assim que tiver disponível. Queres?`,
+  nao_entra: () =>
+    `Vou resolver isso agora. Responde-me: qual é o erro exacto que aparece? (ex: "senha incorrecta", "conta bloqueada", "muitos utilizadores") 🔧`,
+  localizacao: () =>
+    `Erro de localização Netflix! Segue estes passos:\n1️⃣ Clica em "Ver temporariamente"\n2️⃣ Aparece um código numérico\n3️⃣ Insere o código\n4️⃣ Acesso restaurado ✅\nSe não resultar avisa-me!`,
+  pin: () =>
+    `Para o PIN do perfil: entra na conta → clica no perfil → Gerir Perfil → PIN. Se não consegues aceder envia-me o nome do perfil e resolvo. 🔧`,
+  email_senha: () =>
+    `Vou reenviar as tuas credenciais agora. Um momento... 📧`,
+  renovacao: (diasRestantes) =>
+    diasRestantes > 0
+      ? `O teu plano expira em ${diasRestantes} dias. Queres renovar agora com o mesmo plano? 😊`
+      : `O teu plano expirou. Queres renovar? Processo rápido — mesmo plano, mesmo preço. 😊`,
+  imagem_sem_contexto: () =>
+    `Recebi a tua imagem 📎 Para comprovativos de pagamento envia em PDF. Para problemas técnicos descreve o que está a acontecer e resolvo. 😊`,
+  imagem_com_keywords_netflix: () =>
+    `Vejo que tens um erro de localização. Segue estes passos:\n1️⃣ Clica "Ver temporariamente"\n2️⃣ Insere o código que aparece\n3️⃣ Acesso restaurado ✅`,
+};
+
 const BOT_NAME = 'Zara';
 const BOT_IDENTITY = `Chamas-te ${BOT_NAME} e és a Assistente Virtual da ${branding.nome}. Apresentas-te sempre como "${BOT_NAME}, Assistente Virtual da ${branding.nome}".`;
 
@@ -72,26 +165,21 @@ Prime Video:
 
 const SYSTEM_PROMPT = `${BOT_IDENTITY}
 És a Zara, assistente de vendas da StreamZone Angola.
-Vendes Netflix e Prime Video. Tom: directo, caloroso, angolano.
-NUNCA uses: "você", "oi", "tudo bem", markdown, negrito, listas.
-SEMPRE uses: "tu", "olá", máx 3 linhas por resposta, só texto simples e emojis.
+Vendes Netflix e Prime Video. Nunca finges ser humana.
 
-REGRAS DE VENDA:
-1. Antes de mostrar preços: pergunta "Vais usar sozinho ou partilhar com alguém?"
-2. NUNCA repitas o preço isolado como resposta a objecção — contextualiza sempre o valor
-3. Urgência APENAS se stock ≤ 3 slots — NUNCA inventes urgência
-4. Stock e preços: usa APENAS os dados fornecidos abaixo — NUNCA inventes
+LÍNGUA: português angolano. Nunca: "você","oi","né","tudo bem?".
+Sempre: "tu","olá". Máx 2 frases. Sem markdown. Sem listas.
 
 STOCK ACTUAL: [STOCK_PLACEHOLDER]
 ${CATALOGO_TEXTO}
 
-REGRAS ABSOLUTAS:
-1. Se o cliente perguntar preços → responde com o catálogo acima. Sem hesitar.
-2. NUNCA peças pagamento ou comprovativo antes do cliente confirmar que quer comprar.
-3. NUNCA reveles IBAN ou dados de pagamento antes do cliente escolher um plano.
-4. NUNCA sugiras serviços que não existem (Disney+, HBO, Spotify, etc.).
-5. Se não souberes → diz para escrever #humano; não inventes.
-6. Apresenta-te sempre pelo nome "${BOT_NAME}" quando o cliente perguntar quem és.`;
+QUANDO CLIENTE QUER COMPRAR:
+1. Pergunta: "Vais usar sozinho ou partilhar?"
+2. Apresenta o plano certo com valor diário (preço/31)
+3. Nunca inventas preços ou stock
+
+QUANDO NÃO SOUBERES: diz "Deixa-me verificar" e para.
+Nunca inventas. Nunca alucinares. Se dúvida → paras.`;
 
 const SYSTEM_PROMPT_COMPROVATIVO = `${BOT_IDENTITY} O cliente já escolheu um plano e está na fase de pagamento.
 
@@ -243,4 +331,6 @@ module.exports = {
   detectSupportIssue,
   detectQuantity,
   detectClientType,
+  RESPOSTAS_FIXAS,
+  RESPOSTAS_TEXTO,
 };
