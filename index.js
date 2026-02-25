@@ -509,6 +509,18 @@ app.get('/qr', async (req, res) => {
   }
 });
 
+// ==================== /api/stock-public (consulta de stock sem autenticação) ====================
+// Usado pelo site para esconder/mostrar serviços com base no stock real
+app.get('/api/stock-public', async (req, res) => {
+  try {
+    const [nfOk, pvOk] = await Promise.all([hasAnyStock('Netflix'), hasAnyStock('Prime Video')]);
+    res.json({ netflix: nfOk, prime_video: pvOk });
+  } catch (e) {
+    // Em caso de erro, assume tudo disponível para não bloquear o site
+    res.json({ netflix: true, prime_video: true });
+  }
+});
+
 // ==================== /api/chat (ChatWidget do site) ====================
 const webChatHistories = {};
 
@@ -518,9 +530,20 @@ app.post('/api/chat', async (req, res) => {
     if (!message || !sessionId) return res.status(400).json({ reply: 'Dados em falta.' });
     if (!webChatHistories[sessionId]) webChatHistories[sessionId] = [];
 
+    // Verificar stock real para injectar no prompt — IA nunca mente sobre disponibilidade
+    const [nfOk, pvOk] = await Promise.all([hasAnyStock('Netflix'), hasAnyStock('Prime Video')]);
+    const stockLines = [
+      nfOk
+        ? `Netflix: DISPONÍVEL — Individual ${branding.precos.netflix.individual.toLocaleString('pt')} Kz | Partilha ${branding.precos.netflix.partilha.toLocaleString('pt')} Kz | Família ${branding.precos.netflix.familia.toLocaleString('pt')} Kz`
+        : `Netflix: ESGOTADO — não disponível de momento, não ofereças este serviço`,
+      pvOk
+        ? `Prime Video: DISPONÍVEL — Individual ${branding.precos.prime.individual.toLocaleString('pt')} Kz | Partilha ${branding.precos.prime.partilha.toLocaleString('pt')} Kz | Família ${branding.precos.prime.familia.toLocaleString('pt')} Kz`
+        : `Prime Video: ESGOTADO — não disponível de momento, não ofereças este serviço`,
+    ].join('\n');
+    const dynamicPrompt = `${SYSTEM_PROMPT_CHAT_WEB}\n\nSTOCK REAL (actualizado agora — segue SEMPRE isto):\n${stockLines}`;
+
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
-    // Constrói o array de contents com o histórico + mensagem actual
     const contents = [
       ...webChatHistories[sessionId],
       { role: 'user', parts: [{ text: message }] },
@@ -528,7 +551,7 @@ app.post('/api/chat', async (req, res) => {
 
     const result = await model.generateContent({
       contents,
-      systemInstruction: { parts: [{ text: SYSTEM_PROMPT_CHAT_WEB }] },
+      systemInstruction: { parts: [{ text: dynamicPrompt }] },
     });
     const reply = result.response.text();
 
