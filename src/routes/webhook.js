@@ -154,7 +154,7 @@ async function handleWebhook(req, res) {
         state.exitIntentFollowUpSent = false;
         if (state.objeccoes && !state.objeccoes.includes('vou_pensar')) state.objeccoes.push('vou_pensar');
         if (!state.objeccoes) state.objeccoes = ['vou_pensar'];
-        await sendWhatsAppMessage(senderNum, 'Claro! Só aviso que os slots esgotam rápido — temos poucos perfis disponíveis este mês. Queres que te reserve um por 24h?');
+        await sendWhatsAppMessage(senderNum, 'Claro! Só aviso que os slots esgotam rápido — temos poucos perfis disponíveis agora. Queres que te reserve um por 24h? 😊');
       }
       return res.status(200).send('OK');
     }
