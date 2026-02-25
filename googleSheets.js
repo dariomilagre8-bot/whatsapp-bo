@@ -1,10 +1,22 @@
 const path = require('path');
+const fs   = require('fs');
 const { google } = require('googleapis');
 
 // ==================== CONFIG ====================
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
 // Nome da aba — define SHEET_NAME no Easypanel se for diferente
 const SHEET_NAME = process.env.SHEET_NAME || 'Página1';
+
+// ── Verificação de credentials.json no arranque ──
+const CREDENTIALS_PATH = path.join(__dirname, 'credentials.json');
+if (!fs.existsSync(CREDENTIALS_PATH)) {
+  console.error('❌ CRÍTICO: credentials.json não encontrado em', CREDENTIALS_PATH);
+  console.error('   O bot usa Service Account (não API Key) para a Google Sheet.');
+  console.error('   Coloca o ficheiro credentials.json na raiz do projecto no container.');
+  console.error('   Nota: credentials.json NÃO deve ser commitado no repositório Git.');
+} else {
+  console.log('✅ credentials.json encontrado');
+}
 
 // ── Helpers de status — robustos contra acentos, maiusculas e espacos ──
 // A Sheet pode ter: "disponivel", "Disponivel", "disponível", "Disponível"
@@ -31,7 +43,7 @@ function normalizePlataforma(raw) {
 }
 
 const auth = new google.auth.GoogleAuth({
-  keyFile: path.join(__dirname, 'credentials.json'),
+  keyFile: CREDENTIALS_PATH,
   scopes: ['https://www.googleapis.com/auth/spreadsheets'],
 });
 const sheetsAPI = google.sheets({ version: 'v4', auth });

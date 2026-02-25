@@ -2276,6 +2276,7 @@ adminRouter.post('/recover', async (req, res) => {
 });
 
 // GET /api/admin/expiracoes
+// Fonte: Google Sheet — colunas G=Cliente[6] H=Telefone[7] I=Data_Venda[8] J=Data_Expiracao[9]
 adminRouter.get('/expiracoes', async (req, res) => {
   try {
     const rows = await fetchAllRows();
@@ -2286,14 +2287,14 @@ adminRouter.get('/expiracoes', async (req, res) => {
     const expiracoes = [];
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const plataforma = row[0] || '';
-      const nomePerfil = row[3] || '';
-      const status    = row[5] || '';
-      const cliente   = row[6] || '';
-      const dataVendaStr = row[7] || '';
-      const tipoConta = row[9] || '';
+      const plataforma   = row[0]  || '';
+      const nomePerfil   = row[3]  || '';
+      const status       = row[5]  || '';
+      const cliente      = row[6]  || '';  // G = Nome do cliente
+      const phone        = (row[7] || '').toString().replace(/\D/g, '');  // H = Telefone
+      const dataVendaStr = row[8]  || '';  // I = Data_Venda (corrigido: era row[7])
+      const plano        = row[12] || nomePerfil;  // M = Plano
 
-      // Apenas perfis vendidos com cliente e data preenchidos
       if (!isIndisponivel(status) || !cliente || !dataVendaStr) continue;
 
       // Parse DD/MM/YYYY
@@ -2312,37 +2313,83 @@ adminRouter.get('/expiracoes', async (req, res) => {
       // Mostrar apenas expirados ou a expirar em ≤ 7 dias
       if (diasRestantes > 7) continue;
 
-      // Classificar estado
       let estado;
-      if (diasRestantes < 0)      estado = 'expirado';
+      if (diasRestantes < 0)       estado = 'expirado';
       else if (diasRestantes <= 3) estado = 'urgente';
       else                         estado = 'aviso';
 
-      // Separar nome e telefone do campo "Nome - Numero"
-      const clienteParts = cliente.split(' - ');
-      const nome  = clienteParts.length > 1 ? clienteParts.slice(0, -1).join(' - ') : cliente;
-      const phone = clienteParts.length > 1 ? clienteParts[clienteParts.length - 1] : '';
-
       expiracoes.push({
-        id: i + 1, // rowIndex na Sheet
-        nome,
+        id: i + 1,
+        nome: cliente,
         phone,
         plataforma,
-        plano: nomePerfil || tipoConta,
+        plano,
         diasRestantes,
         estado,
         dataVenda: dataVendaStr,
       });
     }
 
-    // Ordenar: expirados primeiro, depois por diasRestantes crescente
     expiracoes.sort((a, b) => a.diasRestantes - b.diasRestantes);
-
-    console.log('[expiracoes]', expiracoes);
-    res.json({ expiracoes });
+    res.json({ expiracoes, fonte: 'sheet' });
   } catch (err) {
     console.error('Erro GET /expiracoes:', err.message);
     res.status(500).json({ error: 'Erro ao ler expirações' });
+  }
+});
+
+// GET /api/admin/expiracoes-db — expiracoes via Supabase (fonte preferencial)
+// Lê tabela `vendas` com JOIN em `clientes`
+adminRouter.get('/expiracoes-db', async (req, res) => {
+  if (!supabase) {
+    return res.status(503).json({ error: 'Supabase não configurado', fallback: true });
+  }
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const msPerDay = 24 * 60 * 60 * 1000;
+
+    const { data: vendas, error } = await supabase
+      .from('vendas')
+      .select('id, plataforma, plano, data_expiracao, data_venda, valor_total, clientes(nome, whatsapp)')
+      .eq('status', 'ativo')
+      .order('data_expiracao', { ascending: true });
+
+    if (error) throw new Error(error.message);
+
+    const expiracoes = [];
+    for (const v of (vendas || [])) {
+      if (!v.data_expiracao) continue;
+      const expiry = new Date(v.data_expiracao);
+      expiry.setHours(0, 0, 0, 0);
+      const diasRestantes = Math.round((expiry - today) / msPerDay);
+      if (diasRestantes > 7) continue;
+
+      let estado;
+      if (diasRestantes < 0)       estado = 'expirado';
+      else if (diasRestantes <= 3) estado = 'urgente';
+      else                         estado = 'aviso';
+
+      const cliente = v.clientes || {};
+      const phone   = (cliente.whatsapp || '').replace(/\D/g, '');
+
+      expiracoes.push({
+        id:            v.id,
+        nome:          cliente.nome || '—',
+        phone,
+        plataforma:    v.plataforma || '—',
+        plano:         v.plano || '—',
+        diasRestantes,
+        estado,
+        dataVenda:     v.data_venda ? v.data_venda.split('T')[0] : '',
+      });
+    }
+
+    expiracoes.sort((a, b) => a.diasRestantes - b.diasRestantes);
+    res.json({ expiracoes, fonte: 'supabase' });
+  } catch (err) {
+    console.error('Erro GET /expiracoes-db:', err.message);
+    res.status(500).json({ error: 'Erro ao ler expirações do Supabase' });
   }
 });
 
@@ -2765,6 +2812,62 @@ adminRouter.post('/broadcast/expiracoes', async (req, res) => {
   const delayMs = parseInt(req.body.delay_ms, 10) || 3000;
   const mensagemCustom = (req.body.mensagem_custom || '').trim();
 
+  // Fonte preferencial: Supabase; fallback: Google Sheet
+  if (supabase) {
+    try {
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      const msPerDay = 24 * 60 * 60 * 1000;
+      const cutoff = new Date(today); cutoff.setDate(cutoff.getDate() + diasAte + 1);
+
+      const { data: vendas, error } = await supabase
+        .from('vendas')
+        .select('plataforma, data_expiracao, clientes(nome, whatsapp)')
+        .eq('status', 'ativo')
+        .lte('data_expiracao', cutoff.toISOString());
+
+      if (error) throw new Error(error.message);
+
+      const targets = [];
+      for (const v of (vendas || [])) {
+        if (!v.data_expiracao) continue;
+        const expiry = new Date(v.data_expiracao); expiry.setHours(0, 0, 0, 0);
+        const diasRestantes = Math.round((expiry - today) / msPerDay);
+        if (diasRestantes > diasAte) continue;
+        const phone = ((v.clientes || {}).whatsapp || '').replace(/\D/g, '');
+        if (!phone || phone.length < 9) continue;
+        let estado;
+        if (diasRestantes < 0)       estado = 'expirado';
+        else if (diasRestantes <= 3) estado = 'urgente';
+        else                         estado = 'aviso';
+        targets.push({ phone, nome: (v.clientes || {}).nome || '', plataforma: v.plataforma || '', diasRestantes, estado });
+      }
+
+      if (targets.length === 0) return res.json({ success: true, sent: 0, failed: 0, total: 0, message: `Nenhum cliente com expiração em ≤ ${diasAte} dias.`, fonte: 'supabase' });
+
+      let sent = 0, failed = 0;
+      const results = [];
+      for (const t of targets) {
+        const msg = mensagemCustom
+          ? mensagemCustom.replace('{nome}', t.nome).replace('{plataforma}', t.plataforma).replace('{dias}', String(t.diasRestantes))
+          : t.diasRestantes >= 5
+            ? `Olá ${t.nome}! 😊\n\nO teu plano 🎬 *${t.plataforma}* expira daqui a *7 dias*.\n\nAproveita para renovar com antecedência e continua a ver os teus filmes e séries favoritos sem interrupções 🍿\n\n👉 Renova aqui: ${branding.website}\n\nQualquer dúvida estamos aqui! 💬`
+            : t.diasRestantes >= 1
+              ? `${t.nome}, atenção! ⏰\n\nO teu plano 🎬 *${t.plataforma}* expira em apenas *${t.diasRestantes} dia(s)*.\n\nNão percas o acesso às tuas séries a meio — renova agora em menos de 2 minutos 😊\n\n💳 Renova aqui: ${branding.website}\n\nEstamos sempre disponíveis para ajudar! 🙌`
+              : `${t.nome}, hoje é o último dia! 🚨\n\nO teu plano 🎬 *${t.plataforma}* expira *hoje*.\n\nRenova agora e continua a ver sem parar 🎬🍿\n\n🔗 ${branding.website}\n\nObrigado por escolheres a ${branding.nome}! ❤️`;
+        const result = await sendWhatsAppMessage(t.phone, msg);
+        if (result.sent) { sent++; results.push({ ...t, status: 'sent' }); }
+        else { failed++; results.push({ ...t, status: 'failed' }); }
+        if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
+      }
+      console.log(`📢 BROADCAST EXPIRACOES (Supabase): ${sent} enviadas, ${failed} falharam (filtro: ≤${diasAte} dias)`);
+      return res.json({ success: true, sent, failed, total: targets.length, results, fonte: 'supabase' });
+    } catch (err) {
+      console.error('Erro broadcast/expiracoes (Supabase):', err.message, '— a tentar fallback Sheet');
+      // fall through to Sheet fallback
+    }
+  }
+
+  // Fallback: Google Sheet
   try {
     const rows = await fetchAllRows();
     const today = new Date();
@@ -2774,10 +2877,11 @@ adminRouter.post('/broadcast/expiracoes', async (req, res) => {
     const targets = [];
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const plataforma  = row[0] || '';
-      const status      = row[5] || '';
-      const cliente     = row[6] || '';
-      const dataVendaStr = row[8] || '';
+      const plataforma   = row[0] || '';
+      const status       = row[5] || '';
+      const cliente      = row[6] || '';  // G = Nome
+      const phone        = (row[7] || '').toString().replace(/\D/g, '');  // H = Telefone
+      const dataVendaStr = row[8] || '';  // I = Data_Venda
 
       if (!isIndisponivel(status) || !cliente || !dataVendaStr) continue;
 
@@ -2793,9 +2897,7 @@ adminRouter.post('/broadcast/expiracoes', async (req, res) => {
       const diasRestantes = Math.round((expiry - today) / msPerDay);
       if (diasRestantes > diasAte) continue;
 
-      const clienteParts = cliente.split(' - ');
-      const nome  = clienteParts.length > 1 ? clienteParts.slice(0, -1).join(' - ') : cliente;
-      const phone = clienteParts.length > 1 ? clienteParts[clienteParts.length - 1].replace(/\D/g, '') : '';
+      const nome = cliente;
 
       if (!phone || phone.length < 9) continue;
 
