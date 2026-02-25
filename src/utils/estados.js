@@ -55,7 +55,13 @@ async function loadSessionsOnStartup() {
       const hasPending = !!row.pending_verification;
       const lastAct = row.client_state?.lastActivity || 0;
       if (!hasPending && (now - lastAct) > TWO_HOURS) continue;
-      if (row.client_state) clientStates[phone] = row.client_state;
+      if (row.client_state) {
+        const s = row.client_state;
+        if (!s.objeccoes) s.objeccoes = [];
+        if (s.upsell_tentado === undefined) s.upsell_tentado = false;
+        if (!s.score) s.score = { mensagens_enviadas: 0, objecoes_resolvidas: 0, tempo_resposta_medio: 0, converteu: false };
+        clientStates[phone] = s;
+      }
       if (row.chat_history) chatHistories[phone] = row.chat_history;
       if (row.pending_verification) pendingVerifications[phone] = row.pending_verification;
       if (row.is_paused) pausedClients[phone] = true;
@@ -95,6 +101,17 @@ function initClientState(extra) {
     lastActivity: Date.now(),
     repeatTracker: { lastMsg: '', count: 0 },
     paymentReminderSent: false,
+    objeccoes: [],
+    upsell_tentado: false,
+    exitIntentAt: null,
+    exitIntentFollowUpSent: false,
+    clientType: null,
+    score: {
+      mensagens_enviadas: 0,
+      objecoes_resolvidas: 0,
+      tempo_resposta_medio: 0,
+      converteu: false,
+    },
     ...extra
   };
 }

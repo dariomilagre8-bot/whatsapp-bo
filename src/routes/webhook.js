@@ -33,14 +33,44 @@ const {
   findPlan,
   detectServices,
   detectQuantity,
+  detectClientType,
   SYSTEM_PROMPT,
   SYSTEM_PROMPT_COMPROVATIVO,
 } = config;
 
-const { clientStates, chatHistories, pendingVerifications, pausedClients, initClientState, markDirty } = estados;
+const { clientStates, chatHistories, pendingVerifications, pausedClients, initClientState, markDirty, cleanupSession } = estados;
 const { logLostSale } = notif;
 
 const CHANGE_MIND_PATTERNS = /\b(mudei de ideias|mudei de ideia|quero outro|quero outra|cancela|cancelar|desistir|trocar|mudar de plano|quero mudar|outro plano|comecar de novo|começar de novo|recomeçar|recomecar)\b/i;
+
+const EXIT_INTENT_PATTERNS = [
+  /vou pensar/i,
+  /deixa estar/i,
+  /talvez depois/i,
+  /não preciso/i,
+  /nao preciso/i,
+  /esquece/i,
+  /cancel/i,
+];
+
+const SALE_STEPS_FOR_EXIT_INTENT = ['escolha_servico', 'escolha_plano', 'resumo_pedido', 'aguardando_reposicao', 'aguardando_resposta_alternativa'];
+const FIVE_MIN_MS = 5 * 60 * 1000;
+const FIFTEEN_MIN_MS = 15 * 60 * 1000;
+
+function isExitIntent(text) {
+  return EXIT_INTENT_PATTERNS.some(p => p.test(text || ''));
+}
+
+function detectObjectionKey(text) {
+  if (!text) return null;
+  const t = removeAccents(text.toLowerCase());
+  if (/\b(caro|muito caro|est[aá] caro|carissimo)\b/.test(t)) return 'preco';
+  if (/\b(n[aã]o conheço|nao conheco|confian[cç]a|de confian[cç]a|é confi[aá]vel)\b/.test(t)) return 'confianca';
+  if (/\b(tenho netflix|j[aá] tenho|já tenho)\b/.test(t)) return 'ja_tem';
+  if (/\b(vou pensar|deixa estar|talvez depois)\b/.test(t)) return 'vou_pensar';
+  if (/\b(n[aã]o tenho dinheiro|sem dinheiro|não posso agora)\b/.test(t)) return 'sem_dinheiro';
+  return null;
+}
 
 function handleChangeMind(senderNum, state, textMessage) {
   const normalizedText = removeAccents(textMessage.toLowerCase());
@@ -117,6 +147,21 @@ async function handleWebhook(req, res) {
     if (textMessage && (await escalacaoHandler.handleHumanTransfer(depsEscalacao, senderNum, state, textMessage))) return res.status(200).send('OK');
     if (textMessage && (await escalacaoHandler.handleEscalacao(depsEscalacao, senderNum, state, textMessage, pushName))) return res.status(200).send('OK');
     if (textMessage && (await escalacaoHandler.handleLocationIssue(depsEscalacao, senderNum, state, textMessage))) return res.status(200).send('OK');
+
+    if (textMessage && SALE_STEPS_FOR_EXIT_INTENT.includes(state.step) && isExitIntent(textMessage)) {
+      if (!state.exitIntentAt) {
+        state.exitIntentAt = Date.now();
+        state.exitIntentFollowUpSent = false;
+        if (state.objeccoes && !state.objeccoes.includes('vou_pensar')) state.objeccoes.push('vou_pensar');
+        if (!state.objeccoes) state.objeccoes = ['vou_pensar'];
+        await sendWhatsAppMessage(senderNum, 'Claro! Só aviso que os slots esgotam rápido — temos poucos perfis disponíveis este mês. Queres que te reserve um por 24h?');
+      }
+      return res.status(200).send('OK');
+    }
+    if (textMessage && state.exitIntentAt) {
+      state.exitIntentAt = null;
+      state.exitIntentFollowUpSent = false;
+    }
 
     if (textMessage && handleChangeMind(senderNum, state, textMessage)) {
       const { msg, step } = await buildServiceMenuMsg(state, state.clientName);
@@ -489,6 +534,13 @@ async function handleWebhook(req, res) {
     if (state.step === 'escolha_servico') {
       const services = detectServices(textMessage);
       if (services.length > 0) {
+        state.clientType = detectClientType(textMessage);
+        if (state.clientType === 'D') {
+          await sendWhatsAppMessage(senderNum, 'Para uso empresarial temos condições especiais — escreve #humano para falar já com o nosso gestor de conta.');
+          pausedClients[senderNum] = true;
+          if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `📋 Interesse empresarial: ${senderNum} (${state.clientName || 'sem nome'}). Bot pausado — falar com gestor.`);
+          return res.status(200).send('OK');
+        }
         const available = [];
         const outOfStock = [];
         for (const svc of services) {
@@ -509,20 +561,30 @@ async function handleWebhook(req, res) {
         state.step = 'escolha_plano';
         let msg = '';
         if (available.length > 1) msg = `Ótimo! Vamos configurar os dois serviços.\n\nVamos começar com o ${CATALOGO[available[0]].nome}:\n\n`;
-        msg += `${formatPriceTable(available[0])}\n\nQual plano deseja? (${planChoicesText(available[0])})`;
+        if (state.clientType === 'C') {
+          msg += `Que presente! Qual é o nome da pessoa? (podes dizer depois)\n\n${formatPriceTable(available[0])}\n\nQual plano deseja? (${planChoicesText(available[0])})`;
+        } else if (state.clientType === 'B') {
+          msg += `Para família recomendo o plano Família com 3 perfis — ideal para partilhar em casa.\n\n${formatPriceTable(available[0])}\n\nQual plano deseja? (${planChoicesText(available[0])})`;
+        } else {
+          msg += `Vais usar sozinho ou partilhar com alguém? Para um perfil só teu tens o Individual.\n\n${formatPriceTable(available[0])}\n\nQual plano deseja? (${planChoicesText(available[0])})`;
+        }
         await sendWhatsAppMessage(senderNum, msg);
         return res.status(200).send('OK');
       }
+      const objKey = detectObjectionKey(textMessage);
+      if (objKey && state.objeccoes && !state.objeccoes.includes(objKey)) state.objeccoes.push(objKey);
+      const objeccoesLine = (state.objeccoes && state.objeccoes.length > 0) ? `\nObjecções já levantadas por este cliente (não repetir a mesma resposta, varia ou aprofunda): ${state.objeccoes.join(', ')}.` : '';
       try {
         const model = genAI.getGenerativeModel({
           model: 'gemini-2.5-flash',
-          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] }
+          systemInstruction: { parts: [{ text: SYSTEM_PROMPT + objeccoesLine }] }
         });
         const chat = model.startChat({ history: chatHistories[senderNum] });
         const resAI = await chat.sendMessage(textMessage || 'Olá');
         const aiText = resAI.response.text();
         chatHistories[senderNum].push({ role: 'user', parts: [{ text: textMessage || 'Olá' }] });
         chatHistories[senderNum].push({ role: 'model', parts: [{ text: aiText }] });
+        if (state.score) state.score.mensagens_enviadas = (state.score.mensagens_enviadas || 0) + 1;
         await sendWhatsAppMessage(senderNum, aiText);
       } catch (e) {
         console.error('Erro AI:', e.message);
@@ -648,11 +710,14 @@ async function handleWebhook(req, res) {
         }
         return res.status(200).send('OK');
       }
+      const objKeyPlan = detectObjectionKey(textMessage);
+      if (objKeyPlan && state.objeccoes && !state.objeccoes.includes(objKeyPlan)) state.objeccoes.push(objKeyPlan);
+      const objeccoesLinePlan = (state.objeccoes && state.objeccoes.length > 0) ? `\nObjecções já levantadas (não repetir a mesma resposta): ${state.objeccoes.join(', ')}.` : '';
       try {
         const availPlans = Object.entries(CATALOGO[state.serviceKey].planos).map(([p, price]) => `- ${p.charAt(0).toUpperCase() + p.slice(1)}: ${PLAN_SLOTS[p] || 1} perfil(s), ${price.toLocaleString('pt')} Kz`).join('\n');
         const choicesStr = planChoicesText(state.serviceKey);
         const otherSvc = state.serviceKey === 'netflix' ? 'Prime Video' : 'Netflix';
-        const planContext = `Tu és o Assistente de IA da ${branding.nome} 🤖. O cliente está a escolher um plano de *${state.plataforma}* APENAS.\n\nPLANOS DE ${state.plataforma.toUpperCase()} DISPONÍVEIS:\n${availPlans}\n\nREGRAS ABSOLUTAS:\n1. Fala APENAS sobre ${state.plataforma}. NUNCA menciones ${otherSvc} nem outros serviços nesta resposta.\n2. NUNCA confirmes ou negues disponibilidade de stock — isso é gerido automaticamente pelo sistema.\n3. Responde à dúvida do cliente em 1-2 frases curtas.\n4. Termina SEMPRE com: "Qual plano preferes? (${choicesStr})"`;
+        const planContext = `Tu és o Assistente de IA da ${branding.nome}. O cliente está a escolher um plano de ${state.plataforma} APENAS.\n\nPLANOS DE ${state.plataforma.toUpperCase()} DISPONÍVEIS:\n${availPlans}\n\nREGRAS: Fala APENAS sobre ${state.plataforma}. Responde em 1-2 frases curtas. Termina com: "Qual plano preferes? (${choicesStr})"${objeccoesLinePlan}`;
         const model = genAI.getGenerativeModel({
           model: 'gemini-2.5-flash',
           systemInstruction: { parts: [{ text: planContext }] }
@@ -703,5 +768,22 @@ async function handleWebhook(req, res) {
     res.status(200).send('Erro');
   }
 }
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [phone, state] of Object.entries(clientStates)) {
+    if (!state.exitIntentAt) continue;
+    if (state.step === 'aguardando_comprovativo' || state.step === 'esperando_supervisor') continue;
+    const elapsed = now - state.exitIntentAt;
+    if (elapsed >= FIFTEEN_MIN_MS) {
+      cleanupSession(phone);
+      continue;
+    }
+    if (elapsed >= FIVE_MIN_MS && !state.exitIntentFollowUpSent) {
+      state.exitIntentFollowUpSent = true;
+      sendWhatsAppMessage(phone, 'Olá! Ainda estás aí? Posso ajudar com alguma dúvida antes de decidires?').catch(() => {});
+    }
+  }
+}, 60 * 1000);
 
 module.exports = { handleWebhook };
