@@ -3,11 +3,9 @@ const branding = require('./branding');
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const https = require('https');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
 const {
   cleanNumber, todayDate,
   fetchAllRows, updateSheetCell, markProfileSold, markProfileAvailable,
@@ -17,6 +15,43 @@ const {
 } = require('./googleSheets');
 const { supabase } = require('./supabase');
 
+const config = require('./src/config');
+const {
+  port,
+  genAI,
+  ALL_SUPERVISORS,
+  MAIN_BOSS,
+  CATALOGO,
+  PLAN_SLOTS,
+  PLAN_RANK,
+  PAYMENT,
+  PLAN_PROFILE_TYPE,
+  HUMAN_TRANSFER_PATTERN,
+  LOCATION_ISSUE_PATTERN,
+  ESCALATION_PATTERN,
+  BOT_NAME,
+  removeAccents,
+  formatPriceTable,
+  planChoicesText,
+  findPlan,
+  detectServices,
+  detectSupportIssue,
+  detectQuantity,
+  SYSTEM_PROMPT,
+  SYSTEM_PROMPT_COMPROVATIVO,
+  SYSTEM_PROMPT_CHAT_WEB_BASE,
+} = config;
+const estados = require('./src/utils/estados');
+const { clientStates, chatHistories, pendingVerifications, pausedClients, lastIntroTimes, markDirty, persistSession, cleanupSession, loadSessionsOnStartup, initClientState } = estados;
+estados.startFlushInterval();
+const { shouldSendIntro, markIntroSent, checkRepeatLoop } = require('./src/utils/loops');
+const { sendWhatsAppMessage, sendCredentialsEmail, sendPaymentMessages, httpsAgent } = require('./src/whatsapp');
+const notif = require('./src/utils/notificacoes');
+notif.init({ sendWhatsAppMessage, MAIN_BOSS, cleanupSession, clientStates, pendingVerifications });
+const { logLostSale, lostSales, startSweeps } = notif;
+startSweeps();
+const { buildServiceMenuMsg } = require('./src/fluxo/catalogo');
+
 const app = express();
 app.use(express.json());
 app.use(cors({
@@ -24,9 +59,6 @@ app.use(cors({
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'x-admin-secret'],
 }));
-
-const port = process.env.PORT || 80;
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // ==================== CONFIGURACOES ====================
 
@@ -133,323 +165,9 @@ app.post('/api/upload-comprovativo', upload.single('comprovativo'), async (req, 
   }
 });
 
-const RAW_SUPERVISORS = (process.env.SUPERVISOR_NUMBER || '').split(',').map(n => n.trim().replace(/\D/g, ''));
-const REAL_PHONES = RAW_SUPERVISORS.filter(n => n.length < 15);
-const ALL_SUPERVISORS = RAW_SUPERVISORS;
-const MAIN_BOSS = REAL_PHONES.length > 0 ? REAL_PHONES[0] : null;
-
-console.log('📱 Telefones Reais:', REAL_PHONES);
-console.log('🖥️ Todos os IDs aceites:', ALL_SUPERVISORS);
-console.log('👑 Chefe Principal:', MAIN_BOSS);
-
-// ==================== CATALOGO ====================
-const CATALOGO = {
-  netflix: {
-    nome: 'Netflix',
-    emoji: '🎬',
-    planos: {
-      individual: branding.precos.netflix.individual,
-      partilha: branding.precos.netflix.partilha,
-      familia: branding.precos.netflix.familia,
-      familia_completa: branding.precos.netflix.familia_completa,
-    }
-  },
-  prime_video: {
-    nome: 'Prime Video',
-    emoji: '📺',
-    planos: {
-      individual: branding.precos.prime.individual,
-      partilha: branding.precos.prime.partilha,
-      familia: branding.precos.prime.familia,
-    }
-  }
-};
-
-const PLAN_SLOTS = { individual: 1, partilha: 2, familia: 3, familia_completa: 5 };
-
-// Constrói a mensagem de selecção de serviço com base no stock REAL
-// Se só um serviço tem stock → vai directo para esse serviço (muda o state)
-// Se nenhum tem stock → mensagem de sem stock
-async function buildServiceMenuMsg(state, clientName) {
-  const nome = clientName ? `, ${clientName}` : '';
-  const netflixOk = await hasAnyStock('Netflix');
-  const primeOk   = await hasAnyStock('Prime Video');
-  if (netflixOk && primeOk) {
-    return { msg: `Sem problemas${nome}! O que gostarias de escolher?\n\n🎬 *Netflix*\n📺 *Prime Video*`, step: 'escolha_servico' };
-  }
-  if (netflixOk) {
-    if (state) { state.serviceKey = 'netflix'; state.plataforma = 'Netflix'; }
-    return { msg: `Sem problemas${nome}! Temos *Netflix* disponível:\n\n${formatPriceTable('netflix')}\n\nQual plano preferes? (${planChoicesText('netflix')})`, step: 'escolha_plano' };
-  }
-  if (primeOk) {
-    if (state) { state.serviceKey = 'prime_video'; state.plataforma = 'Prime Video'; }
-    return { msg: `Sem problemas${nome}! Temos *Prime Video* disponível:\n\n${formatPriceTable('prime_video')}\n\nQual plano preferes? (${planChoicesText('prime_video')})`, step: 'escolha_plano' };
-  }
-  return { msg: `Lamentamos${nome}! De momento não temos stock disponível. Vamos notificar-te assim que houver disponibilidade. 😔`, step: 'escolha_servico' };
-}
-const PLAN_RANK = { individual: 1, partilha: 2, familia: 3, familia_completa: 4 };
-
-const PAYMENT = {
-  titular: 'Braulio Manuel',
-  iban: '0040.0000.7685.3192.1018.3',
-  multicaixa: '946014060'
-};
-
-const PLAN_PROFILE_TYPE = { individual: 'full_account', partilha: 'shared_profile', familia: 'shared_profile', familia_completa: 'full_account' };
-
-const SUPPORT_KEYWORDS = [
-  'não entra', 'nao entra', 'senha errada', 'ajuda', 'travou',
-  'não funciona', 'nao funciona', 'problema', 'erro',
-  'não consigo', 'nao consigo', 'não abre', 'nao abre'
-];
-
-// Tarefa H: Detecção de pedido de atendimento humano
-// #humano é o comando oficial; os outros padrões cobrem linguagem natural
-const HUMAN_TRANSFER_PATTERN = /(#humano|\bhumano\b|\bfalar com (supervisor|pessoa|humano|atendente)\b|\bquero (falar com |)(supervisor|humano|pessoa|atendente)\b|\batendimento (humano|pessoal)\b|\bfala com (pessoa|humano)\b|\bpreciso de ajuda humana\b|\bquero supervisor\b|\bchamar supervisor\b)/i;
-
-// Tarefa G: Detecção de problema de localização Netflix
-const LOCATION_ISSUE_PATTERN = /\b(locali[zs]a[çc][aã]o|locali[zs]ações|locali[zs]oes|casa principal|fora de casa|mudar (localiza[çc][aã]o|casa)|viagem|dispositivo|acesso bloqueado)\b/i;
-
-// Escalação automática — tópicos que o bot não resolve e o supervisor deve tratar
-// Cobre erros pós-venda: acesso, senha, conta, credenciais, não funciona, erros de login
-const ESCALATION_PATTERN = /\b(email|e-mail|e mail|atualiz(ar|a) (email|e-mail|e mail)|verific(ar|a) (email|e-mail|e mail)|mud(ar|a) (email|e-mail)|tro(car|ca) (email|e-mail)|c[oó]dig[oa].*(email|e-mail)|senha|password|credenci(ais|al)|minha (conta|senha)|perfil.*(n[aã]o|nao).*(abre|funciona|entra)|conta (bloqueada|suspensa|desativada|cancelada|errada)|acesso (negado|bloqueado|suspenso|perdido|expirado)|n[aã]o.*(consigo|posso).*(entrar|aceder|acessar|ver|logar|abrir)|tem.*(um |)problema|tenho.*(um |)problema|n[aã]o.*funciona|n[aã]o.*reconhece|reembolso|devolu[çc][aã]o|reclama[çc][aã]o|insatisfeit|n[aã]o.*receb(i|eu)|n[aã]o.*cheg(ou|a).*acesso|n[aã]o (entra|abre|carrega|liga|conecta)|deu erro|dando erro|erro (de |)(acesso|login|senha|conta)|n[aã]o tenho acesso|perdeu acesso|perdi (o |)acesso|expirou|minha conta (n[aã]o|foi|est[aá])|n[aã]o (est[aá]|esta) (a |)funciona(ndo|r)|nao (entra|abre|funciona|carrega|liga)|nao consigo (entrar|ver|aceder|acessar|logar)|conta (foi |)(bloqueada|suspensa|desativada|encerrada))\b/i;
-
-// Intro throttle — só apresenta Zara 1 vez por hora por número
-const INTRO_COOLDOWN_MS = 60 * 60 * 1000; // 1 hora
-function shouldSendIntro(phone) {
-  const last = lastIntroTimes[phone];
-  return !last || (Date.now() - last) > INTRO_COOLDOWN_MS;
-}
-function markIntroSent(phone) {
-  lastIntroTimes[phone] = Date.now();
-}
-
-// ==================== FUNCOES PURAS ====================
-function removeAccents(str) {
-  return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-}
-
-function formatPriceTable(serviceKey) {
-  const svc = CATALOGO[serviceKey];
-  if (!svc) return '';
-  const lines = [`${svc.emoji} *TABELA ${svc.nome.toUpperCase()}*`];
-  if (svc.planos.individual != null) lines.push(`👤 Individual (1 perfil): ${svc.planos.individual.toLocaleString('pt')} Kz`);
-  if (svc.planos.partilha != null) lines.push(`👥 Partilha (2 perfis): ${svc.planos.partilha.toLocaleString('pt')} Kz`);
-  if (svc.planos.familia != null) lines.push(`👨‍👩‍👧‍👦 Família (3 perfis): ${svc.planos.familia.toLocaleString('pt')} Kz`);
-  if (svc.planos.familia_completa != null) lines.push(`🏠 Família Completa (5 perfis — conta exclusiva): ${svc.planos.familia_completa.toLocaleString('pt')} Kz`);
-  return lines.join('\n');
-}
-
-const PLAN_LABELS = {
-  individual: 'Individual',
-  partilha: 'Partilha',
-  familia: 'Família',
-  familia_completa: 'Família Completa',
-};
-
-function planChoicesText(serviceKey) {
-  const svc = CATALOGO[serviceKey];
-  if (!svc) return '';
-  return Object.keys(svc.planos).map(p => PLAN_LABELS[p] || (p.charAt(0).toUpperCase() + p.slice(1))).join(' / ');
-}
-
-// Padrões por ordem de especificidade (mais específico primeiro para evitar conflitos)
-const PLAN_DETECT_PATTERNS = {
-  familia_completa: /(familia|família)\s*(completa|inteira|toda|exclusiva)/,
-  familia: /(familia|família)(?!\s*(completa|inteira|toda|exclusiva))/,
-  partilha: /partilha/,
-  individual: /individual/,
-};
-
-function findPlan(serviceKey, text) {
-  const lower = removeAccents(text.toLowerCase());
-  const svc = CATALOGO[serviceKey];
-  if (!svc) return null;
-  for (const [plan, pattern] of Object.entries(PLAN_DETECT_PATTERNS)) {
-    if (svc.planos[plan] != null && pattern.test(lower)) {
-      return { plan, price: svc.planos[plan] };
-    }
-  }
-  return null;
-}
-
-function detectServices(text) {
-  const lower = text.toLowerCase();
-  const both = /\bos dois\b|\bambos\b|\btudo\b|\bas duas\b|\bos 2\b/.test(lower);
-  const hasNetflix = lower.includes('netflix');
-  const hasPrime = lower.includes('prime');
-  if (both || (hasNetflix && hasPrime)) return ['netflix', 'prime_video'];
-  if (hasNetflix) return ['netflix'];
-  if (hasPrime) return ['prime_video'];
-  return [];
-}
-
-function detectSupportIssue(text) {
-  const lower = text.toLowerCase();
-  return SUPPORT_KEYWORDS.some(kw => lower.includes(kw));
-}
-
-function detectQuantity(text) {
-  const lower = removeAccents(text.toLowerCase());
-  const patterns = [
-    /(\d+)\s*x\s*(?:plano|planos|unidade|unidades|conta|contas)?\s*(?:de\s+)?(?:individual|partilha|familia)/,
-    /(\d+)\s+(?:plano|planos|unidade|unidades|conta|contas)\s+(?:de\s+)?(?:individual|partilha|familia)/,
-    /(\d+)\s+(?:individual|partilha|familia)/,
-    /(?:quero|preciso|queria)\s+(\d+)\s+(?:plano|planos|unidade|unidades|conta|contas|individual|partilha|familia)/,
-  ];
-  for (const pattern of patterns) {
-    const match = lower.match(pattern);
-    if (match) {
-      const qty = parseInt(match[1] || match[2], 10);
-      if (qty >= 2 && qty <= 10) return qty;
-    }
-  }
-  return 1;
-}
-
-// ==================== IDENTIDADE DO BOT ====================
-const BOT_NAME = 'Zara';
-const BOT_IDENTITY = `Chamas-te *${BOT_NAME}* e és a Assistente Virtual de Atendimento da ${branding.nome} 🤖. O teu papel é ajudar clientes a comprar e gerir planos de streaming (Netflix e Prime Video) em Angola. Apresentas-te sempre como "${BOT_NAME}, Assistente Virtual da ${branding.nome}".`;
-
-// ==================== PROMPTS GEMINI ====================
-const SYSTEM_PROMPT = `${BOT_IDENTITY}
-
-CATÁLOGO (memoriza — usa SEMPRE estes preços):
-Netflix:
-  - Individual (1 perfil): ${branding.precos.netflix.individual.toLocaleString('pt')} Kz
-  - Partilha (2 perfis): ${branding.precos.netflix.partilha.toLocaleString('pt')} Kz
-  - Família (3 perfis): ${branding.precos.netflix.familia.toLocaleString('pt')} Kz
-Prime Video:
-  - Individual (1 perfil): ${branding.precos.prime.individual.toLocaleString('pt')} Kz
-  - Partilha (2 perfis): ${branding.precos.prime.partilha.toLocaleString('pt')} Kz
-  - Família (3 perfis): ${branding.precos.prime.familia.toLocaleString('pt')} Kz
-
-REGRAS ABSOLUTAS:
-1. Se o cliente perguntar preços → responde IMEDIATAMENTE com o catálogo acima. Sem hesitar.
-2. Se o cliente perguntar "o que é Partilha/Família" → explica: "No plano Partilha recebes 2 perfis. No Família recebes 3 perfis para partilhar."
-3. Se o cliente perguntar algo sobre os serviços → responde com base no catálogo. Tu SABES todas as respostas.
-4. NUNCA digas "vou verificar", "vou consultar", "vou perguntar à equipa". Tu tens TODA a informação necessária.
-5. NUNCA peças pagamento, comprovativo ou PDF a menos que o cliente tenha EXPLICITAMENTE confirmado que quer comprar.
-6. NUNCA reveles o IBAN ou dados de pagamento antes do cliente escolher um plano.
-7. NUNCA sugiras serviços que não existem (Disney+, HBO, Spotify, etc.).
-8. Guia a conversa para escolher Netflix ou Prime Video.
-9. Sê calorosa, simpática e profissional. Máximo 2-3 frases por resposta.
-10. Responde sempre em Português.
-11. Redireciona temas fora do contexto para os nossos serviços.
-12. Apresenta-te sempre pelo nome "${BOT_NAME}" quando o cliente perguntar quem és.`;
-
-const SYSTEM_PROMPT_COMPROVATIVO = `${BOT_IDENTITY} O cliente já escolheu um plano e está na fase de pagamento.
-
-CATÁLOGO (para referência):
-Netflix: Individual ${branding.precos.netflix.individual.toLocaleString('pt')} Kz (1 perfil) | Partilha ${branding.precos.netflix.partilha.toLocaleString('pt')} Kz (2 perfis) | Família ${branding.precos.netflix.familia.toLocaleString('pt')} Kz (3 perfis)
-Prime Video: Individual ${branding.precos.prime.individual.toLocaleString('pt')} Kz (1 perfil) | Partilha ${branding.precos.prime.partilha.toLocaleString('pt')} Kz (2 perfis) | Família ${branding.precos.prime.familia.toLocaleString('pt')} Kz (3 perfis)
-
-REGRAS:
-- Responde a QUALQUER pergunta do cliente de forma curta, simpática e útil (máximo 2 frases).
-- NUNCA inventes dados de pagamento (IBAN, Multicaixa) — o cliente já os recebeu.
-- NÃO menciones PDFs, comprovativos ou documentos. NÃO pressiones o envio de nada.
-- NUNCA digas "vou verificar", "vou consultar" ou "vou perguntar à equipa". Tu SABES as respostas.
-- Apresenta-te como "${BOT_NAME}" se te perguntarem quem és.
-- Termina com: "Estou aqui se precisares de mais alguma coisa! 😊"`;
-
-// Prompt base — sem catálogo hardcoded (é construído dinamicamente com stock real no endpoint)
-const SYSTEM_PROMPT_CHAT_WEB_BASE = `${BOT_IDENTITY} Estás no site ${branding.nome} a responder dúvidas de visitantes.
-
-REGRAS ABSOLUTAS:
-- Responde em 1-3 frases curtas e directas.
-- Se perguntarem como comprar → diz "Clica em 'Comprar Agora' no site ou fala connosco no WhatsApp".
-- NUNCA reveles dados bancários no chat do site.
-- Apresenta-te como "${BOT_NAME}, Assistente Virtual da ${branding.nome}".
-- Responde sempre em Português de Angola.
-- NUNCA inventes stock — usa APENAS o CATÁLOGO abaixo. Se um serviço não constar, está ESGOTADO.
-- Se o cliente perguntar por um serviço esgotado, diz que está temporariamente sem stock e sugere o WhatsApp.`;
-
-// ==================== ESTADOS ====================
-const chatHistories = {};
-const clientStates = {};
-const pendingVerifications = {};
-const pausedClients = {};
-const lastIntroTimes = {};   // { [phone]: timestamp } — persiste fora do ciclo de sessão
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
-
-// ==================== PERSISTÊNCIA DE SESSÕES (SUPABASE) ====================
-// Sessões são guardadas no Supabase a cada 15s. Ao reiniciar, são restauradas.
-// Assim conversas em curso não se perdem após redeploy no EasyPanel.
-
-const dirtySessions = new Set();
-
-function markDirty(phone) {
-  dirtySessions.add(phone);
-}
-
-async function persistSession(phone) {
-  if (!supabase) return;
-  try {
-    await supabase.from('sessoes').upsert({
-      whatsapp: phone,
-      client_state: clientStates[phone] || null,
-      chat_history: chatHistories[phone] ? chatHistories[phone].slice(-20) : null,
-      pending_verification: pendingVerifications[phone] || null,
-      is_paused: !!pausedClients[phone],
-      last_intro_ts: lastIntroTimes[phone] || null,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'whatsapp' });
-  } catch (e) {
-    console.error(`⚠️ persistSession ${phone}:`, e.message);
-  }
-}
-
-// Remove sessão da memória e do Supabase
-function cleanupSession(phone) {
-  delete clientStates[phone];
-  delete chatHistories[phone];
-  delete pendingVerifications[phone];
-  delete pausedClients[phone];
-  dirtySessions.delete(phone);
-  if (supabase) {
-    supabase.from('sessoes').delete().eq('whatsapp', phone)
-      .then(() => {})
-      .catch(e => console.error(`⚠️ cleanupSession Supabase ${phone}:`, e.message));
-  }
-}
-
-// Restaura todas as sessões activas do Supabase (chamado ao iniciar)
-async function loadSessionsOnStartup() {
-  if (!supabase) return;
-  try {
-    const { data, error } = await supabase.from('sessoes').select('*');
-    if (error) throw new Error(error.message);
-    const now = Date.now();
-    const TWO_HOURS = 2 * 60 * 60 * 1000;
-    let count = 0;
-    for (const row of (data || [])) {
-      const phone = row.whatsapp;
-      const hasPending = !!row.pending_verification;
-      const lastAct = row.client_state?.lastActivity || 0;
-      // Descartar sessões inactivas há mais de 2h sem pagamento pendente
-      if (!hasPending && (now - lastAct) > TWO_HOURS) continue;
-      if (row.client_state) clientStates[phone] = row.client_state;
-      if (row.chat_history) chatHistories[phone] = row.chat_history;
-      if (row.pending_verification) pendingVerifications[phone] = row.pending_verification;
-      if (row.is_paused) pausedClients[phone] = true;
-      if (row.last_intro_ts) lastIntroTimes[phone] = row.last_intro_ts;
-      count++;
-    }
-    console.log(`✅ Sessões restauradas do Supabase: ${count}`);
-  } catch (e) {
-    console.error('❌ Erro ao restaurar sessões:', e.message);
-  }
-}
-
-// Flush periódico — persiste sessões modificadas a cada 15s
-setInterval(async () => {
-  if (dirtySessions.size === 0) return;
-  const phones = [...dirtySessions];
-  dirtySessions.clear();
-  for (const phone of phones) {
-    await persistSession(phone);
-  }
-}, 15 * 1000);
+console.log('📱 Telefones Reais:', config.REAL_PHONES);
+console.log('🖥️ Todos os IDs aceites:', config.ALL_SUPERVISORS);
+console.log('👑 Chefe Principal:', config.MAIN_BOSS);
 
 // ==================== NETFLIX HOUSEHOLD: DETEÇÃO POR KEYWORDS ====================
 // Verifica se nas últimas 3 mensagens do cliente há referência ao erro de residência Netflix
@@ -660,189 +378,6 @@ app.post('/api/chat', async (req, res) => {
     res.json({ reply: `Olá! Sou ${BOT_NAME}, assistente virtual da ${branding.nome}. Como posso ajudar? Fala connosco também pelo WhatsApp! 😊` });
   }
 });
-
-// ==================== VENDAS PERDIDAS ====================
-const lostSales = [];
-let lostSaleCounter = 1;
-
-function logLostSale(phone, clientName, interests, lastState, reason) {
-  const sale = {
-    id: lostSaleCounter++,
-    phone,
-    clientName: clientName || '',
-    interests: interests || [],
-    lastState: lastState || '',
-    reason,
-    timestamp: Date.now(),
-    recovered: false
-  };
-  lostSales.push(sale);
-
-  if (MAIN_BOSS) {
-    const interestStr = sale.interests.length > 0 ? sale.interests.join(', ') : 'N/A';
-    sendWhatsAppMessage(MAIN_BOSS, `📉 *VENDA PERDIDA #${sale.id}*\n👤 ${sale.phone}${sale.clientName ? ' (' + sale.clientName + ')' : ''}\n📦 Interesse: ${interestStr}\n❌ Motivo: ${reason}\n\nUse *recuperar ${sale.id} <mensagem>* para re-contactar.`);
-  }
-
-  appendLostSale(sale).catch(e => console.error('Erro ao salvar venda perdida:', e.message));
-  return sale;
-}
-
-// Sweep aguardando_reposicao — 30min follow-up + 2h timeout final
-setInterval(async () => {
-  const now = Date.now();
-  const THIRTY_MIN = 30 * 60 * 1000;
-  const TWO_HOURS_RECOVERY = 2 * 60 * 60 * 1000;
-  for (const [num, state] of Object.entries(clientStates)) {
-    if (state.step !== 'aguardando_reposicao' && state.step !== 'aguardando_resposta_alternativa') continue;
-    const recovery = state.pendingRecovery;
-    if (!recovery) continue;
-    const elapsed = now - recovery.timestamp;
-
-    if (elapsed >= THIRTY_MIN && !state.recovery30minSent) {
-      state.recovery30minSent = true;
-      const pedidoDesc = `${recovery.qty > 1 ? recovery.qty + 'x ' : ''}${recovery.plan}`;
-      await sendWhatsAppMessage(num, `Ainda estamos a verificar a disponibilidade para o teu pedido de ${pedidoDesc}. Entretanto, posso ajudar-te com outra coisa?`);
-    }
-
-    if (elapsed >= TWO_HOURS_RECOVERY) {
-      const nome = state.clientName;
-      await sendWhatsAppMessage(num, `${nome ? nome + ', p' : 'P'}edimos desculpa pela demora. Infelizmente não conseguimos repor o stock a tempo para o teu pedido.\n\nComo compensação, terás *prioridade* na próxima reposição! Vamos notificar-te assim que houver disponibilidade. 😊\n\nSe precisares de algo entretanto, estamos aqui.`);
-      logLostSale(num, nome, state.interestStack || [], state.step, `Timeout reposição (2h): ${recovery.qty > 1 ? recovery.qty + 'x ' : ''}${recovery.service} ${recovery.plan}`);
-      if (MAIN_BOSS) {
-        await sendWhatsAppMessage(MAIN_BOSS, `⏰ *TIMEOUT 2H* — Stock não reposto\n👤 ${num} (${nome || ''})\n📦 ${recovery.qty > 1 ? recovery.qty + 'x ' : ''}${recovery.service} ${recovery.plan}\nSessão limpa automaticamente.`);
-      }
-      cleanupSession(num);
-    }
-  }
-}, 5 * 60 * 1000);
-
-// Sweep: clientes inativos há 2+ horas
-setInterval(() => {
-  const now = Date.now();
-  const TWO_HOURS = 2 * 60 * 60 * 1000;
-  for (const [num, state] of Object.entries(clientStates)) {
-    if (state.lastActivity && (now - state.lastActivity) > TWO_HOURS) {
-      if (state.step !== 'inicio' && state.step !== 'esperando_supervisor' && state.step !== 'aguardando_reposicao' && state.step !== 'aguardando_resposta_alternativa' && !pendingVerifications[num]) {
-        logLostSale(num, state.clientName, state.interestStack || [], state.step, 'Timeout (2h sem atividade)');
-        cleanupSession(num);
-      }
-    }
-  }
-}, 30 * 60 * 1000);
-
-// ==================== WHATSAPP ====================
-// Retorna { sent: boolean, invalidNumber: boolean }
-// invalidNumber=true quando a Evolution API responde {"exists":false} (número sem WhatsApp)
-async function sendWhatsAppMessage(number, text) {
-  try {
-    const cleanTarget = cleanNumber(number);
-    console.log(`📤 SEND: cleanTarget="${cleanTarget}" length=${cleanTarget.length}`);
-    if (cleanTarget.length < 9 || cleanTarget.length > 15) {
-      console.log(`❌ SEND: Número inválido (length), não enviar.`);
-      return { sent: false, invalidNumber: false };
-    }
-    const finalAddress = cleanTarget + '@s.whatsapp.net';
-    const url = `${process.env.EVOLUTION_API_URL}/message/sendText/${process.env.EVOLUTION_INSTANCE_NAME}`;
-    console.log(`📤 SEND: URL=${url}`);
-    console.log(`📤 SEND: Para=${finalAddress} | Texto=${text.substring(0, 60)}...`);
-    await axios.post(url, {
-      number: finalAddress, text: text, delay: 1200
-    }, { headers: { 'apikey': process.env.EVOLUTION_API_KEY }, httpsAgent });
-    console.log(`✅ SEND: Mensagem enviada com sucesso para ${finalAddress}`);
-    return { sent: true, invalidNumber: false };
-  } catch (e) {
-    const data = e.response?.data;
-    // Detetar especificamente erro 400 com {"exists":false} da Evolution API
-    const isInvalidNumber = (
-      e.response?.status === 400 &&
-      (data?.exists === false || JSON.stringify(data || '').includes('"exists":false'))
-    );
-    console.error(`❌ FALHA ENVIO para ${number}:`, e.response ? JSON.stringify(data) : e.message);
-    if (isInvalidNumber) {
-      console.warn(`⚠️ SEND: Número ${number} não tem WhatsApp (exists: false) — fluxo continuará normalmente.`);
-    }
-    return { sent: false, invalidNumber: isInvalidNumber };
-  }
-}
-
-// ==================== EMAIL DE CREDENCIAIS (BREVO) ====================
-async function sendCredentialsEmail(toEmail, clientName, productName, allCreds) {
-  try {
-    const credHtml = allCreds.map(c => {
-      const unitHdr = c.unitLabel ? `<p style="color:#888;font-size:11px;margin:0 0 6px 0;text-transform:uppercase;letter-spacing:1px">${c.unitLabel}</p>` : '';
-      const perfilHtml = c.nomePerfil ? `<p style="margin:3px 0">👤 Perfil: <strong>${c.nomePerfil}</strong></p>` : '';
-      const pinHtml = c.pin ? `<p style="margin:3px 0">🔒 PIN: <strong>${c.pin}</strong></p>` : '';
-      return `<div style="background:#1a1a1a;border-radius:10px;padding:16px;margin:10px 0;border:1px solid #333">${unitHdr}<p style="margin:3px 0">📧 Email: <strong>${c.email}</strong></p><p style="margin:3px 0">🔑 Senha: <strong>${c.senha}</strong></p>${perfilHtml}${pinHtml}</div>`;
-    }).join('');
-
-    const htmlContent = `<div style="background:#0a0a0a;color:#e5e5e5;font-family:Arial,sans-serif;padding:40px;max-width:600px;margin:0 auto"><h1 style="color:${branding.corPrincipal};margin:0 0 4px 0">${branding.nome}</h1><h2 style="color:#fff;font-weight:400;margin:0 0 24px 0">As Tuas Credenciais ${branding.emoji}</h2><p>Olá <strong>${clientName}</strong>,</p><p>Aqui estão os dados da tua conta <strong>${productName}</strong>:</p>${credHtml}<p style="margin-top:32px;padding-top:16px;border-top:1px solid #222;color:#666;font-size:12px">${branding.nome} · Suporte via WhatsApp: +${branding.whatsappSuporte}</p></div>`;
-
-    await axios.post('https://api.brevo.com/v3/smtp/email', {
-      sender: { name: branding.nome, email: process.env.BREVO_SENDER_EMAIL },
-      to: [{ email: toEmail, name: clientName }],
-      subject: `${branding.nome} — As tuas credenciais de ${productName}`,
-      htmlContent,
-    }, {
-      headers: {
-        'api-key': process.env.BREVO_API_KEY,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      }
-    });
-    console.log(`✅ EMAIL: Credenciais enviadas via Brevo para ${toEmail}`);
-    return true;
-  } catch (e) {
-    console.error('❌ EMAIL: Falha ao enviar via Brevo:', e.response?.data || e.message);
-    return false;
-  }
-}
-
-// Envia mensagens separadas de pagamento
-async function sendPaymentMessages(number, state) {
-  const isMulti = state.cart.length > 1;
-
-  let summary;
-  if (isMulti) {
-    const lines = state.cart.map((item, i) => {
-      const qty = item.quantity || 1;
-      const qtyLabel = qty > 1 ? `${qty}x ` : '';
-      return `${i + 1}. ${qtyLabel}${item.plataforma} ${item.plan} - ${(item.totalPrice || item.price).toLocaleString('pt')} Kz`;
-    });
-    summary = `📦 *Resumo do Pedido:*\n${lines.join('\n')}\n💰 *Total: ${state.totalValor.toLocaleString('pt')} Kz*`;
-  } else {
-    const item = state.cart[0];
-    const qty = item.quantity || 1;
-    const qtyLabel = qty > 1 ? `${qty}x ` : '';
-    summary = `📦 *${qtyLabel}${item.plataforma} - ${item.plan}*\n💰 *Valor: ${(item.totalPrice || item.price).toLocaleString('pt')} Kz*`;
-  }
-  await sendWhatsAppMessage(number, summary);
-  await sendWhatsAppMessage(number, '🏦 *DADOS PARA PAGAMENTO:*');
-  await sendWhatsAppMessage(number, PAYMENT.iban);
-  await sendWhatsAppMessage(number, PAYMENT.multicaixa);
-  await sendWhatsAppMessage(number, `👤 *Titular:* ${PAYMENT.titular}`);
-  await sendWhatsAppMessage(number, 'Quando fizeres o pagamento, envia o comprovativo em PDF por aqui. 😊');
-}
-
-// ==================== INICIALIZAR ESTADO DO CLIENTE ====================
-function initClientState(extra) {
-  return {
-    step: 'inicio',
-    clientName: '',
-    isRenewal: false,
-    interestStack: [],
-    currentItemIndex: 0,
-    cart: [],
-    serviceKey: null,
-    plataforma: null,
-    plano: null,
-    valor: null,
-    totalValor: 0,
-    lastActivity: Date.now(),
-    repeatTracker: { lastMsg: '', count: 0 },
-    paymentReminderSent: false,
-    ...extra
-  };
-}
 
 // =====================================================================
 // FIX #1: HANDLER "MUDEI DE IDEIAS" — deteta expressoes de mudanca
