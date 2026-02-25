@@ -211,6 +211,8 @@ function validarResposta(texto) {
     /^oh\??[.!]?$/i, /^ok[.!]?$/i, /^sim[.!]?$/i,
     /^compreendo[.!]?$/i, /^entendo[.!]?$/i,
     /^certo[.!]?$/i, /^claro[.!]?$/i, /^\s*$/,
+    /^compreendo\s*\w*[.!]?$/i,
+    /^olá[,.]?\s*confirmamos/i,
   ];
   if (INVALIDAS.some(p => p.test(texto.trim()))) {
     return `Estou aqui para te ajudar! Tens alguma dúvida sobre os nossos planos? 😊`;
@@ -527,7 +529,7 @@ async function handleWebhook(req, res) {
           const model = genAI.getGenerativeModel({
             model: 'gemini-2.5-flash',
             systemInstruction: { parts: [{ text: contextPrompt }] },
-            generationConfig: { temperature: 0.3, maxOutputTokens: 150 },
+            generationConfig: { temperature: 0.3, maxOutputTokens: 300 },
           });
           const chat = model.startChat({ history: [...FEW_SHOT_EXAMPLES, ...(chatHistories[senderNum] || [])] });
           const resAI = await chat.sendMessage(textMessage);
@@ -576,6 +578,13 @@ async function handleWebhook(req, res) {
         await sendWhatsAppMessage(senderNum, '📄 Comprovativo recebido! Obrigado! O supervisor está a validar. Assim que for aprovado, os teus acessos aparecerão aqui. 😊');
         return res.status(200).send('OK');
       }
+      return res.status(200).send('OK');
+    }
+
+    // Anti-loop: saudação simples durante fluxo activo → não reinicia
+    const SAUDACOES = [/^oi$/i, /^olá$/i, /^ola$/i, /^hello$/i, /^bom dia$/i, /^boa tarde$/i, /^boa noite$/i];
+    if (SAUDACOES.some(p => p.test((textMessage || '').trim())) && state.step !== 'inicio') {
+      await sendWhatsAppMessage(senderNum, `Estou aqui! Em que posso ajudar-te? 😊`);
       return res.status(200).send('OK');
     }
 
@@ -789,7 +798,7 @@ async function handleWebhook(req, res) {
         const model = genAI.getGenerativeModel({
           model: 'gemini-2.5-flash',
           systemInstruction: { parts: [{ text: promptFinal }] },
-          generationConfig: { temperature: 0.3, maxOutputTokens: 150 },
+          generationConfig: { temperature: 0.3, maxOutputTokens: 300 },
         });
         const chat = model.startChat({ history: [...FEW_SHOT_EXAMPLES, ...(chatHistories[senderNum] || [])] });
         const resAI = await chat.sendMessage(textMessage || 'Olá');
