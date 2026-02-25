@@ -11,8 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Deploy whatssiru
-        run: curl -s -o /dev/null -w "whatssiru: %{http_code}\n" "${{ secrets.EASYPANEL_DEPLOY_WEBHOOK }}"
+        run: curl -s "${{ secrets.EASYPANEL_DEPLOY_WEBHOOK }}"
 
       - name: Deploy website
-        run: curl -s -o /dev/null -w "website: %{http_code}\n" "${{ secrets.EASYPANEL_WEBSITE_WEBHOOK }}"
-        
+        run: curl -s "${{ secrets.EASYPANEL_WEBSITE_WEBHOOK }}"
