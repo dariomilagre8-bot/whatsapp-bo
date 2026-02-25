@@ -3,7 +3,7 @@ const { cleanNumber } = require('../../googleSheets');
 const config = require('../config');
 const estados = require('../utils/estados');
 const { shouldSendIntro, markIntroSent } = require('../utils/loops');
-const { sendWhatsAppMessage, sendPaymentMessages } = require('../whatsapp');
+const { sendWhatsAppMessage, sendPaymentMessages, sendCredentialsEmail } = require('../whatsapp');
 const notif = require('../utils/notificacoes');
 const { buildServiceMenuMsg } = require('../fluxo/catalogo');
 const escalacaoHandler = require('../handlers/escalacao');
@@ -16,6 +16,7 @@ const {
   hasAnyStock,
   findClientByName,
   updateClientPhone,
+  findClientProfiles,
 } = require('../../googleSheets');
 const branding = require('../../branding');
 
@@ -81,11 +82,52 @@ function interceptarMensagem(texto, state, stockInfoObj) {
       case 'nao_entra':      return { tipo, resposta: RESPOSTAS_TEXTO.nao_entra(), pausar: true };
       case 'localizacao':    return { tipo, resposta: RESPOSTAS_TEXTO.localizacao() };
       case 'pin':            return { tipo, resposta: RESPOSTAS_TEXTO.pin(), pausar: true };
-      case 'email_senha':    return { tipo, resposta: RESPOSTAS_TEXTO.email_senha() };
+      case 'email_senha':    return { tipo, resposta: RESPOSTAS_TEXTO.email_senha(), reenviarCredenciais: true };
       case 'renovacao':      return { tipo, resposta: RESPOSTAS_TEXTO.renovacao(diasRestantes) };
     }
   }
   return null;
+}
+
+async function reenviarCredenciais(senderNum, state) {
+  const profiles = await findClientProfiles(senderNum).catch(() => null);
+  if (!profiles || profiles.length === 0) {
+    await sendWhatsAppMessage(senderNum,
+      `Não encontrei credenciais activas para o teu número. Se fizeste uma compra recente, aguarda a aprovação do comprovativo. 😊`
+    );
+    return;
+  }
+  // Agrupa por plataforma
+  const byPlat = {};
+  for (const p of profiles) {
+    const key = p.plataforma || 'Serviço';
+    if (!byPlat[key]) byPlat[key] = [];
+    byPlat[key].push(p);
+  }
+  for (const [plataforma, profs] of Object.entries(byPlat)) {
+    const emoji = plataforma.toLowerCase().includes('netflix') ? '🎬' : '📺';
+    let msg = `${emoji} ${plataforma}\n`;
+    for (let i = 0; i < profs.length; i++) {
+      msg += `\nPerfil ${i + 1}: ${profs[i].email} | ${profs[i].senha}`;
+      if (profs[i].nomePerfil) msg += ` | ${profs[i].nomePerfil}`;
+      if (profs[i].pin) msg += ` | PIN: ${profs[i].pin}`;
+    }
+    await sendWhatsAppMessage(senderNum, msg);
+  }
+  await sendWhatsAppMessage(senderNum, `Guarda bem estes dados! Se precisares de mais ajuda estou aqui. 😊`);
+  // Tenta reenviar por email se disponível
+  if (state?.email) {
+    const allCreds = profiles.map(p => ({
+      plataforma: p.plataforma,
+      email: p.email,
+      senha: p.senha,
+      nomePerfil: p.nomePerfil || '',
+      pin: p.pin || '',
+      unitLabel: '',
+    }));
+    const productName = [...new Set(profiles.map(p => p.plataforma))].join(', ');
+    await sendCredentialsEmail(state.email, state.clientName || 'Cliente', productName, allCreds).catch(() => {});
+  }
 }
 
 function validarResposta(texto) {
@@ -652,7 +694,12 @@ async function handleWebhook(req, res) {
         if (interceptado.pausar && MAIN_BOSS) {
           await sendWhatsAppMessage(MAIN_BOSS, `🔧 Problema técnico: ${interceptado.tipo} — ${senderNum}: ${textMessage}`);
         }
-        await sendWhatsAppMessage(senderNum, interceptado.resposta);
+        if (interceptado.reenviarCredenciais) {
+          await sendWhatsAppMessage(senderNum, interceptado.resposta);
+          await reenviarCredenciais(senderNum, state);
+        } else {
+          await sendWhatsAppMessage(senderNum, interceptado.resposta);
+        }
         return res.status(200).send('OK');
       }
 
