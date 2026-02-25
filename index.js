@@ -352,18 +352,17 @@ REGRAS:
 - Apresenta-te como "${BOT_NAME}" se te perguntarem quem és.
 - Termina com: "Estou aqui se precisares de mais alguma coisa! 😊"`;
 
-const SYSTEM_PROMPT_CHAT_WEB = `${BOT_IDENTITY} Estás no site ${branding.nome} a responder dúvidas de visitantes.
+// Prompt base — sem catálogo hardcoded (é construído dinamicamente com stock real no endpoint)
+const SYSTEM_PROMPT_CHAT_WEB_BASE = `${BOT_IDENTITY} Estás no site ${branding.nome} a responder dúvidas de visitantes.
 
-CATÁLOGO:
-Netflix: Individual ${branding.precos.netflix.individual.toLocaleString('pt')} Kz | Partilha ${branding.precos.netflix.partilha.toLocaleString('pt')} Kz | Família ${branding.precos.netflix.familia.toLocaleString('pt')} Kz
-Prime Video: Individual ${branding.precos.prime.individual.toLocaleString('pt')} Kz | Partilha ${branding.precos.prime.partilha.toLocaleString('pt')} Kz | Família ${branding.precos.prime.familia.toLocaleString('pt')} Kz
-
-REGRAS:
+REGRAS ABSOLUTAS:
 - Responde em 1-3 frases curtas e directas.
 - Se perguntarem como comprar → diz "Clica em 'Comprar Agora' no site ou fala connosco no WhatsApp".
 - NUNCA reveles dados bancários no chat do site.
 - Apresenta-te como "${BOT_NAME}, Assistente Virtual da ${branding.nome}".
-- Responde sempre em Português de Angola.`;
+- Responde sempre em Português de Angola.
+- NUNCA inventes stock — usa APENAS o CATÁLOGO abaixo. Se um serviço não constar, está ESGOTADO.
+- Se o cliente perguntar por um serviço esgotado, diz que está temporariamente sem stock e sugere o WhatsApp.`;
 
 // ==================== ESTADOS ====================
 const chatHistories = {};
@@ -530,17 +529,23 @@ app.post('/api/chat', async (req, res) => {
     if (!message || !sessionId) return res.status(400).json({ reply: 'Dados em falta.' });
     if (!webChatHistories[sessionId]) webChatHistories[sessionId] = [];
 
-    // Verificar stock real para injectar no prompt — IA nunca mente sobre disponibilidade
+    // Verificar stock real — catálogo construído dinamicamente (só serviços disponíveis)
     const [nfOk, pvOk] = await Promise.all([hasAnyStock('Netflix'), hasAnyStock('Prime Video')]);
-    const stockLines = [
-      nfOk
-        ? `Netflix: DISPONÍVEL — Individual ${branding.precos.netflix.individual.toLocaleString('pt')} Kz | Partilha ${branding.precos.netflix.partilha.toLocaleString('pt')} Kz | Família ${branding.precos.netflix.familia.toLocaleString('pt')} Kz`
-        : `Netflix: ESGOTADO — não disponível de momento, não ofereças este serviço`,
-      pvOk
-        ? `Prime Video: DISPONÍVEL — Individual ${branding.precos.prime.individual.toLocaleString('pt')} Kz | Partilha ${branding.precos.prime.partilha.toLocaleString('pt')} Kz | Família ${branding.precos.prime.familia.toLocaleString('pt')} Kz`
-        : `Prime Video: ESGOTADO — não disponível de momento, não ofereças este serviço`,
-    ].join('\n');
-    const dynamicPrompt = `${SYSTEM_PROMPT_CHAT_WEB}\n\nSTOCK REAL (actualizado agora — segue SEMPRE isto):\n${stockLines}`;
+
+    const catalogoLinhas = [];
+    if (nfOk) catalogoLinhas.push(`Netflix: Individual ${branding.precos.netflix.individual.toLocaleString('pt')} Kz | Partilha ${branding.precos.netflix.partilha.toLocaleString('pt')} Kz | Família ${branding.precos.netflix.familia.toLocaleString('pt')} Kz`);
+    if (pvOk) catalogoLinhas.push(`Prime Video: Individual ${branding.precos.prime.individual.toLocaleString('pt')} Kz | Partilha ${branding.precos.prime.partilha.toLocaleString('pt')} Kz | Família ${branding.precos.prime.familia.toLocaleString('pt')} Kz`);
+
+    const catalogoBloco = catalogoLinhas.length > 0
+      ? `CATÁLOGO DISPONÍVEL AGORA (apenas estes — não menciones outros):\n${catalogoLinhas.join('\n')}`
+      : `CATÁLOGO: Nenhum serviço disponível de momento. Diz ao cliente que o stock está temporariamente esgotado e que pode deixar contacto no WhatsApp para ser avisado.`;
+
+    const esgotados = [!nfOk && 'Netflix', !pvOk && 'Prime Video'].filter(Boolean);
+    const avisoEsgotado = esgotados.length > 0
+      ? `\nSERVIÇOS ESGOTADOS (NÃO ofereças, NÃO digas que estão disponíveis): ${esgotados.join(', ')}`
+      : '';
+
+    const dynamicPrompt = `${SYSTEM_PROMPT_CHAT_WEB_BASE}\n\n${catalogoBloco}${avisoEsgotado}`;
 
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
