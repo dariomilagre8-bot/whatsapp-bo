@@ -116,6 +116,58 @@ function initClientState(extra) {
   };
 }
 
+async function getContextoCliente(phone) {
+  if (!supabase) return { existe: false };
+  try {
+    const { data: cliente } = await supabase
+      .from('clientes')
+      .select('id, nome, whatsapp, email')
+      .eq('whatsapp', phone)
+      .single();
+
+    if (!cliente) return { existe: false };
+
+    const { data: venda } = await supabase
+      .from('vendas')
+      .select('id, plataforma, plano, status, data_expiracao, data_venda')
+      .eq('whatsapp', phone)
+      .in('status', ['ativo', 'pendente', 'expirado'])
+      .order('data_venda', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (!venda) return { existe: true, cliente, venda: null,
+      resumo: `Cliente ${cliente.nome} sem venda activa` };
+
+    const hoje = new Date();
+    const expiracao = venda.data_expiracao ? new Date(venda.data_expiracao) : null;
+    const diasRestantes = expiracao
+      ? Math.ceil((expiracao - hoje) / (1000 * 60 * 60 * 24))
+      : null;
+
+    // Busca credenciais em perfis_entregues
+    const { data: perfis } = await supabase
+      .from('perfis_entregues')
+      .select('email_conta, senha_conta, nome_perfil, pin, plataforma')
+      .eq('venda_id', venda.id);
+
+    const credsValidas = perfis && perfis.length > 0 && perfis[0].email_conta && perfis[0].senha_conta;
+
+    return {
+      existe: true,
+      cliente,
+      venda,
+      perfis: perfis || [],
+      diasRestantes,
+      credsValidas,
+      expirou: diasRestantes !== null && diasRestantes <= 0,
+      resumo: `${cliente.nome} | ${venda.plataforma} ${venda.plano} | ${venda.status} | ${diasRestantes !== null ? diasRestantes + ' dias' : 'sem data'}`,
+    };
+  } catch (e) {
+    return { existe: false, erro: e.message };
+  }
+}
+
 module.exports = {
   chatHistories,
   clientStates,
@@ -129,4 +181,5 @@ module.exports = {
   loadSessionsOnStartup,
   startFlushInterval,
   initClientState,
+  getContextoCliente,
 };

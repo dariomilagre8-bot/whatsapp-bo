@@ -116,6 +116,16 @@ const RESPOSTAS_FIXAS = {
     /acabou/i, /venceu/i, /expirar/i,
     /quando expira/i, /quanto tempo falta/i,
   ],
+  cancelamento: [
+    /quero cancelar/i, /cancelar plano/i,
+    /não quero mais/i, /quero sair/i,
+    /reembolso/i, /devolver dinheiro/i,
+  ],
+  upgrade: [
+    /quero mudar de plano/i, /upgrade/i,
+    /mudar para família/i, /adicionar perfil/i,
+    /quero mais perfis/i,
+  ],
 };
 
 const RESPOSTAS_TEXTO = {
@@ -147,6 +157,10 @@ const RESPOSTAS_TEXTO = {
     `Recebi a tua imagem 📎 Para comprovativos de pagamento envia em PDF. Para problemas técnicos descreve o que está a acontecer e resolvo. 😊`,
   imagem_com_keywords_netflix: () =>
     `Vejo que tens um erro de localização. Segue estes passos:\n1️⃣ Clica "Ver temporariamente"\n2️⃣ Insere o código que aparece\n3️⃣ Acesso restaurado ✅`,
+  cancelamento: () =>
+    `Lamento ouvir isso 😔 Para processar o cancelamento preciso falar com um colega. Um momento! 😊`,
+  upgrade: (planoActual) =>
+    `Claro! Actualmente tens ${planoActual}.\nQueres mudar para que plano?\n- Partilha (2 perfis)\n- Família (3 perfis)\n- Família Completa (conta exclusiva)`,
 };
 
 const BOT_NAME = 'Zara';

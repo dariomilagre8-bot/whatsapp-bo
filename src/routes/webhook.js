@@ -41,7 +41,7 @@ const {
   RESPOSTAS_TEXTO,
 } = config;
 
-const { clientStates, chatHistories, pendingVerifications, pausedClients, initClientState, markDirty, cleanupSession } = estados;
+const { clientStates, chatHistories, pendingVerifications, pausedClients, initClientState, markDirty, cleanupSession, getContextoCliente } = estados;
 const { logLostSale } = notif;
 
 const FEW_SHOT_EXAMPLES = [
@@ -55,7 +55,7 @@ const FEW_SHOT_EXAMPLES = [
   { role: 'model', parts: [{ text: 'Sem problema! Quando quiseres estamos aqui. Posso enviar-te um lembrete amanhã? 😊' }] },
 ];
 
-function interceptarMensagem(texto, state, stockInfoObj) {
+async function interceptarMensagem(texto, state, stockInfoObj, senderNum) {
   if (!texto) return null;
   const plano = (state.plataforma && state.plano)
     ? `${state.plataforma} ${state.plano}`
@@ -79,55 +79,131 @@ function interceptarMensagem(texto, state, stockInfoObj) {
       case 'confianca':      return { tipo, resposta: RESPOSTAS_TEXTO.confianca() };
       case 'ja_tem':         return { tipo, resposta: RESPOSTAS_TEXTO.ja_tem() };
       case 'stock_esgotado_netflix': return { tipo, resposta: RESPOSTAS_TEXTO.stock_esgotado_netflix((stockInfoObj.prime || 0) > 0) };
-      case 'nao_entra':      return { tipo, resposta: RESPOSTAS_TEXTO.nao_entra(), pausar: true };
       case 'localizacao':    return { tipo, resposta: RESPOSTAS_TEXTO.localizacao() };
-      case 'pin':            return { tipo, resposta: RESPOSTAS_TEXTO.pin(), pausar: true };
       case 'email_senha':    return { tipo, resposta: RESPOSTAS_TEXTO.email_senha(), reenviarCredenciais: true };
       case 'renovacao':      return { tipo, resposta: RESPOSTAS_TEXTO.renovacao(diasRestantes) };
+
+      case 'nao_entra': {
+        const ctx = state.contextoCliente || (senderNum ? await getContextoCliente(senderNum) : null);
+        if (ctx) state.contextoCliente = ctx;
+        if (!ctx || !ctx.existe || !ctx.venda) {
+          return { tipo, resposta: `Não encontrei conta activa com este número.\nJá fizeste compra connosco? Se sim envia o número com que compraste. 😊` };
+        }
+        if (ctx.expirou) {
+          return { tipo, resposta: `O teu plano expirou há ${Math.abs(ctx.diasRestantes)} dias.\nPara resolver: renova o plano. Queres? 😊` };
+        }
+        return {
+          tipo,
+          resposta: `Vou resolver isso agora 🔧\nQual é o erro exacto que aparece no ecrã?`,
+          pausar: true,
+          msgSupervisor: formatarNotificacaoSupervisor(senderNum, ctx, `🔴 PROBLEMA TÉCNICO\nMensagem: "${texto}"\nAcção: assumir conversa`),
+        };
+      }
+
+      case 'pin': {
+        const ctx = state.contextoCliente || (senderNum ? await getContextoCliente(senderNum) : null);
+        if (ctx) state.contextoCliente = ctx;
+        if (ctx?.credsValidas && ctx.perfis?.length > 0) {
+          const pin = ctx.perfis[0].pin;
+          if (pin) return { tipo, resposta: `O PIN do teu perfil é: ${pin}\nSe não funcionar avisa-me! 😊` };
+          return { tipo, resposta: `O teu perfil não tem PIN configurado.\nPara criar: Perfil → Editar → Bloqueio por PIN. 😊` };
+        }
+        return {
+          tipo,
+          resposta: `Vou verificar o PIN do teu perfil. Um momento... 🔧`,
+          pausar: true,
+          msgSupervisor: formatarNotificacaoSupervisor(senderNum, ctx, `🔴 PIN — verificar e responder ao cliente`),
+        };
+      }
+
+      case 'cancelamento':
+        return {
+          tipo,
+          resposta: RESPOSTAS_TEXTO.cancelamento(),
+          pausar: true,
+          msgSupervisor: formatarNotificacaoSupervisor(senderNum, state.contextoCliente, `🔴 PEDIDO DE CANCELAMENTO`),
+        };
+
+      case 'upgrade': {
+        const planoActual = state.contextoCliente?.venda
+          ? `${state.contextoCliente.venda.plataforma} ${state.contextoCliente.venda.plano}`
+          : 'plano actual';
+        return {
+          tipo,
+          resposta: RESPOSTAS_TEXTO.upgrade(planoActual),
+          pausar: true,
+          msgSupervisor: formatarNotificacaoSupervisor(senderNum, state.contextoCliente, `ℹ️ PEDIDO DE UPGRADE`),
+        };
+      }
     }
   }
   return null;
 }
 
+function formatarNotificacaoSupervisor(phone, ctx, tipo) {
+  const base = ctx?.cliente
+    ? `👤 ${ctx.cliente.nome || phone}\n📦 ${ctx.venda?.plataforma || ''} ${ctx.venda?.plano || 'sem plano'}\n📅 ${ctx.diasRestantes !== null && ctx.diasRestantes !== undefined ? ctx.diasRestantes + ' dias restantes' : 'sem data'}\n`
+    : `📞 ${phone}\n`;
+  return `${base}${tipo}`;
+}
+
 async function reenviarCredenciais(senderNum, state) {
-  const profiles = await findClientProfiles(senderNum).catch(() => null);
-  if (!profiles || profiles.length === 0) {
+  const ctx = await getContextoCliente(senderNum);
+
+  // Conta expirada
+  if (ctx.existe && ctx.expirou) {
     await sendWhatsAppMessage(senderNum,
-      `Não encontrei credenciais activas para o teu número. Se fizeste uma compra recente, aguarda a aprovação do comprovativo. 😊`
-    );
+      `O teu plano ${ctx.venda?.plano || ''} expirou há ${Math.abs(ctx.diasRestantes)} dias 😔\nQueres renovar? É rápido — mesmo plano, mesmo preço. 😊`);
     return;
   }
-  // Agrupa por plataforma
-  const byPlat = {};
-  for (const p of profiles) {
-    const key = p.plataforma || 'Serviço';
-    if (!byPlat[key]) byPlat[key] = [];
-    byPlat[key].push(p);
-  }
-  for (const [plataforma, profs] of Object.entries(byPlat)) {
-    const emoji = plataforma.toLowerCase().includes('netflix') ? '🎬' : '📺';
-    let msg = `${emoji} ${plataforma}\n`;
-    for (let i = 0; i < profs.length; i++) {
-      msg += `\nPerfil ${i + 1}: ${profs[i].email} | ${profs[i].senha}`;
-      if (profs[i].nomePerfil) msg += ` | ${profs[i].nomePerfil}`;
-      if (profs[i].pin) msg += ` | PIN: ${profs[i].pin}`;
+
+  // Tenta credenciais do Supabase (perfis_entregues)
+  if (ctx.credsValidas && ctx.perfis?.length > 0) {
+    const nome = ctx.cliente?.nome || '';
+    for (const perfil of ctx.perfis) {
+      const emoji = (perfil.plataforma || '').toLowerCase().includes('netflix') ? '🎬' : '📺';
+      let msg = `${emoji} ${perfil.plataforma || 'Credenciais'}\n\nEmail: ${perfil.email_conta}\nSenha: ${perfil.senha_conta}`;
+      if (perfil.nome_perfil) msg += `\nPerfil: ${perfil.nome_perfil}`;
+      if (perfil.pin) msg += `\nPIN: ${perfil.pin}`;
+      await sendWhatsAppMessage(senderNum, msg);
     }
-    await sendWhatsAppMessage(senderNum, msg);
+    await sendWhatsAppMessage(senderNum, `Guarda bem estes dados${nome ? ', ' + nome : ''}! Algum problema? Estou aqui. 😊`);
+    if (ctx.cliente?.email) {
+      const allCreds = ctx.perfis.map(p => ({ email: p.email_conta, senha: p.senha_conta, nomePerfil: p.nome_perfil || '', pin: p.pin || '', unitLabel: '' }));
+      const productName = [...new Set(ctx.perfis.map(p => p.plataforma))].join(', ');
+      await sendCredentialsEmail(ctx.cliente.email, nome || 'Cliente', productName, allCreds).catch(() => {});
+    }
+    return;
   }
-  await sendWhatsAppMessage(senderNum, `Guarda bem estes dados! Se precisares de mais ajuda estou aqui. 😊`);
-  // Tenta reenviar por email se disponível
-  if (state?.email) {
-    const allCreds = profiles.map(p => ({
-      plataforma: p.plataforma,
-      email: p.email,
-      senha: p.senha,
-      nomePerfil: p.nomePerfil || '',
-      pin: p.pin || '',
-      unitLabel: '',
-    }));
-    const productName = [...new Set(profiles.map(p => p.plataforma))].join(', ');
-    await sendCredentialsEmail(state.email, state.clientName || 'Cliente', productName, allCreds).catch(() => {});
+
+  // Fallback: Google Sheets
+  const profiles = await findClientProfiles(senderNum).catch(() => null);
+  if (profiles && profiles.length > 0) {
+    const byPlat = {};
+    for (const p of profiles) {
+      const key = p.plataforma || 'Serviço';
+      if (!byPlat[key]) byPlat[key] = [];
+      byPlat[key].push(p);
+    }
+    for (const [plataforma, profs] of Object.entries(byPlat)) {
+      const emoji = plataforma.toLowerCase().includes('netflix') ? '🎬' : '📺';
+      let msg = `${emoji} ${plataforma}`;
+      for (let i = 0; i < profs.length; i++) {
+        msg += `\n\nPerfil ${i + 1}: ${profs[i].email} | ${profs[i].senha}`;
+        if (profs[i].nomePerfil) msg += ` | ${profs[i].nomePerfil}`;
+        if (profs[i].pin) msg += ` | PIN: ${profs[i].pin}`;
+      }
+      await sendWhatsAppMessage(senderNum, msg);
+    }
+    await sendWhatsAppMessage(senderNum, `Guarda bem estes dados! Se precisares de mais ajuda estou aqui. 😊`);
+    return;
   }
+
+  // Sem credenciais encontradas
+  await sendWhatsAppMessage(senderNum,
+    `Não encontrei compra activa com este número 😔\nCompraste com outro número? Envia-o e verifico.\nOu fala com o suporte: #humano`);
+  if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS,
+    formatarNotificacaoSupervisor(senderNum, ctx, `⚠️ REENVIO CREDENCIAIS — não encontradas\nAcção: verificar e enviar manualmente`));
 }
 
 function validarResposta(texto) {
@@ -683,16 +759,17 @@ async function handleWebhook(req, res) {
       const stockInfoObj = { netflix: netflixSlots, prime: primeSlots };
 
       // Interceptar objecções e problemas conhecidos antes do Gemini
-      const interceptado = interceptarMensagem(textMessage, state, stockInfoObj);
+      const interceptado = await interceptarMensagem(textMessage, state, stockInfoObj, senderNum);
       if (interceptado) {
         if (interceptado.escalar) {
           state.paused = true;
           await sendWhatsAppMessage(senderNum, `Vou ligar-te com um colega agora. Um momento! 😊`);
-          if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ Escalar: cliente ${senderNum} repetiu objecção "${interceptado.tipo}"`);
+          if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, formatarNotificacaoSupervisor(senderNum, state.contextoCliente, `⚠️ Escalar: objecção repetida "${interceptado.tipo}"`));
           return res.status(200).send('OK');
         }
-        if (interceptado.pausar && MAIN_BOSS) {
-          await sendWhatsAppMessage(MAIN_BOSS, `🔧 Problema técnico: ${interceptado.tipo} — ${senderNum}: ${textMessage}`);
+        if (interceptado.pausar) {
+          state.paused = true;
+          if (MAIN_BOSS && interceptado.msgSupervisor) await sendWhatsAppMessage(MAIN_BOSS, interceptado.msgSupervisor);
         }
         if (interceptado.reenviarCredenciais) {
           await sendWhatsAppMessage(senderNum, interceptado.resposta);
@@ -900,7 +977,17 @@ async function handleWebhook(req, res) {
     res.status(200).send('OK');
   } catch (error) {
     console.error('❌ ERRO GLOBAL:', error);
-    res.status(200).send('Erro');
+    const phone = req.body?.data?.key?.senderPn || req.body?.data?.key?.remoteJid?.replace('@s.whatsapp.net', '').replace('@lid', '');
+    if (phone) {
+      await sendWhatsAppMessage(phone,
+        `Peço desculpa, ocorreu um problema do meu lado 😔\nVou chamar um colega para te ajudar agora. Um momento!`
+      ).catch(() => {});
+      if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS,
+        `🆘 FALLBACK UNIVERSAL\n📞 ${phone}\nMotivo: ${error.message}\nAcção: assumir conversa urgente`
+      ).catch(() => {});
+      if (clientStates[phone]) clientStates[phone].paused = true;
+    }
+    res.status(200).send('OK');
   }
 }
 
