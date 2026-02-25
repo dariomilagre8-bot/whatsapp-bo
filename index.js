@@ -520,6 +520,40 @@ app.get('/api/stock-public', async (req, res) => {
   }
 });
 
+// ==================== /api/planos-disponiveis ====================
+// Retorna stock detalhado por serviço para o frontend renderizar o estado correcto.
+app.get('/api/planos-disponiveis', async (req, res) => {
+  try {
+    const [nfFull, nfShared, pvFull, pvShared] = await Promise.all([
+      countAvailableProfiles('Netflix',     'full_account'),
+      countAvailableProfiles('Netflix',     'shared_profile'),
+      countAvailableProfiles('Prime Video', 'full_account'),
+      countAvailableProfiles('Prime Video', 'shared_profile'),
+    ]);
+    const nfSlots = (nfFull || 0) + (nfShared || 0);
+    const pvSlots = (pvFull || 0) + (pvShared || 0);
+    res.json({
+      netflix: {
+        disponivel: nfSlots > 0,
+        slots: nfSlots,
+        planos: nfSlots > 0 ? ['Individual', 'Partilha', 'Família'] : [],
+      },
+      prime: {
+        disponivel: pvSlots > 0,
+        slots: pvSlots,
+        planos: pvSlots > 0 ? ['Individual', 'Partilha', 'Família'] : [],
+      },
+    });
+  } catch (e) {
+    console.error('Erro /api/planos-disponiveis:', e.message);
+    // Fallback seguro — não bloqueia o site
+    res.json({
+      netflix:  { disponivel: true,  slots: -1, planos: ['Individual', 'Partilha', 'Família'] },
+      prime:    { disponivel: true,  slots: -1, planos: ['Individual', 'Partilha', 'Família'] },
+    });
+  }
+});
+
 // ==================== /api/notify-me (lista de espera de stock) ====================
 // Guarda números de clientes que querem ser notificados quando o stock for reposto.
 // Quando o supervisor usa "reposto XXXXXXXX" o bot notifica automaticamente.
@@ -566,8 +600,26 @@ app.post('/api/chat', async (req, res) => {
     if (!message || !sessionId) return res.status(400).json({ reply: 'Dados em falta.' });
     if (!webChatHistories[sessionId]) webChatHistories[sessionId] = [];
 
-    // Verificar stock real — catálogo construído dinamicamente (só serviços disponíveis)
-    const [nfOk, pvOk] = await Promise.all([hasAnyStock('Netflix'), hasAnyStock('Prime Video')]);
+    // Verificar stock real com contagem exacta — usa countAvailableProfiles (reutilização)
+    const [nfFull, nfShared, pvFull, pvShared] = await Promise.all([
+      countAvailableProfiles('Netflix',      'full_account'),
+      countAvailableProfiles('Netflix',      'shared_profile'),
+      countAvailableProfiles('Prime Video',  'full_account'),
+      countAvailableProfiles('Prime Video',  'shared_profile'),
+    ]);
+    const nfSlots = (nfFull || 0) + (nfShared || 0);
+    const pvSlots = (pvFull || 0) + (pvShared || 0);
+    const nfOk = nfSlots > 0;
+    const pvOk = pvSlots > 0;
+
+    const stockInfo = [
+      nfOk
+        ? `Netflix: ${nfSlots} perfil(s) disponível(is)`
+        : `Netflix: ESGOTADO (0 disponíveis)`,
+      pvOk
+        ? `Prime Video: ${pvSlots} perfil(s) disponível(is)`
+        : `Prime Video: ESGOTADO (0 disponíveis)`,
+    ].join('\n');
 
     const catalogoLinhas = [];
     if (nfOk) catalogoLinhas.push(`Netflix: Individual ${branding.precos.netflix.individual.toLocaleString('pt')} Kz | Partilha ${branding.precos.netflix.partilha.toLocaleString('pt')} Kz | Família ${branding.precos.netflix.familia.toLocaleString('pt')} Kz`);
@@ -582,7 +634,7 @@ app.post('/api/chat', async (req, res) => {
       ? `\nSERVIÇOS ESGOTADOS (NÃO ofereças, NÃO digas que estão disponíveis): ${esgotados.join(', ')}`
       : '';
 
-    const dynamicPrompt = `${SYSTEM_PROMPT_CHAT_WEB_BASE}\n\n${catalogoBloco}${avisoEsgotado}`;
+    const dynamicPrompt = `${SYSTEM_PROMPT_CHAT_WEB_BASE}\n\nSTOCK ACTUAL (não inventar):\n${stockInfo}\n\n${catalogoBloco}${avisoEsgotado}\n\nSe o cliente perguntar sobre disponibilidade ou quiser comprar, usa APENAS estes números reais. Se Netflix = 0: informa que está esgotado e sugere Prime Video se disponível.`;
 
     const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
@@ -1536,18 +1588,26 @@ app.post('/', async (req, res) => {
     }
 
     // =====================================================================
-    // HANDLER GLOBAL DE IMAGENS — corre em TODOS os steps
-    // 1. Se step = aguardando_comprovativo → cai para o handler do step (só aceita PDF)
-    // 2. Verifica contexto Netflix → guia de localização
-    // 3. Qualquer outra imagem → pede descrição em texto (sem custo de OCR/Vision API)
-    //    O ESCALATION_PATTERN existente intercepta automaticamente a descrição e escala.
+    // =====================================================================
+    // HANDLER GLOBAL DE IMAGENS
+    //
+    // FLUXO IMAGEM:
+    // Step aguardando_comprovativo + PDF  → aceitar ✅  (handler do step)
+    // Step aguardando_comprovativo + imagem → pedir PDF ✅  (handler do step)
+    // Outro step + keywords Netflix → guia localização ✅  (PONTO B abaixo)
+    // Outro step + sem contexto    → pedir comprovativo PDF ✅  (PONTO B abaixo)
+    //
+    // PONTO A — handler do step aguardando_comprovativo (linhas abaixo)
+    // PONTO B — handler global (actua apenas fora de aguardando_comprovativo)
     // =====================================================================
     if (isImage) {
       if (state.step === 'aguardando_comprovativo') {
-        // deixa cair para o handler do step (rejeitará a imagem e pedirá PDF)
+        // PONTO A: deixa cair para o handler do step (rejeitará a imagem e pedirá PDF)
       } else {
+        // PONTO B: fora de aguardando_comprovativo
         const hasNetflixContext = recentMessagesHaveNetflixKeyword(senderNum);
         if (hasNetflixContext) {
+          // Keywords Netflix recentes → guia de localização
           await sendWhatsAppMessage(senderNum,
             `📱 *Erro de Localização Netflix detetado!*\n\nA tua Netflix está a pedir verificação de localização. Sigue estes passos:\n\n1️⃣ Clica em *"Ver temporariamente"* no ecrã\n2️⃣ Vai aparecer um código de acesso numérico\n3️⃣ Insere o código quando a app pedir\n4️⃣ Já consegues ver normalmente! ✅\n\nSe o problema persistir, responde aqui e o nosso suporte ajuda imediatamente. 😊\n\n— *${BOT_NAME}*, Assistente Virtual ${branding.nome}`
           );
@@ -1557,14 +1617,13 @@ app.post('/', async (req, res) => {
             );
           }
         } else {
-          // Não consigo ler imagens — pedir ao cliente que descreva em texto.
-          // Isso permite que o ESCALATION_PATTERN existente intercepte e escale automaticamente.
+          // Sem contexto → pedir comprovativo em PDF
           await sendWhatsAppMessage(senderNum,
-            `📷 Recebi a tua imagem, mas infelizmente não consigo ver o conteúdo de imagens.\n\nPodes descrever em *texto* o que aparece no ecrã? Por exemplo:\n• _"Aparece erro de verificação de email"_\n• _"Pede para confirmar um código"_\n• _"Diz que a conta está bloqueada"_\n• _"Não consigo entrar na conta"_\n\nAssim consigo ajudar-te imediatamente! 😊`
+            `Envia o teu comprovativo em PDF 📄\n\nSe ainda não fizeste o pedido, escreve *olá* para começar. 😊`
           );
           if (MAIN_BOSS) {
             await sendWhatsAppMessage(MAIN_BOSS,
-              `📷 *IMAGEM RECEBIDA (não lida)*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n📍 Step: ${state.step}\n\nCliente enviou imagem (provavelmente erro/screenshot). Bot pediu descrição em texto.\nSe quiser intervir agora: *assumir ${senderNum}*`
+              `📷 *IMAGEM RECEBIDA (step: ${state.step})*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n\nBot pediu comprovativo em PDF. Se quiser intervir: *assumir ${senderNum}*`
             );
           }
         }
