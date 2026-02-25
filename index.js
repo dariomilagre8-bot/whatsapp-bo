@@ -51,6 +51,10 @@ notif.init({ sendWhatsAppMessage, MAIN_BOSS, cleanupSession, clientStates, pendi
 const { logLostSale, lostSales, startSweeps } = notif;
 startSweeps();
 const { buildServiceMenuMsg } = require('./src/fluxo/catalogo');
+const escalacaoHandler = require('./src/handlers/escalacao');
+const imagensHandler = require('./src/handlers/imagens');
+const qrRouter = require('./src/routes/qr');
+const chatRouter = require('./src/routes/chat');
 
 const app = express();
 app.use(express.json());
@@ -169,62 +173,7 @@ console.log('📱 Telefones Reais:', config.REAL_PHONES);
 console.log('🖥️ Todos os IDs aceites:', config.ALL_SUPERVISORS);
 console.log('👑 Chefe Principal:', config.MAIN_BOSS);
 
-// ==================== NETFLIX HOUSEHOLD: DETEÇÃO POR KEYWORDS ====================
-// Verifica se nas últimas 3 mensagens do cliente há referência ao erro de residência Netflix
-const NETFLIX_HOUSEHOLD_KEYWORDS = [
-  'ver temporariamente', 'dispositivo', 'fora de casa',
-  'residência', 'residencia', 'não faz parte', 'nao faz parte', 'código',
-];
-
-function recentMessagesHaveNetflixKeyword(senderNum) {
-  const history = chatHistories[senderNum] || [];
-  const lastUserMessages = history
-    .filter(m => m.role === 'user')
-    .slice(-3)
-    .map(m => removeAccents((m.parts[0]?.text || '').toLowerCase()));
-  return lastUserMessages.some(text =>
-    NETFLIX_HOUSEHOLD_KEYWORDS.some(kw => text.includes(removeAccents(kw)))
-  );
-}
-
-// ==================== /qr (página de scan remoto) ====================
-app.get('/qr', async (req, res) => {
-  try {
-    const instanceName = encodeURIComponent(process.env.EVOLUTION_INSTANCE_NAME || '');
-    const r = await axios.get(
-      `${process.env.EVOLUTION_API_URL}/instance/connect/${instanceName}`,
-      { headers: { apikey: process.env.EVOLUTION_API_KEY }, httpsAgent }
-    );
-    const base64 = r.data?.base64 || '';
-    const pairingCode = r.data?.pairingCode || '';
-    res.send(`<!DOCTYPE html>
-<html lang="pt">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Ligar WhatsApp — ${branding.nome}</title>
-  <style>
-    body{background:#111;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;font-family:sans-serif;color:#fff;text-align:center;padding:16px}
-    h2{color:#25D366;margin-bottom:4px;font-size:1.2rem}
-    p{color:#aaa;font-size:.85rem;margin:0 0 16px}
-    img{border:5px solid #25D366;border-radius:10px;width:260px;height:260px;display:block}
-    .code{font-size:2rem;font-weight:bold;letter-spacing:6px;color:#25D366;margin:12px 0}
-    small{color:#555;font-size:.7rem;margin-top:12px}
-  </style>
-  <meta http-equiv="refresh" content="55">
-</head>
-<body>
-  <h2>📱 ${branding.nome} — Ligar WhatsApp</h2>
-  <p>Abre o WhatsApp → Aparelhos Ligados → Ligar Aparelho</p>
-  ${base64 ? `<img src="${base64}" alt="QR Code" />` : '<p style="color:#e55">QR indisponível</p>'}
-  ${pairingCode ? `<p style="margin-top:16px;color:#aaa;font-size:.85rem">Ou usa o código:</p><div class="code">${pairingCode}</div>` : ''}
-  <small>Página actualiza automaticamente a cada 55s</small>
-</body>
-</html>`);
-  } catch (e) {
-    res.status(500).send(`<h2 style="color:red;font-family:sans-serif">Erro ao gerar QR: ${e.message}</h2>`);
-  }
-});
+app.use('/', qrRouter);
 
 // ==================== /api/stock-public (consulta de stock sem autenticação) ====================
 // Usado pelo site para esconder/mostrar serviços com base no stock real
@@ -309,75 +258,7 @@ app.get('/api/waitlist', (req, res) => {
   res.json({ waitlist: result });
 });
 
-// ==================== /api/chat (ChatWidget do site) ====================
-const webChatHistories = {};
-
-app.post('/api/chat', async (req, res) => {
-  try {
-    const { message, sessionId } = req.body;
-    if (!message || !sessionId) return res.status(400).json({ reply: 'Dados em falta.' });
-    if (!webChatHistories[sessionId]) webChatHistories[sessionId] = [];
-
-    // Verificar stock real com contagem exacta — usa countAvailableProfiles (reutilização)
-    const [nfFull, nfShared, pvFull, pvShared] = await Promise.all([
-      countAvailableProfiles('Netflix',      'full_account'),
-      countAvailableProfiles('Netflix',      'shared_profile'),
-      countAvailableProfiles('Prime Video',  'full_account'),
-      countAvailableProfiles('Prime Video',  'shared_profile'),
-    ]);
-    const nfSlots = (nfFull || 0) + (nfShared || 0);
-    const pvSlots = (pvFull || 0) + (pvShared || 0);
-    const nfOk = nfSlots > 0;
-    const pvOk = pvSlots > 0;
-
-    const stockInfo = [
-      nfOk
-        ? `Netflix: ${nfSlots} perfil(s) disponível(is)`
-        : `Netflix: ESGOTADO (0 disponíveis)`,
-      pvOk
-        ? `Prime Video: ${pvSlots} perfil(s) disponível(is)`
-        : `Prime Video: ESGOTADO (0 disponíveis)`,
-    ].join('\n');
-
-    const catalogoLinhas = [];
-    if (nfOk) catalogoLinhas.push(`Netflix: Individual ${branding.precos.netflix.individual.toLocaleString('pt')} Kz | Partilha ${branding.precos.netflix.partilha.toLocaleString('pt')} Kz | Família ${branding.precos.netflix.familia.toLocaleString('pt')} Kz`);
-    if (pvOk) catalogoLinhas.push(`Prime Video: Individual ${branding.precos.prime.individual.toLocaleString('pt')} Kz | Partilha ${branding.precos.prime.partilha.toLocaleString('pt')} Kz | Família ${branding.precos.prime.familia.toLocaleString('pt')} Kz`);
-
-    const catalogoBloco = catalogoLinhas.length > 0
-      ? `CATÁLOGO DISPONÍVEL AGORA (apenas estes — não menciones outros):\n${catalogoLinhas.join('\n')}`
-      : `CATÁLOGO: Nenhum serviço disponível de momento. Diz ao cliente que o stock está temporariamente esgotado e que pode deixar contacto no WhatsApp para ser avisado.`;
-
-    const esgotados = [!nfOk && 'Netflix', !pvOk && 'Prime Video'].filter(Boolean);
-    const avisoEsgotado = esgotados.length > 0
-      ? `\nSERVIÇOS ESGOTADOS (NÃO ofereças, NÃO digas que estão disponíveis): ${esgotados.join(', ')}`
-      : '';
-
-    const dynamicPrompt = `${SYSTEM_PROMPT_CHAT_WEB_BASE}\n\nSTOCK ACTUAL (não inventar):\n${stockInfo}\n\n${catalogoBloco}${avisoEsgotado}\n\nSe o cliente perguntar sobre disponibilidade ou quiser comprar, usa APENAS estes números reais. Se Netflix = 0: informa que está esgotado e sugere Prime Video se disponível.`;
-
-    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-
-    const contents = [
-      ...webChatHistories[sessionId],
-      { role: 'user', parts: [{ text: message }] },
-    ];
-
-    const result = await model.generateContent({
-      contents,
-      systemInstruction: { parts: [{ text: dynamicPrompt }] },
-    });
-    const reply = result.response.text();
-
-    webChatHistories[sessionId].push({ role: 'user', parts: [{ text: message }] });
-    webChatHistories[sessionId].push({ role: 'model', parts: [{ text: reply }] });
-    if (webChatHistories[sessionId].length > 20) webChatHistories[sessionId] = webChatHistories[sessionId].slice(-20);
-    setTimeout(() => { delete webChatHistories[sessionId]; }, 60 * 60 * 1000);
-
-    res.json({ reply });
-  } catch (e) {
-    console.error('❌ Erro /api/chat:', e.message, e.stack);
-    res.json({ reply: `Olá! Sou ${BOT_NAME}, assistente virtual da ${branding.nome}. Como posso ajudar? Fala connosco também pelo WhatsApp! 😊` });
-  }
-});
+app.use('/api', chatRouter);
 
 // =====================================================================
 // FIX #1: HANDLER "MUDEI DE IDEIAS" — deteta expressoes de mudanca
@@ -979,70 +860,10 @@ app.post('/', async (req, res) => {
     markDirty(senderNum);
     console.log(`🔍 DEBUG: step="${state.step}" para ${senderNum}`);
 
-    // =====================================================================
-    // TAREFA H: PEDIDO DE ATENDIMENTO HUMANO — interceta em qualquer step
-    // (exceto quando já está pausado ou a aguardar supervisor)
-    // =====================================================================
-    if (textMessage && !pausedClients[senderNum] && state.step !== 'esperando_supervisor' && HUMAN_TRANSFER_PATTERN.test(removeAccents(textMessage.toLowerCase()))) {
-      pausedClients[senderNum] = true;
-      markDirty(senderNum);
-      const nome = state.clientName;
-      await sendWhatsAppMessage(senderNum, `Claro${nome ? ', ' + nome : ''}! 😊 Vou transferir-te para a nossa equipa. Um supervisor irá falar contigo em breve.`);
-      if (MAIN_BOSS) {
-        let planInfo = '';
-        try {
-          const existing = await checkClientInSheet(senderNum);
-          if (existing) planInfo = `\n📦 Plano na base: *${existing.plataforma}* (${existing.tipoConta || 'N/A'})`;
-        } catch (_) {}
-        await sendWhatsAppMessage(MAIN_BOSS,
-          `🙋 *PEDIDO DE ATENDIMENTO HUMANO*\n👤 ${senderNum}${nome ? ' (' + nome + ')' : ''}${planInfo}\n📍 Step: ${state.step}\n💬 "${(textMessage || '').substring(0, 150)}"\n\nBot pausado. Use *retomar ${senderNum}* quando terminar.`
-        );
-      }
-      return res.status(200).send('OK');
-    }
-
-    // =====================================================================
-    // ESCALAÇÃO AUTOMÁTICA — email, senha, problemas, credenciais
-    // Pausa o bot e avisa o supervisor — cliente recebe confirmação imediata
-    // =====================================================================
-    if (textMessage && !pausedClients[senderNum] && state.step !== 'esperando_supervisor' && ESCALATION_PATTERN.test(removeAccents(textMessage.toLowerCase()))) {
-      pausedClients[senderNum] = true;
-      markDirty(senderNum);
-      const nome = state.clientName || pushName || '';
-      await sendWhatsAppMessage(senderNum,
-        `${nome ? nome + ', o' : 'O'} teu pedido foi recebido! 🙏\nUm membro da nossa equipa irá contactar-te em breve para resolver a situação.\n\n— *${BOT_NAME}*, Assistente Virtual ${branding.nome}`
-      );
-      if (MAIN_BOSS) {
-        let planInfo = '';
-        try {
-          const existing = await checkClientInSheet(senderNum);
-          if (existing) planInfo = `\n📦 Plano na base: *${existing.plataforma}* (${existing.tipoConta || 'N/A'})`;
-        } catch (_) {}
-        await sendWhatsAppMessage(MAIN_BOSS,
-          `🔔 *ESCALAÇÃO AUTOMÁTICA*\n👤 ${senderNum}${nome ? ' (' + nome + ')' : ''}${planInfo}\n📍 Step: ${state.step}\n💬 "${textMessage.substring(0, 200)}"\n\n⚠️ Bot pausado. Use *retomar ${senderNum}* quando terminar.`
-        );
-      }
-      return res.status(200).send('OK');
-    }
-
-    // =====================================================================
-    // TAREFA G: PROBLEMA DE LOCALIZAÇÃO NETFLIX — interceta em qualquer step
-    // =====================================================================
-    if (textMessage && LOCATION_ISSUE_PATTERN.test(removeAccents(textMessage.toLowerCase()))) {
-      const nome = state.clientName;
-      await sendWhatsAppMessage(senderNum,
-        `Olá${nome ? ' ' + nome : ''}! 😊 Recebi a tua mensagem sobre localização.\n\n` +
-        `*O que deves fazer:*\n` +
-        `1️⃣ Abre o Netflix no teu dispositivo\n` +
-        `2️⃣ Vai a *Conta → Gerir acesso e dispositivos*\n` +
-        `3️⃣ Confirma a tua localização principal\n\n` +
-        `Se não conseguires resolver em 5 minutos, responde aqui e o nosso supervisor ajuda! 🙏`
-      );
-      if (MAIN_BOSS) {
-        await sendWhatsAppMessage(MAIN_BOSS, `📍 *ERRO LOCALIZAÇÃO NETFLIX*\n👤 ${senderNum}${nome ? ' (' + nome + ')' : ''}\n💬 "${textMessage.substring(0, 80)}"\n\nUse *localizacao ${senderNum}* se precisar de intervir manualmente.`);
-      }
-      return res.status(200).send('OK');
-    }
+    const depsEscalacao = { pausedClients, markDirty, sendWhatsAppMessage, MAIN_BOSS, checkClientInSheet, branding };
+    if (textMessage && (await escalacaoHandler.handleHumanTransfer(depsEscalacao, senderNum, state, textMessage))) return res.status(200).send('OK');
+    if (textMessage && (await escalacaoHandler.handleEscalacao(depsEscalacao, senderNum, state, textMessage, pushName))) return res.status(200).send('OK');
+    if (textMessage && (await escalacaoHandler.handleLocationIssue(depsEscalacao, senderNum, state, textMessage))) return res.status(200).send('OK');
 
     // =====================================================================
     // FIX #1: HANDLER GLOBAL "MUDEI DE IDEIAS"
@@ -1122,48 +943,9 @@ app.post('/', async (req, res) => {
       }
     }
 
-    // =====================================================================
-    // =====================================================================
-    // HANDLER GLOBAL DE IMAGENS
-    //
-    // FLUXO IMAGEM:
-    // Step aguardando_comprovativo + PDF  → aceitar ✅  (handler do step)
-    // Step aguardando_comprovativo + imagem → pedir PDF ✅  (handler do step)
-    // Outro step + keywords Netflix → guia localização ✅  (PONTO B abaixo)
-    // Outro step + sem contexto    → pedir comprovativo PDF ✅  (PONTO B abaixo)
-    //
-    // PONTO A — handler do step aguardando_comprovativo (linhas abaixo)
-    // PONTO B — handler global (actua apenas fora de aguardando_comprovativo)
-    // =====================================================================
     if (isImage) {
-      if (state.step === 'aguardando_comprovativo') {
-        // PONTO A: deixa cair para o handler do step (rejeitará a imagem e pedirá PDF)
-      } else {
-        // PONTO B: fora de aguardando_comprovativo
-        const hasNetflixContext = recentMessagesHaveNetflixKeyword(senderNum);
-        if (hasNetflixContext) {
-          // Keywords Netflix recentes → guia de localização
-          await sendWhatsAppMessage(senderNum,
-            `📱 *Erro de Localização Netflix detetado!*\n\nA tua Netflix está a pedir verificação de localização. Sigue estes passos:\n\n1️⃣ Clica em *"Ver temporariamente"* no ecrã\n2️⃣ Vai aparecer um código de acesso numérico\n3️⃣ Insere o código quando a app pedir\n4️⃣ Já consegues ver normalmente! ✅\n\nSe o problema persistir, responde aqui e o nosso suporte ajuda imediatamente. 😊\n\n— *${BOT_NAME}*, Assistente Virtual ${branding.nome}`
-          );
-          if (MAIN_BOSS) {
-            await sendWhatsAppMessage(MAIN_BOSS,
-              `📱 *AVISO — ERRO DE RESIDÊNCIA NETFLIX*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n📍 Step: ${state.step}\n\n✅ Cliente orientado. Se não resolver, use *assumir ${senderNum}*.`
-            );
-          }
-        } else {
-          // Sem contexto → pedir comprovativo em PDF
-          await sendWhatsAppMessage(senderNum,
-            `Envia o teu comprovativo em PDF 📄\n\nSe ainda não fizeste o pedido, escreve *olá* para começar. 😊`
-          );
-          if (MAIN_BOSS) {
-            await sendWhatsAppMessage(MAIN_BOSS,
-              `📷 *IMAGEM RECEBIDA (step: ${state.step})*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n\nBot pediu comprovativo em PDF. Se quiser intervir: *assumir ${senderNum}*`
-            );
-          }
-        }
-        return res.status(200).send('OK');
-      }
+      const result = await imagensHandler.handleImagem({ sendWhatsAppMessage, MAIN_BOSS, branding }, senderNum, state, true);
+      if (result.handled) return res.status(200).send('OK');
     }
 
     // ---- STEP: esperando_supervisor ----
@@ -2668,8 +2450,8 @@ app.get('/api/version', (req, res) => {
 
 app.use('/api/admin', adminRouter);
 
-// Scheduler de expiração — avisos automáticos às 9h
-require('./expiracao-modulo').iniciar({
+const { initExpiracaoScheduler } = require('./src/handlers/expiracoes');
+initExpiracaoScheduler({
   sendWhatsAppMessage,
   MAIN_BOSS,
   branding,
