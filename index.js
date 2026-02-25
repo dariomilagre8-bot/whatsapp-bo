@@ -3128,7 +3128,7 @@ app.get('/api/branding', (req, res) => {
 });
 
 app.get('/api/version', (req, res) => {
-  res.json({ v: '20260224-gemini-flash-fix', started: new Date().toISOString() });
+  res.json({ v: '20260225-bug-fixes-img-chat-planos', started: new Date().toISOString() });
 });
 
 app.use('/api/admin', adminRouter);
