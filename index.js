@@ -520,6 +520,43 @@ app.get('/api/stock-public', async (req, res) => {
   }
 });
 
+// ==================== /api/notify-me (lista de espera de stock) ====================
+// Guarda números de clientes que querem ser notificados quando o stock for reposto.
+// Quando o supervisor usa "reposto XXXXXXXX" o bot notifica automaticamente.
+const stockWaitlist = {}; // { 'Netflix': Set<phone>, 'Prime Video': Set<phone> }
+
+app.post('/api/notify-me', async (req, res) => {
+  try {
+    const { phone, service } = req.body;
+    if (!phone || !service) return res.status(400).json({ error: 'phone e service obrigatórios' });
+    const cleanPhone = phone.replace(/\D/g, '');
+    if (cleanPhone.length < 9) return res.status(400).json({ error: 'Número inválido' });
+    const svc = service.trim();
+    if (!stockWaitlist[svc]) stockWaitlist[svc] = new Set();
+    stockWaitlist[svc].add(cleanPhone);
+    console.log(`🔔 Waitlist ${svc}: +${cleanPhone} adicionado (total: ${stockWaitlist[svc].size})`);
+    // Notifica supervisor
+    const msg = `🔔 *Aviso de Stock*\n\nCliente *+${cleanPhone}* quer ser notificado quando *${svc}* tiver stock.\n\nTotal na fila: ${stockWaitlist[svc].size} pessoa(s).`;
+    await sendWhatsAppMessage(process.env.SUPERVISOR_NUMBER || process.env.BOSS_NUMBER, msg).catch(() => {});
+    res.json({ success: true });
+  } catch (e) {
+    console.error('Erro /api/notify-me:', e.message);
+    res.status(500).json({ error: 'Erro interno' });
+  }
+});
+
+// GET /api/waitlist — lista de espera por serviço (admin)
+app.get('/api/waitlist', (req, res) => {
+  const secret = req.headers['x-admin-secret'];
+  const adminSecret = process.env.ADMIN_SECRET || 'streamzone2026';
+  if (!secret || secret !== adminSecret) return res.status(401).json({ error: 'Unauthorized' });
+  const result = {};
+  for (const [svc, phones] of Object.entries(stockWaitlist)) {
+    result[svc] = Array.from(phones);
+  }
+  res.json({ waitlist: result });
+});
+
 // ==================== /api/chat (ChatWidget do site) ====================
 const webChatHistories = {};
 
