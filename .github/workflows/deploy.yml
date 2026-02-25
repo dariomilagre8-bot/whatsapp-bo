@@ -10,13 +10,9 @@ jobs:
     name: Redeploy EasyPanel
     runs-on: ubuntu-latest
     steps:
-      - name: Disparar redeploy
-        run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X GET "${{ secrets.EASYPANEL_DEPLOY_WEBHOOK }}")
-          echo "HTTP Status: $STATUS"
-          if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 400 ]; then
-            echo "✅ Redeploy disparado com sucesso"
-          else
-            echo "❌ Falhou com status $STATUS"
-            exit 1
-          fi
+      - name: Deploy whatssiru
+        run: curl -s -o /dev/null -w "whatssiru: %{http_code}\n" "${{ secrets.EASYPANEL_DEPLOY_WEBHOOK }}"
+
+      - name: Deploy website
+        run: curl -s -o /dev/null -w "website: %{http_code}\n" "${{ secrets.EASYPANEL_WEBSITE_WEBHOOK }}"
+        
