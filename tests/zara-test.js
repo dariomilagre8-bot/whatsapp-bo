@@ -17,7 +17,7 @@ const { memoriaLocal } = require('../src/memoria-local');
 const TERMOS_PROIBIDOS = [
   'checkout', 'subscription', 'trial', 'premium tier', 'account sharing',
   'dashboard', 'admin', 'credentials', '[NOME]', '[PLANO]',
-  'Google Sheets', 'Supabase', 'OTP', 'dual-write', 'backend', 'API',
+  'Google Sheets', 'Supabase', 'OTP', 'dual-write', 'backend', 'API', 'planilha',
 ];
 const PRECOS_ESPERADOS = ['5.000', '9.000', '13.500', '3.000', '5.500', '8.000'];
 const DISPOSITIVOS_ESPERADOS = ['1 dispositivo', '2 dispositivos', '3 dispositivos'];
@@ -91,12 +91,16 @@ const existe = fs.existsSync(promptPath);
 ok('zara-base.txt existe', existe, 'ficheiro não encontrado');
 if (existe) {
   const conteudo = fs.readFileSync(promptPath, 'utf8');
+  ok('tem ANTI-ALUCINAÇÃO', conteudo.includes('ANTI-ALUCINAÇÃO'), '');
   ok('tem ESTRITAMENTE PROIBIDO', conteudo.includes('ESTRITAMENTE PROIBIDO'), '');
   ok('tem código de verificação', conteudo.includes('código de verificação'), '');
-  ok('tem PERITA', conteudo.includes('PERITA'), '');
+  ok('tem RESOLUÇÃO DE RECLAMAÇÕES', conteudo.includes('RESOLUÇÃO DE RECLAMAÇÕES'), '');
+  ok('tem NUNCA inventar', conteudo.includes('NUNCA inventar'), '');
   ok('tem escalar', conteudo.includes('escalar'), '');
   ok('tem REGRAS DE DISPOSITIVOS', conteudo.includes('REGRAS DE DISPOSITIVOS'), '');
-  ok('tem RESOLUÇÃO DE RECLAMAÇÕES', conteudo.includes('RESOLUÇÃO DE RECLAMAÇÕES'), '');
+  ok('tem CLIENTE EXISTENTE', conteudo.includes('CLIENTE EXISTENTE'), '');
+  ok('tem CLIENTE NOVO', conteudo.includes('CLIENTE NOVO'), '');
+  ok('tem PERITA', conteudo.includes('PERITA'), '');
   ok('tem BREVIDADE', conteudo.includes('BREVIDADE'), '');
 }
 
@@ -148,6 +152,32 @@ for (const id of escalarEsperadas) {
 ok('CATEGORIAS_ESCALAR_URGENTE tem 3', CATEGORIAS_ESCALAR_URGENTE.length === 3, `got ${CATEGORIAS_ESCALAR_URGENTE.length}`);
 ok('CATEGORIAS_PAUSAR_BOT inclui codigo_verificacao e senha_errada',
   CATEGORIAS_PAUSAR_BOT.includes('codigo_verificacao') && CATEGORIAS_PAUSAR_BOT.includes('senha_errada'), '');
+
+// ─── J. VALIDAR RESPOSTA (validarRespostaZara) ───
+console.log('\n--- J. Validar resposta Zara ---');
+const { validarRespostaZara } = require('../src/validar-resposta');
+ok('senha: abc123 → inválido', !validarRespostaZara('A senha: abc123 está errada').valido, '');
+ok('dashboard → inválido', !validarRespostaZara('Consulta o dashboard').valido, '');
+ok('Olá! Como posso ajudar? → válido', validarRespostaZara('Olá! Como posso ajudar?').valido, '');
+ok('[NOME] → inválido', !validarRespostaZara('Olá [NOME]!').valido, '');
+
+// ─── K. CLIENTE LOOKUP — funções existem e exportam ───
+console.log('\n--- K. Cliente lookup ---');
+const clienteLookup = require('../src/cliente-lookup');
+ok('buscarClientePorWhatsapp é função', typeof clienteLookup.buscarClientePorWhatsapp === 'function', '');
+ok('buscarVendasDoCliente é função', typeof clienteLookup.buscarVendasDoCliente === 'function', '');
+ok('verificarStock é função', typeof clienteLookup.verificarStock === 'function', '');
+ok('buscarPerfisDoCliente é função', typeof clienteLookup.buscarPerfisDoCliente === 'function', '');
+
+// ─── L. COMANDOS SUPERVISOR — #pausar, #retomar, #status, #stock, #cliente, #ajuda no código ───
+console.log('\n--- L. Comandos supervisor ---');
+const webhookSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'webhook.js'), 'utf8');
+ok('webhook trata #pausar', webhookSrc.includes('#pausar'), '');
+ok('webhook trata #retomar', webhookSrc.includes('#retomar'), '');
+ok('webhook trata #status', webhookSrc.includes('#status'), '');
+ok('webhook trata #stock', webhookSrc.includes('#stock') && webhookSrc.includes('STOCK STREAMZONE'), '');
+ok('webhook trata #cliente', webhookSrc.includes('#cliente') && webhookSrc.includes('CLIENTE:'), '');
+ok('webhook trata #ajuda', webhookSrc.includes('#ajuda'), '');
 
 // TTL expira (após 1s)
 setTimeout(() => {

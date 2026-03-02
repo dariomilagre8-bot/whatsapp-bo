@@ -27,6 +27,8 @@ const {
   CATEGORIAS_PAUSAR_BOT,
 } = require('../respostas-fixas');
 const { memoriaLocal } = require('../memoria-local');
+const clienteLookup = require('../cliente-lookup');
+const { validarRespostaZara } = require('../validar-resposta');
 
 const {
   genAI,
@@ -347,13 +349,73 @@ async function processarComandoSupervisor(comando, supervisorPhone) {
     if (num) {
       const pausado = memoriaLocal.get(`pausado:${num}`) || pausedClients[num];
       const estado = pausado ? 'pausado' : 'activo';
-      await sendWhatsAppMessage(supervisorPhone, `📋 ${num} — Bot ${estado}`);
+      const state = clientStates[num];
+      let extra = '';
+      if (state && state.plataforma && state.plano) extra = `\nPlano: ${state.plataforma} ${state.plano}`;
+      if (state && state.contextoClienteStr) {
+        const vendas = await clienteLookup.buscarVendasDoCliente(num).catch(() => []);
+        const v = vendas.find(x => x.status === 'ativo' && x.diasRestantes != null && x.diasRestantes > 0);
+        if (v) extra += `\nDias restantes: ${v.diasRestantes}`;
+      }
+      await sendWhatsAppMessage(supervisorPhone, `📋 ${num} — Bot ${estado}${extra}`);
     }
+    return;
+  }
+  if (accao === '#stock') {
+    try {
+      const [nfInd, nfPart, pvInd, pvPart] = await Promise.all([
+        countAvailableProfiles('Netflix', 'full_account').catch(() => 0),
+        countAvailableProfiles('Netflix', 'shared_profile').catch(() => 0),
+        countAvailableProfiles('Prime Video', 'full_account').catch(() => 0),
+        countAvailableProfiles('Prime Video', 'shared_profile').catch(() => 0),
+      ]);
+      const msg = `📊 STOCK STREAMZONE
+🎬 Netflix:
+  Individual: ${nfInd} disponíveis
+  Partilhado: ${nfPart} disponíveis
+  Família: ${nfPart} disponíveis
+📺 Prime Video:
+  Individual: ${pvInd} disponíveis
+  Partilhado: ${pvPart} disponíveis
+  Família: ${pvPart} disponíveis`;
+      await sendWhatsAppMessage(supervisorPhone, msg);
+    } catch (e) {
+      await sendWhatsAppMessage(supervisorPhone, `❌ Erro ao consultar stock: ${e.message}`);
+    }
+    return;
+  }
+  if (accao === '#cliente' && alvo) {
+    const num = String(alvo || '').replace(/\D/g, '') || alvo;
+    if (num) {
+      try {
+        const dados = await clienteLookup.buscarClientePorWhatsapp(num);
+        const vendas = await clienteLookup.buscarVendasDoCliente(num);
+        const nome = (dados && dados.nome) ? dados.nome : '—';
+        const vendaActiva = vendas.find(v => v.status === 'ativo' && v.diasRestantes != null && v.diasRestantes > 0);
+        const plano = vendaActiva ? `${vendaActiva.plataforma} ${vendaActiva.plano}` : '—';
+        const dias = vendaActiva && vendaActiva.diasRestantes != null ? vendaActiva.diasRestantes : '—';
+        const msg = `👤 CLIENTE: ${nome}
+📞 ${num}
+🎬 Plano: ${plano}
+📅 Expira em: ${dias} dias
+💰 Total compras: ${vendas.length}`;
+        await sendWhatsAppMessage(supervisorPhone, msg);
+      } catch (e) {
+        await sendWhatsAppMessage(supervisorPhone, `❌ Erro: ${e.message}`);
+      }
+    }
+    return;
+  }
+  if (accao === '#ajuda') {
+    await sendWhatsAppMessage(
+      supervisorPhone,
+      '❓ *Comandos disponíveis:*\n#pausar [número] — parar bot\n#retomar [número] — reactivar bot\n#status [número] — estado + plano\n#pausar todos — manutenção\n#retomar todos — reactivar tudo\n#stock — stock Netflix/Prime\n#cliente [número] — dados do cliente\n#ajuda — esta lista'
+    );
     return;
   }
   await sendWhatsAppMessage(
     supervisorPhone,
-    '❓ Comandos disponíveis:\n#pausar [número] — parar bot para este contacto\n#retomar [número] — reactivar bot\n#status [número] — ver estado\n#pausar todos — modo manutenção\n#retomar todos — reactivar tudo'
+    '❓ Comandos disponíveis:\n#pausar [número] — parar bot para este contacto\n#retomar [número] — reactivar bot\n#status [número] — ver estado\n#pausar todos — modo manutenção\n#retomar todos — reactivar tudo\n#stock — ver stock\n#cliente [número] — dados cliente\n#ajuda — listar comandos'
   );
 }
 
@@ -420,6 +482,30 @@ async function handleWebhook(req, res) {
     markDirty(senderNum);
     console.log(`🔍 DEBUG: step="${state.step}" para ${senderNum}`);
 
+    // [CPA] Contexto do cliente — consultar dados reais (uma vez por mensagem)
+    let dadosCliente = null;
+    let vendasCliente = [];
+    try {
+      dadosCliente = await clienteLookup.buscarClientePorWhatsapp(senderNum);
+      vendasCliente = await clienteLookup.buscarVendasDoCliente(senderNum);
+    } catch (e) {
+      console.error('[webhook] cliente lookup:', e.message);
+    }
+    let contextoCliente = '';
+    if (dadosCliente && dadosCliente.ehAntigo) {
+      contextoCliente += `CLIENTE EXISTENTE: ${(dadosCliente.nome || '').trim() || 'Cliente'}.\n`;
+      if (vendasCliente && vendasCliente.length > 0) {
+        const vendaActiva = vendasCliente.find(v => v.status === 'ativo' && v.diasRestantes != null && v.diasRestantes > 0);
+        if (vendaActiva) {
+          contextoCliente += `Plano activo: ${vendaActiva.plataforma} ${vendaActiva.plano}, expira em ${vendaActiva.diasRestantes} dias.\n`;
+        }
+        contextoCliente += `Total de compras: ${vendasCliente.length}.\n`;
+      }
+    } else {
+      contextoCliente += `CLIENTE NOVO: primeira vez que contacta.\n`;
+    }
+    state.contextoClienteStr = contextoCliente;
+
     const depsEscalacao = { pausedClients, markDirty, sendWhatsAppMessage, MAIN_BOSS, checkClientInSheet, branding };
     if (textMessage && (await escalacaoHandler.handleHumanTransfer(depsEscalacao, senderNum, state, textMessage))) return res.status(200).send('OK');
     if (textMessage && (await escalacaoHandler.handleEscalacao(depsEscalacao, senderNum, state, textMessage, pushName))) return res.status(200).send('OK');
@@ -436,12 +522,55 @@ async function handleWebhook(req, res) {
             // Não enviar saudação de novo — deixar fluxo/IA tratar
           } else {
             memoriaLocal.set(`saudacao:${senderNum}`, true, 86400);
+            // [CPA] Saudação inteligente: novo vs antigo (dados reais)
+            const nome = (dadosCliente && dadosCliente.nome) ? dadosCliente.nome.trim() : (state.clientName || pushName || '');
+            if (dadosCliente && dadosCliente.ehAntigo && vendasCliente.length > 0) {
+              const vendaActiva = vendasCliente.find(v => v.status === 'ativo' && v.diasRestantes != null && v.diasRestantes > 0);
+              const vendaExpirada = vendasCliente.find(v => v.status === 'ativo' && v.diasRestantes != null && v.diasRestantes <= 0);
+              if (vendaActiva) {
+                await sendWhatsAppMessage(senderNum,
+                  `Olá ${nome}! 😊 Bom ver-te de volta.\nO teu plano ${vendaActiva.plataforma} está activo por mais ${vendaActiva.diasRestantes} dias.\nPrecisas de alguma coisa?`);
+                return res.status(200).send('OK');
+              }
+              if (vendaExpirada) {
+                const dias = Math.abs(vendaExpirada.diasRestantes || 0);
+                await sendWhatsAppMessage(senderNum,
+                  `Olá ${nome}! 😊 Vi que o teu plano ${vendaExpirada.plataforma} expirou há ${dias} dias.\nQueres renovar? É só fazer o pagamento e mandar o comprovativo!`);
+                return res.status(200).send('OK');
+              }
+            }
+            if (dadosCliente && dadosCliente.ehAntigo && vendasCliente.length === 0) {
+              await sendWhatsAppMessage(senderNum,
+                `Olá ${nome}! Bom ver-te de volta. 😊\nDa última vez não chegámos a avançar. Queres ver os nossos planos?`);
+              return res.status(200).send('OK');
+            }
             await sendWhatsAppMessage(senderNum, fixa.resposta);
             return res.status(200).send('OK');
           }
         } else {
-          if (cat === 'quero_comprar' && MAIN_BOSS) {
-            await sendWhatsAppMessage(MAIN_BOSS, `🛒 *QUERO COMPRAR*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n💬 "${textMessage.substring(0, 80)}"`);
+          // [CPA] Verificação de stock antes de confirmar compra (quando já tem plano escolhido)
+          if (cat === 'quero_comprar') {
+            const plat = state.plataforma || (state.cart && state.cart[0] && state.cart[0].plataforma);
+            const planKey = state.plano ? state.plano.toLowerCase().replace(/\s+/g, '_') : (state.cart && state.cart[0] && state.cart[0].plan && state.cart[0].plan.toLowerCase().replace(/\s+/g, '_'));
+            const tipoConta = (planKey && PLAN_PROFILE_TYPE[planKey]) ? PLAN_PROFILE_TYPE[planKey] : 'shared_profile';
+            if (plat) {
+              const platNorm = plat.toLowerCase().includes('netflix') ? 'Netflix' : 'Prime Video';
+              try {
+                const stock = await clienteLookup.verificarStock(platNorm, tipoConta);
+                if (!stock.disponivel) {
+                  const tipoLabel = tipoConta === 'full_account' ? 'Individual' : 'Partilhado/Família';
+                  await sendWhatsAppMessage(senderNum,
+                    `De momento não temos contas ${platNorm} ${tipoLabel} disponíveis.\nPosso avisar-te quando tiver? Ou preferes ver outro plano?`);
+                  if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ Stock esgotado: ${platNorm} ${tipoLabel}\nCliente: ${senderNum}`);
+                  return res.status(200).send('OK');
+                }
+              } catch (e) {
+                console.error('[webhook] verificarStock quero_comprar:', e.message);
+              }
+            }
+            if (MAIN_BOSS) {
+              await sendWhatsAppMessage(MAIN_BOSS, `🛒 *QUERO COMPRAR*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n💬 "${textMessage.substring(0, 80)}"`);
+            }
           }
           if (cat === 'problema_conta' && MAIN_BOSS) {
             await sendWhatsAppMessage(MAIN_BOSS, `🔧 *PROBLEMA CONTA*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n💬 "${textMessage.substring(0, 80)}"`);
@@ -686,7 +815,12 @@ async function handleWebhook(req, res) {
           });
           const chat = model.startChat({ history: [...FEW_SHOT_EXAMPLES, ...(chatHistories[senderNum] || [])] });
           const resAI = await chat.sendMessage(textMessage);
-          const aiText = resAI.response.text();
+          let aiText = resAI.response.text();
+          const validacaoComp = validarRespostaZara(aiText);
+          if (!validacaoComp.valido) {
+            aiText = 'Vou confirmar com a equipa. Dá-me um momento!';
+            if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ Resposta IA comprovativo bloqueada: ${validacaoComp.motivo}\nCliente: ${senderNum}`);
+          }
           chatHistories[senderNum] = chatHistories[senderNum] || [];
           chatHistories[senderNum].push({ role: 'user', parts: [{ text: textMessage }] });
           chatHistories[senderNum].push({ role: 'model', parts: [{ text: aiText }] });
@@ -946,7 +1080,8 @@ async function handleWebhook(req, res) {
       if (objKey && state.objeccoes && !state.objeccoes.includes(objKey)) state.objeccoes.push(objKey);
       const objeccoesLine = (state.objeccoes && state.objeccoes.length > 0) ? `\nObjecções já levantadas por este cliente (não repetir a mesma resposta, varia ou aprofunda): ${state.objeccoes.join(', ')}.` : '';
       const stockInfoStr = `Netflix: ${netflixSlots} perfis disponíveis | Prime Video: ${primeSlots} perfis disponíveis`;
-      const promptFinal = SYSTEM_PROMPT.replace('[STOCK_PLACEHOLDER]', stockInfoStr) + objeccoesLine;
+      const contextoClienteLine = (state.contextoClienteStr) ? `\n\nCONTEXTO CLIENTE (usa apenas esta informação, NUNCA inventes):\n${state.contextoClienteStr}` : '\n\nCONTEXTO CLIENTE: CLIENTE NOVO.';
+      const promptFinal = SYSTEM_PROMPT.replace('[STOCK_PLACEHOLDER]', stockInfoStr) + objeccoesLine + contextoClienteLine;
       try {
         const model = genAI.getGenerativeModel({
           model: 'gemini-2.5-flash',
@@ -955,7 +1090,12 @@ async function handleWebhook(req, res) {
         });
         const chat = model.startChat({ history: [...FEW_SHOT_EXAMPLES, ...(chatHistories[senderNum] || [])] });
         const resAI = await chat.sendMessage(textMessage || 'Olá');
-        const aiText = validarResposta(resAI.response.text());
+        let aiText = validarResposta(resAI.response.text());
+        const validacao = validarRespostaZara(aiText);
+        if (!validacao.valido) {
+          aiText = 'Vou confirmar com a equipa. Dá-me um momento!';
+          if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ Resposta IA bloqueada (anti-alucinação): ${validacao.motivo}\nCliente: ${senderNum}\nResposta original truncada.`);
+        }
         chatHistories[senderNum].push({ role: 'user', parts: [{ text: textMessage || 'Olá' }] });
         chatHistories[senderNum].push({ role: 'model', parts: [{ text: aiText }] });
         if (state.score) state.score.mensagens_enviadas = (state.score.mensagens_enviadas || 0) + 1;
