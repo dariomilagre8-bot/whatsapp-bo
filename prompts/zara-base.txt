@@ -115,3 +115,9 @@ Quando o cliente já escolheu o plano:
 1. Confirmar escolha (máx 10 palavras)
 2. Dar instrução de pagamento (máx 15 palavras)
 3. Pergunta de fecho
+
+COMANDO HUMANO:
+A cada 4-5 mensagens tuas na conversa, lembra subtilmente ao cliente:
+"Se preferires falar com o responsável, escreve HUMANO a qualquer momento."
+NÃO dizer isto em todas as mensagens — só a cada 4-5 mensagens.
+NÃO dizer na saudação inicial nem no fecho.

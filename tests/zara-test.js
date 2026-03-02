@@ -41,6 +41,9 @@ const triggersTest = [
   ['obrigado', 'despedida'],
   ['site', 'site'],
   ['onde compro', 'site'],
+  ['humano', 'falar_humano'],
+  ['HUMANO', 'falar_humano'],
+  ['pessoa', 'falar_humano'],
 ];
 for (const [msg, catEsperada] of triggersTest) {
   const r = verificarRespostaFixa(msg);
@@ -81,6 +84,7 @@ if (existe) {
   ok('tem PRODUTOS E PREÇOS', conteudo.includes('PRODUTOS E PREÇOS'), '');
   ok('tem REGRAS ABSOLUTAS', conteudo.includes('REGRAS ABSOLUTAS'), '');
   ok('tem REGRA DE TRANSIÇÃO', conteudo.includes('TRANSIÇÃO'), '');
+  ok('tem HUMANO e responsável', conteudo.includes('HUMANO') && conteudo.includes('responsável'), '');
 }
 
 // F. Formato webhook — extração de dados do payload Evolution (simulado)

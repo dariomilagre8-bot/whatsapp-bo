@@ -279,6 +279,55 @@ function handleChangeMind(senderNum, state, textMessage) {
   return true;
 }
 
+/** [CPA] Comandos do supervisor: #pausar, #retomar, #status, #pausar todos, #retomar todos */
+async function processarComandoSupervisor(comando, supervisorPhone) {
+  const partes = comando.split(/\s+/);
+  const accao = (partes[0] || '').toLowerCase();
+  const alvo = partes[1];
+
+  if (accao === '#pausar' && alvo === 'todos') {
+    memoriaLocal.set('pausado:global', true, null);
+    await sendWhatsAppMessage(supervisorPhone, '✅ Bot pausado para todos. Modo manutenção activo.');
+    return;
+  }
+  if (accao === '#pausar' && alvo) {
+    const num = String(alvo || '').replace(/\D/g, '') || alvo;
+    if (num) {
+      memoriaLocal.set(`pausado:${num}`, true, null);
+      pausedClients[num] = true;
+      await sendWhatsAppMessage(supervisorPhone, `✅ Bot pausado para ${num}. Tu assumes a conversa.`);
+    }
+    return;
+  }
+  if (accao === '#retomar' && alvo === 'todos') {
+    memoriaLocal.del('pausado:global');
+    await sendWhatsAppMessage(supervisorPhone, '✅ Bot reactivado para todos.');
+    return;
+  }
+  if (accao === '#retomar' && alvo) {
+    const num = String(alvo || '').replace(/\D/g, '') || alvo;
+    if (num) {
+      memoriaLocal.del(`pausado:${num}`);
+      delete pausedClients[num];
+      await sendWhatsAppMessage(supervisorPhone, `✅ Bot reactivado para ${num}.`);
+    }
+    return;
+  }
+  if (accao === '#status' && alvo) {
+    const num = String(alvo || '').replace(/\D/g, '') || alvo;
+    if (num) {
+      const pausado = memoriaLocal.get(`pausado:${num}`) || pausedClients[num];
+      const estado = pausado ? 'pausado' : 'activo';
+      await sendWhatsAppMessage(supervisorPhone, `📋 ${num} — Bot ${estado}`);
+    }
+    return;
+  }
+  await sendWhatsAppMessage(
+    supervisorPhone,
+    '❓ Comandos disponíveis:\n#pausar [número] — parar bot para este contacto\n#retomar [número] — reactivar bot\n#status [número] — ver estado\n#pausar todos — modo manutenção\n#retomar todos — reactivar tudo'
+  );
+}
+
 async function handleWebhook(req, res) {
   try {
     const body = req.body;
@@ -307,11 +356,26 @@ async function handleWebhook(req, res) {
 
     console.log(`📩 De: ${senderNum} (${pushName}) | Msg: ${textMessage}${lidId ? ` [LID: ${lidId}]` : ''}${quotedText ? ` [Quoted: ${quotedText.substring(0, 50)}...]` : ''}`);
 
+    // [CPA] BLOCO 1 — Comandos do supervisor com # (apenas para BOSS/SUPERVISOR)
+    const textoTrimmed = (textMessage || '').trim();
+    if (textoTrimmed.startsWith('#') && supervisorHandler.isSupervisor(senderNum)) {
+      await processarComandoSupervisor(textoTrimmed, senderNum);
+      return res.status(200).send('OK');
+    }
+
     if (await supervisorHandler.handleSupervisorCommand(res, senderNum, textMessage, quotedText)) return;
 
     console.log(`🔍 DEBUG: senderNum="${senderNum}" length=${senderNum.length}`);
     if (senderNum.length < 9 || senderNum.length > 15) {
       console.log(`🚫 DEBUG: Número inválido (length=${senderNum.length})`);
+      return res.status(200).send('OK');
+    }
+
+    // [CPA] BLOCO 2 — Bot pausado (memoriaLocal global ou individual) → silêncio
+    const pausadoGlobal = memoriaLocal.get('pausado:global');
+    const pausadoIndividual = memoriaLocal.get(`pausado:${senderNum}`);
+    if (pausadoGlobal || pausadoIndividual) {
+      console.log(`[CPA] Bot pausado para ${senderNum} — não responde`);
       return res.status(200).send('OK');
     }
 
@@ -352,6 +416,13 @@ async function handleWebhook(req, res) {
           }
           if (cat === 'problema_conta' && MAIN_BOSS) {
             await sendWhatsAppMessage(MAIN_BOSS, `🔧 *PROBLEMA CONTA*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n💬 "${textMessage.substring(0, 80)}"`);
+          }
+          if (cat === 'falar_humano') {
+            if (MAIN_BOSS) {
+              await sendWhatsAppMessage(MAIN_BOSS, `🙋 *PEDIDO DE ATENDIMENTO HUMANO*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n📍 Step: ${state.step}\n💬 "${(textMessage || '').substring(0, 150)}"\n\nBot pausado. Use *retomar ${senderNum}* ou *#retomar ${senderNum}* quando terminar.`);
+            }
+            memoriaLocal.set(`pausado:${senderNum}`, true, null);
+            pausedClients[senderNum] = true;
           }
           await sendWhatsAppMessage(senderNum, fixa.resposta);
           return res.status(200).send('OK');

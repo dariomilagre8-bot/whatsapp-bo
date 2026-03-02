@@ -57,6 +57,11 @@ const CATEGORIAS = [
     triggers: ['site', 'link', 'website', 'onde compro', 'comprar online'],
     resposta: 'Podes comprar directamente no nosso site! 🌐\nhttps://streamzone-frontend.vercel.app\nOu se preferires, faço tudo por aqui mesmo. O que preferes?',
   },
+  {
+    id: 'falar_humano',
+    triggers: ['humano', 'HUMANO', 'pessoa', 'atendente', 'falar com alguém', 'falar com alguem', 'quero uma pessoa'],
+    resposta: 'Vou passar-te para o responsável. Ele responde em breve! 🙂',
+  },
 ];
 
 function normalizar(texto) {
