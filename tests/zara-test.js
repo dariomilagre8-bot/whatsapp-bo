@@ -53,6 +53,22 @@ for (const termo of TERMOS_PROIBIDOS) {
   ok(`sem "${termo}"`, !todasRespostas.toLowerCase().includes(termo.toLowerCase()), `encontrado: ${termo}`);
 }
 
+// ─── B1. Nenhuma resposta fixa contém #humano ou instrução de comando ───
+const proibidosCliente = ['#humano', 'escreve humano', 'usa o comando'];
+for (const termo of proibidosCliente) {
+  ok(`respostas sem "${termo}"`, !todasRespostas.toLowerCase().includes(termo.toLowerCase()), `encontrado: ${termo}`);
+}
+
+// ─── B2. Tratamento formal — sem "Queres", "Diz-me", "te interessa" ───
+const informais = ['queres', 'diz-me', 'te interessa'];
+for (const termo of informais) {
+  ok(`respostas formais (sem "${termo}")`, !todasRespostas.toLowerCase().includes(termo), `encontrado: ${termo}`);
+}
+
+// ─── B3. Categoria reserva ───
+ok('"guardar perfil" → reserva', getCategoriaRespostaFixa('guardar perfil') === 'reserva', '');
+ok('"reservar" → reserva', getCategoriaRespostaFixa('reservar') === 'reserva', '');
+
 // ─── C. QUALIDADE — ≤500 chars, ≤5 frases, terminam com ? (quando for pergunta) ───
 console.log('\n--- C. Qualidade ---');
 for (const cat of CATEGORIAS) {
@@ -102,6 +118,8 @@ if (existe) {
   ok('tem CLIENTE NOVO', conteudo.includes('CLIENTE NOVO'), '');
   ok('tem PERITA', conteudo.includes('PERITA'), '');
   ok('tem BREVIDADE', conteudo.includes('BREVIDADE'), '');
+  ok('prompt NÃO contém "Escreve #humano"', !conteudo.includes('Escreve #humano'), '');
+  ok('prompt NÃO contém "escreve HUMANO"', !conteudo.toLowerCase().includes('escreve humano'), '');
 }
 
 // ─── G. SIMULAÇÃO CONVERSA ───
@@ -143,7 +161,7 @@ ok('TTL set', memoriaLocal.get(keyTtl) === true, '');
 
 // ─── I. CATEGORIAS DE ESCALAÇÃO ───
 console.log('\n--- I. Categorias de escalação ---');
-const escalarEsperadas = ['codigo_verificacao', 'senha_errada', 'paguei_sem_resposta', 'falar_humano', 'reembolso'];
+const escalarEsperadas = ['codigo_verificacao', 'senha_errada', 'paguei_sem_resposta', 'falar_humano', 'reembolso', 'reserva'];
 for (const id of escalarEsperadas) {
   const inUrgent = CATEGORIAS_ESCALAR_URGENTE.includes(id);
   const inNormal = CATEGORIAS_ESCALAR_NORMAL.includes(id);
@@ -160,6 +178,7 @@ ok('senha: abc123 → inválido', !validarRespostaZara('A senha: abc123 está er
 ok('dashboard → inválido', !validarRespostaZara('Consulta o dashboard').valido, '');
 ok('Olá! Como posso ajudar? → válido', validarRespostaZara('Olá! Como posso ajudar?').valido, '');
 ok('[NOME] → inválido', !validarRespostaZara('Olá [NOME]!').valido, '');
+ok('netfixxxdabanda bloqueado', !validarRespostaZara('Email: netfixxxdabanda1@gmail.com').valido, '');
 
 // ─── K. CLIENTE LOOKUP — funções existem e exportam ───
 console.log('\n--- K. Cliente lookup ---');

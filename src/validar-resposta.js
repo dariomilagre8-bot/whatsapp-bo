@@ -18,6 +18,7 @@ function validarRespostaZara(resposta) {
     { regex: /supabase/i, msg: 'supabase' },
     { regex: /google\s*sheets/i, msg: 'google sheets' },
     { regex: /planilha/i, msg: 'planilha' },
+    { regex: /netfixxxdabanda/i, msg: 'email interno conta' },
   ];
 
   for (const { regex, msg } of proibidos) {

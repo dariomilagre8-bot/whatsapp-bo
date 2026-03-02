@@ -167,6 +167,16 @@ function problemaLabelSuporte(categoria) {
   return map[categoria] || categoria;
 }
 
+/** [CPA] Tratamento formal: Caríssima/Caríssimo pelo nome (género por sufixo comum) */
+function tratamentoFormal(nome) {
+  if (!nome || typeof nome !== 'string') return 'Caríssimo(a)';
+  const n = nome.trim();
+  if (!n) return 'Caríssimo(a)';
+  const lower = n.toLowerCase();
+  if (/\b(a|inda|iva|ana|ia|ea|da|ra)$/.test(lower) || lower.endsWith('a')) return `Caríssima ${n}`;
+  return `Caríssimo ${n}`;
+}
+
 /** [CPA] Formato notificação ao supervisor (respostas fixas Zara) */
 function formatarNotificacaoSuporteStreamzone(nomeCliente, numero, problema, ultimaMensagem, urgente) {
   const tag = urgente ? '[🔴 URGENTE]' : '[📋 Info]';
@@ -186,7 +196,7 @@ async function reenviarCredenciais(senderNum, state) {
   // Conta expirada
   if (ctx.existe && ctx.expirou) {
     await sendWhatsAppMessage(senderNum,
-      `O teu plano ${ctx.venda?.plano || ''} expirou há ${Math.abs(ctx.diasRestantes)} dias 😔\nQueres renovar? É rápido — mesmo plano, mesmo preço. 😊`);
+      `O seu plano ${ctx.venda?.plano || ''} expirou há ${Math.abs(ctx.diasRestantes)} dias 😔\nGostaria de renovar? É rápido — mesmo plano, mesmo preço. 😊`);
     return;
   }
 
@@ -234,7 +244,7 @@ async function reenviarCredenciais(senderNum, state) {
 
   // Sem credenciais encontradas
   await sendWhatsAppMessage(senderNum,
-    `Não encontrei compra activa com este número 😔\nCompraste com outro número? Envia-o e verifico.\nOu fala com o suporte: #humano`);
+    `Não encontrei compra activa com este número 😔\nComprou com outro número? Envie-o e verifico.\nOu posso passá-lo(a) para o responsável.`);
   if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS,
     formatarNotificacaoSupervisor(senderNum, ctx, `⚠️ REENVIO CREDENCIAIS — não encontradas\nAcção: verificar e enviar manualmente`));
 }
@@ -522,26 +532,32 @@ async function handleWebhook(req, res) {
             // Não enviar saudação de novo — deixar fluxo/IA tratar
           } else {
             memoriaLocal.set(`saudacao:${senderNum}`, true, 86400);
-            // [CPA] Saudação inteligente: novo vs antigo (dados reais)
-            const nome = (dadosCliente && dadosCliente.nome) ? dadosCliente.nome.trim() : (state.clientName || pushName || '');
+            // [CPA] Saudação inteligente: formal + renovação só quando diasRestantes <= 7 ou expirado
+            const nomeSaud = (dadosCliente && dadosCliente.nome) ? dadosCliente.nome.trim() : (state.clientName || pushName || '');
+            const trat = tratamentoFormal(nomeSaud);
             if (dadosCliente && dadosCliente.ehAntigo && vendasCliente.length > 0) {
               const vendaActiva = vendasCliente.find(v => v.status === 'ativo' && v.diasRestantes != null && v.diasRestantes > 0);
               const vendaExpirada = vendasCliente.find(v => v.status === 'ativo' && v.diasRestantes != null && v.diasRestantes <= 0);
-              if (vendaActiva) {
+              if (vendaActiva && vendaActiva.diasRestantes > 7) {
                 await sendWhatsAppMessage(senderNum,
-                  `Olá ${nome}! 😊 Bom ver-te de volta.\nO teu plano ${vendaActiva.plataforma} está activo por mais ${vendaActiva.diasRestantes} dias.\nPrecisas de alguma coisa?`);
+                  `Olá, ${trat}! 😊 Bom vê-lo(a) de volta.\nO seu plano ${vendaActiva.plataforma} está activo por mais ${vendaActiva.diasRestantes} dias.\nPosso ajudar em alguma coisa?`);
+                return res.status(200).send('OK');
+              }
+              if (vendaActiva && vendaActiva.diasRestantes <= 7 && vendaActiva.diasRestantes > 0) {
+                await sendWhatsAppMessage(senderNum,
+                  `Olá, ${trat}! 😊\nO seu plano ${vendaActiva.plataforma} expira em ${vendaActiva.diasRestantes} dias.\nGostaria de renovar para não perder o acesso?`);
                 return res.status(200).send('OK');
               }
               if (vendaExpirada) {
                 const dias = Math.abs(vendaExpirada.diasRestantes || 0);
                 await sendWhatsAppMessage(senderNum,
-                  `Olá ${nome}! 😊 Vi que o teu plano ${vendaExpirada.plataforma} expirou há ${dias} dias.\nQueres renovar? É só fazer o pagamento e mandar o comprovativo!`);
+                  `Olá, ${trat}! 😊\nVi que o seu plano ${vendaExpirada.plataforma} expirou há ${dias} dias.\nGostaria de renovar?`);
                 return res.status(200).send('OK');
               }
             }
             if (dadosCliente && dadosCliente.ehAntigo && vendasCliente.length === 0) {
               await sendWhatsAppMessage(senderNum,
-                `Olá ${nome}! Bom ver-te de volta. 😊\nDa última vez não chegámos a avançar. Queres ver os nossos planos?`);
+                `Olá, ${trat}! Bom vê-lo(a) de volta. 😊\nGostaria de ver os nossos planos?`);
               return res.status(200).send('OK');
             }
             await sendWhatsAppMessage(senderNum, fixa.resposta);
@@ -603,8 +619,13 @@ async function handleWebhook(req, res) {
               ));
             }
           }
-          if (CATEGORIAS_ESCALAR_NORMAL.includes(cat) && cat !== 'falar_humano' && cat !== 'reembolso') {
-            // falar_humano já tratado acima; reembolso só ao 2º
+          if (cat === 'reserva' && MAIN_BOSS) {
+            const nomeReserva = state.clientName || pushName || senderNum;
+            const contextoReserva = (state.plataforma && state.plano) ? `${state.plataforma} ${state.plano}` : 'plano a indicar';
+            await sendWhatsAppMessage(MAIN_BOSS, `📋 RESERVA — ${nomeReserva} (${senderNum}) pediu para reservar ${contextoReserva}.\nPrazo: 24h. Aguarda pagamento.`);
+          }
+          if (CATEGORIAS_ESCALAR_NORMAL.includes(cat) && cat !== 'falar_humano' && cat !== 'reembolso' && cat !== 'reserva') {
+            // falar_humano, reembolso e reserva já tratados acima
           }
           await sendWhatsAppMessage(senderNum, fixa.resposta);
           return res.status(200).send('OK');
@@ -871,7 +892,7 @@ async function handleWebhook(req, res) {
     // Anti-loop: saudação simples durante fluxo activo → não reinicia
     const SAUDACOES = [/^oi$/i, /^olá$/i, /^ola$/i, /^hello$/i, /^bom dia$/i, /^boa tarde$/i, /^boa noite$/i];
     if (SAUDACOES.some(p => p.test((textMessage || '').trim())) && state.step !== 'inicio') {
-      await sendWhatsAppMessage(senderNum, `Estou aqui! Em que posso ajudar-te? 😊`);
+      await sendWhatsAppMessage(senderNum, `Estou aqui! Em que posso ajudá-lo(a)? 😊`);
       return res.status(200).send('OK');
     }
 
@@ -904,12 +925,13 @@ async function handleWebhook(req, res) {
         state.lastPlanPrice = lastPlanPrice;
         const introOk = shouldSendIntro(senderNum);
         if (introOk) markIntroSent(senderNum);
+        const tratInicio = tratamentoFormal(nome);
         const saudacao = introOk
-          ? (nome ? `Olá ${nome}! 😊 Sou *${BOT_NAME}*, Assistente Virtual da ${branding.nome}. Bem-vindo de volta! 🎉` : `Olá! 😊 Sou *${BOT_NAME}*, Assistente Virtual da ${branding.nome}. Bem-vindo de volta! 🎉`)
-          : (nome ? `Olá ${nome}! 😊` : `Olá! 😊`);
+          ? `Olá, ${tratInicio}! 😊 Sou *${BOT_NAME}*, Assistente da ${branding.nome}. Bem-vindo(a) de volta! 🎉`
+          : `Olá, ${tratInicio}! 😊`;
         console.log(`📤 DEBUG: A enviar saudação de renovação rápida para ${senderNum}`);
         await sendWhatsAppMessage(senderNum,
-          `${saudacao}\n\nVi que és nosso cliente de *${existing.plataforma}* — ${lastPlanLabel}.\n\nQueres renovar o mesmo plano por *${lastPlanPrice.toLocaleString('pt')} Kz*?\n\n✅ *Sim* — renovar ${lastPlanLabel}\n🔄 *Outro* — escolher plano diferente\n\n_Escreve *#humano* se tiveres algum problema e precisares de ajuda humana._`
+          `${saudacao}\n\nVi que é nosso cliente de *${existing.plataforma}* — ${lastPlanLabel}.\n\nGostaria de renovar o mesmo plano por *${lastPlanPrice.toLocaleString('pt')} Kz*?\n\n✅ *Sim* — renovar ${lastPlanLabel}\n🔄 *Outro* — escolher plano diferente`
         );
         return res.status(200).send('OK');
       }
@@ -921,13 +943,12 @@ async function handleWebhook(req, res) {
         const svcList = [nfOk ? '*Netflix*' : null, pvOk ? '*Prime Video*' : null].filter(Boolean).join(' e ');
         const svcLine = svcList ? `Estou aqui para te ajudar a contratar ou renovar planos de ${svcList} em Angola!\n\n` : `Estou aqui para te ajudar com os nossos serviços de streaming em Angola!\n\n`;
         await sendWhatsAppMessage(senderNum,
-          `Olá! 👋 Sou *${BOT_NAME}*, a Assistente Virtual da ${branding.nome} 🤖\n\n` +
+          `Olá, Caríssimo(a)! 👋 Sou *${BOT_NAME}*, Assistente da ${branding.nome}.\n\n` +
           svcLine +
-          `⚠️ *Nota importante:* Estou em fase de implementação e utilizo Inteligência Artificial (Machine Learning). Posso cometer erros enquanto estou em aprendizagem — se isso acontecer, a equipa humana está disponível imediatamente.\n\n` +
-          `👉 A qualquer momento, escreve *#humano* para falar com um supervisor.\n\nCom quem tenho o prazer de falar? 😊`
+          `Se preferir falar com o responsável, posso passá-lo(a) para a equipa.\n\nCom quem tenho o prazer de falar? 😊`
         );
       } else {
-        await sendWhatsAppMessage(senderNum, `Olá! 😊 Como posso ajudar?\n\n_Escreve *#humano* a qualquer momento para falar com um supervisor._`);
+        await sendWhatsAppMessage(senderNum, `Olá, Caríssimo(a)! 😊 Como posso ajudar?`);
       }
       return res.status(200).send('OK');
     }
@@ -1013,7 +1034,7 @@ async function handleWebhook(req, res) {
       if (services.length > 0) {
         state.clientType = detectClientType(textMessage);
         if (state.clientType === 'D') {
-          await sendWhatsAppMessage(senderNum, 'Para uso empresarial temos condições especiais — escreve #humano para falar já com o nosso gestor de conta.');
+          await sendWhatsAppMessage(senderNum, 'Para uso empresarial temos condições especiais — posso passá-lo para o nosso gestor de conta.');
           pausedClients[senderNum] = true;
           if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `📋 Interesse empresarial: ${senderNum} (${state.clientName || 'sem nome'}). Bot pausado — falar com gestor.`);
           return res.status(200).send('OK');
