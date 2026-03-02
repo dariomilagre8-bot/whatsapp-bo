@@ -8,10 +8,8 @@
 // =====================================================================
 
 const DIAS_PLANO = parseInt(process.env.DIAS_VALIDADE_EXPIRACAO, 10) || 30;
-
-// Deduplicação em memória: "phone_dataVenda_tipo" (ex: "244xxx_15/01/2024_7d")
-// Usa dataVenda (não hoje) para sobreviver a múltiplas execuções no mesmo dia
-const avisosEnviados = new Set();
+const { memoriaLocal } = require('./src/memoria-local');
+const TTL_AVISO_SEG = 30 * 24 * 60 * 60; // 30 dias
 
 // ─────────────────────────────────────────────────────────────────────
 // HELPERS
@@ -69,6 +67,19 @@ function msg0Dias(nome, plataforma, website, marcaNome) {
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Persistência de avisos — memoriaLocal (chave: expiracao:{whatsapp}:{plataforma}:{dias})
+// ─────────────────────────────────────────────────────────────────────
+function wasAvisoSent(phone, plataforma, dias) {
+  const key = `expiracao:${phone}:${plataforma}:${dias}`;
+  return memoriaLocal.get(key) === true;
+}
+
+function markAvisoSent(phone, plataforma, dias) {
+  const key = `expiracao:${phone}:${plataforma}:${dias}`;
+  memoriaLocal.set(key, true, TTL_AVISO_SEG);
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // FUNÇÃO PRINCIPAL — corre uma vez por dia às 9h
 // ─────────────────────────────────────────────────────────────────────
 async function verificarExpiracoes({ sendWhatsAppMessage, MAIN_BOSS, branding, fetchAllRows, markProfileAvailable, isIndisponivel }) {
@@ -79,13 +90,13 @@ async function verificarExpiracoes({ sendWhatsAppMessage, MAIN_BOSS, branding, f
     const rows = await fetchAllRows();
     if (!rows || rows.length <= 1) return;
 
-    // Colunas: A=Plataforma B=Email C=Senha D=NomePerfil E=Pin F=Status G=Cliente H=DataVenda I=QNTD J=Tipo
+    // Colunas: A=Plataforma B=Email C=Senha D=NomePerfil E=PIN F=Status G=Cliente H=Telefone I=Data_Venda J=Data_Expiracao K=QNTD L=Tipo
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       const plataforma = row[0] || '';
       const status     = row[5] || '';
       const clienteRaw = row[6] || '';
-      const dataVenda  = row[7] || '';
+      const dataVenda  = row[8] || '';
 
       if (!isIndisponivel(status) || !dataVenda || !clienteRaw) continue;
 
@@ -100,26 +111,24 @@ async function verificarExpiracoes({ sendWhatsAppMessage, MAIN_BOSS, branding, f
       const dias = diasAteExpirar(dataVenda);
       if (dias === null) continue;
 
-      const keyBase = `${phone}_${dataVenda}`;
-
-      if (dias === 7 && !avisosEnviados.has(`${keyBase}_7d`)) {
-        // ── 7 dias antes — aviso suave ──
+      if (dias === 7 && !wasAvisoSent(phone, plataforma, 7)) {
+        // ── 7 dias antes — aviso suave UMA VEZ ──
         await sendWhatsAppMessage(phone, msg7Dias(nome, plataforma, branding.website));
-        avisosEnviados.add(`${keyBase}_7d`);
+        markAvisoSent(phone, plataforma, 7);
         avisados++;
         console.log(`📩 [Expiração] 7d aviso enviado: ${phone} (${nome}) — ${plataforma}`);
 
-      } else if (dias === 3 && !avisosEnviados.has(`${keyBase}_3d`)) {
-        // ── 3 dias antes — aviso com urgência ──
+      } else if (dias === 3 && !wasAvisoSent(phone, plataforma, 3)) {
+        // ── 3 dias antes — aviso com urgência UMA VEZ ──
         await sendWhatsAppMessage(phone, msg3Dias(nome, plataforma, branding.website));
-        avisosEnviados.add(`${keyBase}_3d`);
+        markAvisoSent(phone, plataforma, 3);
         avisados++;
         console.log(`⚠️ [Expiração] 3d aviso enviado: ${phone} (${nome}) — ${plataforma}`);
 
-      } else if (dias === 0 && !avisosEnviados.has(`${keyBase}_0d`)) {
-        // ── Dia de expiração — aviso final ──
+      } else if (dias === 0 && !wasAvisoSent(phone, plataforma, 0)) {
+        // ── Dia de expiração — aviso final UMA VEZ ──
         await sendWhatsAppMessage(phone, msg0Dias(nome, plataforma, branding.website, branding.nome));
-        avisosEnviados.add(`${keyBase}_0d`);
+        markAvisoSent(phone, plataforma, 0);
         avisados++;
         console.log(`🚨 [Expiração] Último dia enviado: ${phone} (${nome}) — ${plataforma}`);
 

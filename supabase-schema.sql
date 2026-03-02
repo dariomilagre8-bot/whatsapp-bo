@@ -49,3 +49,14 @@ CREATE TABLE IF NOT EXISTS sessoes (
   updated_at TIMESTAMP DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_sessoes_updated ON sessoes(updated_at);
+
+-- Avisos de expiração enviados (evitar repetir 7d, 3d, 0d)
+CREATE TABLE IF NOT EXISTS expiracao_avisos (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  whatsapp TEXT NOT NULL,
+  plataforma TEXT NOT NULL,
+  momento_dias SMALLINT NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW(),
+  UNIQUE(whatsapp, plataforma, momento_dias)
+);
+CREATE INDEX IF NOT EXISTS idx_expiracao_avisos_lookup ON expiracao_avisos(whatsapp, plataforma, momento_dias);

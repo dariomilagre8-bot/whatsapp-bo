@@ -19,6 +19,8 @@ const {
   findClientProfiles,
 } = require('../../googleSheets');
 const branding = require('../../branding');
+const { verificarRespostaFixa, getCategoriaRespostaFixa } = require('../respostas-fixas');
+const { memoriaLocal } = require('../memoria-local');
 
 const {
   genAI,
@@ -329,6 +331,33 @@ async function handleWebhook(req, res) {
     if (textMessage && (await escalacaoHandler.handleHumanTransfer(depsEscalacao, senderNum, state, textMessage))) return res.status(200).send('OK');
     if (textMessage && (await escalacaoHandler.handleEscalacao(depsEscalacao, senderNum, state, textMessage, pushName))) return res.status(200).send('OK');
     if (textMessage && (await escalacaoHandler.handleLocationIssue(depsEscalacao, senderNum, state, textMessage))) return res.status(200).send('OK');
+
+    // [CPA] Respostas fixas Zara — prioridade sobre IA (memória local para saudação, 24h)
+    if (textMessage && textMessage.trim()) {
+      const fixa = verificarRespostaFixa(textMessage);
+      if (fixa.match) {
+        const cat = fixa.categoria;
+        if (cat === 'saudacao') {
+          const jaRecebeu = memoriaLocal.get(`saudacao:${senderNum}`);
+          if (jaRecebeu) {
+            // Não enviar saudação de novo — deixar fluxo/IA tratar
+          } else {
+            memoriaLocal.set(`saudacao:${senderNum}`, true, 86400);
+            await sendWhatsAppMessage(senderNum, fixa.resposta);
+            return res.status(200).send('OK');
+          }
+        } else {
+          if (cat === 'quero_comprar' && MAIN_BOSS) {
+            await sendWhatsAppMessage(MAIN_BOSS, `🛒 *QUERO COMPRAR*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n💬 "${textMessage.substring(0, 80)}"`);
+          }
+          if (cat === 'problema_conta' && MAIN_BOSS) {
+            await sendWhatsAppMessage(MAIN_BOSS, `🔧 *PROBLEMA CONTA*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n💬 "${textMessage.substring(0, 80)}"`);
+          }
+          await sendWhatsAppMessage(senderNum, fixa.resposta);
+          return res.status(200).send('OK');
+        }
+      }
+    }
 
     if (textMessage && SALE_STEPS_FOR_EXIT_INTENT.includes(state.step) && isExitIntent(textMessage)) {
       if (!state.exitIntentAt) {

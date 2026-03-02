@@ -15,6 +15,7 @@ const { supabase } = require('../../supabase');
 const branding = require('../../branding');
 const notif = require('../utils/notificacoes');
 const expiracaoModulo = require('../../expiracao-modulo');
+const { runBackup } = require('../../scripts/backup-supabase');
 
 const { CATALOGO, MAIN_BOSS } = config;
 const { clientStates, chatHistories, pendingVerifications, pausedClients, initClientState } = estados;
@@ -31,8 +32,8 @@ router.use(cors({
 router.options('*', cors());
 
 router.use((req, res, next) => {
-  const secret = req.headers['x-admin-secret'];
   const adminSecret = process.env.ADMIN_SECRET || 'streamzone2026';
+  const secret = req.headers['x-admin-secret'] || (req.path === '/backup' ? req.query.secret : undefined);
   if (!secret || secret !== adminSecret) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
@@ -230,6 +231,15 @@ router.post('/expiracoes/verificar-agora', async (req, res) => {
   }
 });
 
+router.get('/backup', async (req, res) => {
+  try {
+    const { data, totais } = await runBackup();
+    res.json({ status: 'ok', data, totais });
+  } catch (err) {
+    res.status(500).json({ status: 'error', error: err.message });
+  }
+});
+
 function getPrecoDePlano(plataforma, plano) {
   const pStr = (plataforma || '').toLowerCase();
   const plStr = (plano || '').toLowerCase();
@@ -264,8 +274,9 @@ router.get('/clientes', async (req, res) => {
       const nomePerfil = row[3] || '';
       const status = row[5] || '';
       const cliente = row[6] || '';
-      const dataVendaStr = row[7] || '';
-      const tipoConta = row[9] || '';
+      const dataVendaStr = row[8] || '';
+      const tipoConta = row[11] || '';
+      const qntd = parseInt(row[10], 10) || 1;
       if (!isIndisponivel(status) || !cliente || !dataVendaStr) continue;
       const parts = dataVendaStr.split('/');
       if (parts.length !== 3) continue;
@@ -285,7 +296,7 @@ router.get('/clientes', async (req, res) => {
       const phone = clienteParts.length > 1 ? clienteParts[clienteParts.length - 1] : '';
       const key = phone || nome;
       const planoNome = nomePerfil || tipoConta;
-      const valorPago = getPrecoDePlano(plataforma, planoNome);
+      const valorPago = getPrecoDePlano(plataforma, planoNome) * qntd;
       if (!clientMap[key]) clientMap[key] = { phone, nome, planos: [] };
       clientMap[key].planos.push({ id: i + 1, plataforma, plano: planoNome, dataVenda: dataVendaStr, diasRestantes, estado, valorPago });
     }

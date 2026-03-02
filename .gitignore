@@ -4,3 +4,6 @@ credentials.json
 streamzone-frontend/
 DOSSIER-STREAMZONE.md
 qr-streamzone-braulio.html
+
+# Backups — contém dados sensíveis e segredos
+backups/

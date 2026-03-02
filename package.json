@@ -4,7 +4,10 @@
   "description": "Bot WhatsApp com Gemini",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node tests/zara-test.js",
+    "test:http": "node tests/webhook-test.js",
+    "deploy": "bash scripts/test-and-deploy.sh"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
