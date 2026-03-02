@@ -19,7 +19,13 @@ const {
   findClientProfiles,
 } = require('../../googleSheets');
 const branding = require('../../branding');
-const { verificarRespostaFixa, getCategoriaRespostaFixa } = require('../respostas-fixas');
+const {
+  verificarRespostaFixa,
+  getCategoriaRespostaFixa,
+  CATEGORIAS_ESCALAR_URGENTE,
+  CATEGORIAS_ESCALAR_NORMAL,
+  CATEGORIAS_PAUSAR_BOT,
+} = require('../respostas-fixas');
 const { memoriaLocal } = require('../memoria-local');
 
 const {
@@ -147,6 +153,29 @@ function formatarNotificacaoSupervisor(phone, ctx, tipo) {
     ? `👤 ${ctx.cliente.nome || phone}\n📦 ${ctx.venda?.plataforma || ''} ${ctx.venda?.plano || 'sem plano'}\n📅 ${ctx.diasRestantes !== null && ctx.diasRestantes !== undefined ? ctx.diasRestantes + ' dias restantes' : 'sem data'}\n`
     : `📞 ${phone}\n`;
   return `${base}${tipo}`;
+}
+
+/** [CPA] Label em linguagem simples para notificação de suporte StreamZone */
+function problemaLabelSuporte(categoria) {
+  const map = {
+    codigo_verificacao: 'Código de verificação',
+    senha_errada: 'Senha errada / mudou',
+    paguei_sem_resposta: 'Paguei mas não recebi dados',
+  };
+  return map[categoria] || categoria;
+}
+
+/** [CPA] Formato notificação ao supervisor (respostas fixas Zara) */
+function formatarNotificacaoSuporteStreamzone(nomeCliente, numero, problema, ultimaMensagem, urgente) {
+  const tag = urgente ? '[🔴 URGENTE]' : '[📋 Info]';
+  return `📱 SUPORTE STREAMZONE
+
+Cliente: ${nomeCliente || '—'}
+Número: ${numero}
+Problema: ${problema}
+Mensagem: "${(ultimaMensagem || '').substring(0, 200)}"
+
+${tag}`;
 }
 
 async function reenviarCredenciais(senderNum, state) {
@@ -419,10 +448,34 @@ async function handleWebhook(req, res) {
           }
           if (cat === 'falar_humano') {
             if (MAIN_BOSS) {
-              await sendWhatsAppMessage(MAIN_BOSS, `🙋 *PEDIDO DE ATENDIMENTO HUMANO*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n📍 Step: ${state.step}\n💬 "${(textMessage || '').substring(0, 150)}"\n\nBot pausado. Use *retomar ${senderNum}* ou *#retomar ${senderNum}* quando terminar.`);
+              await sendWhatsAppMessage(MAIN_BOSS, formatarNotificacaoSuporteStreamzone(
+                state.clientName || pushName, senderNum, 'Quer falar com responsável', textMessage, false
+              ) + `\n\nBot pausado. Use *#retomar ${senderNum}* quando terminar.`);
             }
             memoriaLocal.set(`pausado:${senderNum}`, true, null);
             pausedClients[senderNum] = true;
+          }
+          // [CPA] Escalação automática por categoria (codigo_verificacao, senha_errada, paguei_sem_resposta, reembolso 2x)
+          if (CATEGORIAS_ESCALAR_URGENTE.includes(cat) && MAIN_BOSS) {
+            const problemaLabel = problemaLabelSuporte(cat);
+            await sendWhatsAppMessage(MAIN_BOSS, formatarNotificacaoSuporteStreamzone(
+              state.clientName || pushName, senderNum, problemaLabel, textMessage, true
+            ));
+            if (CATEGORIAS_PAUSAR_BOT.includes(cat)) {
+              memoriaLocal.set(`pausado:${senderNum}`, true, null);
+              pausedClients[senderNum] = true;
+            }
+          }
+          if (cat === 'reembolso') {
+            const count = memoriaLocal.incr(`reembolso:${senderNum}`, 3600);
+            if (count >= 2 && MAIN_BOSS) {
+              await sendWhatsAppMessage(MAIN_BOSS, formatarNotificacaoSuporteStreamzone(
+                state.clientName || pushName, senderNum, 'Pedido de reembolso (insistência)', textMessage, false
+              ));
+            }
+          }
+          if (CATEGORIAS_ESCALAR_NORMAL.includes(cat) && cat !== 'falar_humano' && cat !== 'reembolso') {
+            // falar_humano já tratado acima; reembolso só ao 2º
           }
           await sendWhatsAppMessage(senderNum, fixa.resposta);
           return res.status(200).send('OK');
