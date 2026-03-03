@@ -1,15 +1,25 @@
 // Todas as variáveis de ambiente e constantes derivadas (sem I/O async)
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({
+  path: path.join(__dirname, '..', process.env.NODE_ENV === 'test' ? '.env.test' : '.env'),
+});
 const branding = require('../branding');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const port = process.env.PORT || 80;
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-const RAW_SUPERVISORS = (process.env.SUPERVISOR_NUMBER || '').split(',').map(n => n.trim().replace(/\D/g, ''));
+// Em modo teste usa PHONE_NUMBERS e BOSS_NUMBER do .env.test; em produção usa SUPERVISOR_NUMBER
+const isTest = process.env.NODE_ENV === 'test';
+const supervisorsSource = isTest
+  ? (process.env.PHONE_NUMBERS || process.env.BOSS_NUMBER || process.env.SUPERVISOR_NUMBER || '')
+  : (process.env.SUPERVISOR_NUMBER || '');
+const RAW_SUPERVISORS = supervisorsSource.split(',').map(n => n.trim().replace(/\D/g, '')).filter(Boolean);
 const REAL_PHONES = RAW_SUPERVISORS.filter(n => n.length < 15);
 const ALL_SUPERVISORS = RAW_SUPERVISORS;
-const MAIN_BOSS = REAL_PHONES.length > 0 ? REAL_PHONES[0] : null;
+const MAIN_BOSS = isTest && process.env.BOSS_NUMBER
+  ? String(process.env.BOSS_NUMBER).replace(/\D/g, '')
+  : (REAL_PHONES.length > 0 ? REAL_PHONES[0] : null);
 
 const CATALOGO = {
   netflix: {
