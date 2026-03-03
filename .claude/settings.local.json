@@ -54,7 +54,14 @@
       "Bash(head:*)",
       "Bash(git:*)",
       "Bash(for msg in \"Olá\" \"Quero Netflix\"; do\n  echo \">>> $msg\"\n  curl -s --max-time 10 -X POST https://whatssiru.46.224.99.52.nip.io/ \\\\\n    -H \"Content-Type: application/json\" \\\\\n    -d \"{\\\\\"event\\\\\":\\\\\"messages.upsert\\\\\",\\\\\"data\\\\\":{\\\\\"key\\\\\":{\\\\\"fromMe\\\\\":false,\\\\\"remoteJid\\\\\":\\\\\"244941529470@s.whatsapp.net\\\\\",\\\\\"senderPn\\\\\":\\\\\"244941529470\\\\\"},\\\\\"message\\\\\":{\\\\\"conversation\\\\\":\\\\\"$msg\\\\\"}}}\"\n  echo \"\"\n  sleep 1\ndone 2>&1)",
-      "Bash(for msg in \"Ver temporariamente\" \"Qual é o email\" \"Quando volta Netflix\"; do\n  echo \">>> $msg\"\n  curl -s --max-time 10 -X POST https://whatssiru.46.224.99.52.nip.io/ \\\\\n    -H \"Content-Type: application/json\" \\\\\n    -d \"{\\\\\"event\\\\\":\\\\\"messages.upsert\\\\\",\\\\\"data\\\\\":{\\\\\"key\\\\\":{\\\\\"fromMe\\\\\":false,\\\\\"remoteJid\\\\\":\\\\\"244941529470@s.whatsapp.net\\\\\",\\\\\"senderPn\\\\\":\\\\\"244941529470\\\\\"},\\\\\"message\\\\\":{\\\\\"conversation\\\\\":\\\\\"$msg\\\\\"}}}\"\n  echo \"\"\n  sleep 1\ndone 2>&1)"
+      "Bash(for msg in \"Ver temporariamente\" \"Qual é o email\" \"Quando volta Netflix\"; do\n  echo \">>> $msg\"\n  curl -s --max-time 10 -X POST https://whatssiru.46.224.99.52.nip.io/ \\\\\n    -H \"Content-Type: application/json\" \\\\\n    -d \"{\\\\\"event\\\\\":\\\\\"messages.upsert\\\\\",\\\\\"data\\\\\":{\\\\\"key\\\\\":{\\\\\"fromMe\\\\\":false,\\\\\"remoteJid\\\\\":\\\\\"244941529470@s.whatsapp.net\\\\\",\\\\\"senderPn\\\\\":\\\\\"244941529470\\\\\"},\\\\\"message\\\\\":{\\\\\"conversation\\\\\":\\\\\"$msg\\\\\"}}}\"\n  echo \"\"\n  sleep 1\ndone 2>&1)",
+      "Bash(__NEW_LINE_09926edee20980d6__ echo:*)",
+      "Bash(__NEW_LINE_2310c4e65b4df08c__ echo:*)",
+      "Bash(__NEW_LINE_d6aa04bdba75245d__ echo:*)",
+      "Bash(__NEW_LINE_74d92add52809244__ echo:*)",
+      "Bash(__NEW_LINE_c8043a2fd6708758__ echo:*)",
+      "Bash(__NEW_LINE_d3355fd74f109b8d__ echo:*)",
+      "Bash(__NEW_LINE_576e0118363fd5eb__ curl:*)"
     ]
   }
 }
