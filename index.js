@@ -49,7 +49,7 @@ app.use('/api', publicRouter);
 app.get('/api/branding', (req, res) => res.json(branding));
 app.get('/api/version', (req, res) => res.json({ v: '20260225-refactor-fase2', started: new Date().toISOString() }));
 app.use('/api/admin', adminRouter);
-app.post('/', handleWebhook);
+app.post('/webhook', handleWebhook);
 
 initExpiracaoScheduler({
   sendWhatsAppMessage,
