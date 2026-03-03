@@ -30,11 +30,13 @@ const {
   CATEGORIAS_ESCALAR_URGENTE,
   CATEGORIAS_ESCALAR_NORMAL,
   CATEGORIAS_PAUSAR_BOT,
+  RESPOSTA_IMAGEM_FORA_CONTEXTO,
 } = require('../respostas-fixas');
 const { memoriaLocal } = require('../memoria-local');
 const clienteLookup = require('../cliente-lookup');
 const { validarRespostaZara } = require('../validar-resposta');
-const { runWithInstance } = require('../whatsapp');
+const { runWithInstance } = require('../evolution-instance-context');
+const { extrairNome, mensagemFechoConsolidada } = require('../funil-zara');
 
 const {
   genAI,
@@ -59,6 +61,23 @@ const {
 
 const { clientStates, chatHistories, pendingVerifications, pausedClients, initClientState, markDirty, cleanupSession, getContextoCliente } = estados;
 const { logLostSale } = notif;
+
+/** [CPA] Fecho em 1 única mensagem quando um único item; senão envia resumo + dados (compatível com multi-item). */
+async function enviarFechoConsolidado(senderNum, state) {
+  if (state.cart && state.cart.length === 1) {
+    const item = state.cart[0];
+    const planSlots = PLAN_SLOTS[item.plan] || 1;
+    const msg = mensagemFechoConsolidada({
+      plataforma: item.plataforma,
+      plano: item.plan,
+      valor: item.totalPrice || item.price || 0,
+      dispositivos: planSlots,
+    });
+    await sendWhatsAppMessage(senderNum, msg);
+  } else {
+    await sendPaymentMessages(senderNum, state);
+  }
+}
 
 const FEW_SHOT_EXAMPLES = [
   { role: 'user',  parts: [{ text: 'Está caro' }] },
@@ -536,13 +555,17 @@ async function handleWebhookInner(req, res, body, messageData) {
     markDirty(senderNum);
     console.log(`🔍 DEBUG: step="${state.step}" para ${senderNum}`);
 
-    // [CPA] Blindagem imagem/documento: assumir comprovativo_recebido, responder, notificar, pausar (imune a falta de conversation)
+    // [CPA] Imagem/documento: só no step aguardando_comprovativo = comprovativo (agradecer + notificar + pausar). Fora = pedir descrição, NUNCA escalar nem pausar.
     if (isImage || isDoc) {
-      await sendWhatsAppMessage(senderNum, RESPOSTA_COMPROVATIVO_RECEBIDO);
-      const nomeOuNum = (state.clientName || pushName || senderNum).toString().trim() || senderNum;
-      if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `💰 *POSSÍVEL PAGAMENTO* — ${nomeOuNum} enviou uma ${isImage ? 'imagem' : 'comprovativo/documento'}. Verifica o WhatsApp!`);
-      memoriaLocal.set(`pausado:${senderNum}`, true, null);
-      pausedClients[senderNum] = true;
+      if (state.step === 'aguardando_comprovativo') {
+        await sendWhatsAppMessage(senderNum, RESPOSTA_COMPROVATIVO_RECEBIDO);
+        const nomeOuNum = (state.clientName || pushName || senderNum).toString().trim() || senderNum;
+        if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `💰 *POSSÍVEL PAGAMENTO* — ${nomeOuNum} enviou uma ${isImage ? 'imagem' : 'comprovativo/documento'}. Verifica o WhatsApp!`);
+        memoriaLocal.set(`pausado:${senderNum}`, true, null);
+        pausedClients[senderNum] = true;
+      } else {
+        await sendWhatsAppMessage(senderNum, RESPOSTA_IMAGEM_FORA_CONTEXTO);
+      }
       return res.status(200).send('OK');
     }
 
@@ -845,7 +868,7 @@ async function handleWebhookInner(req, res, body, messageData) {
         state.step = 'aguardando_comprovativo';
         delete state.pendingRecovery;
         await sendWhatsAppMessage(senderNum, 'Excelente escolha! 🎉');
-        await sendPaymentMessages(senderNum, state);
+        await enviarFechoConsolidado(senderNum, state);
       } else if (['nao', 'não', 'n', 'no'].includes(lower)) {
         const nome = state.clientName;
         logLostSale(senderNum, nome, state.interestStack || [], state.step, 'Cliente recusou plano alternativo');
@@ -917,7 +940,7 @@ async function handleWebhookInner(req, res, body, messageData) {
         const normalizedLower = removeAccents(textMessage.toLowerCase());
         const wantsPaymentData = PAYMENT_REQUEST_KEYWORDS.some(kw => normalizedLower.includes(removeAccents(kw)));
         if (wantsPaymentData) {
-          await sendPaymentMessages(senderNum, state);
+          await enviarFechoConsolidado(senderNum, state);
           return res.status(200).send('OK');
         }
         try {
@@ -946,7 +969,7 @@ async function handleWebhookInner(req, res, body, messageData) {
           await sendWhatsAppMessage(senderNum, aiText);
         } catch (e) {
           console.error('Erro AI comprovativo:', e.message);
-          await sendPaymentMessages(senderNum, state);
+          await enviarFechoConsolidado(senderNum, state);
         }
         return res.status(200).send('OK');
       }
@@ -1033,26 +1056,19 @@ async function handleWebhookInner(req, res, body, messageData) {
         );
         return res.status(200).send('OK');
       }
-      // [CPA] Se buscarClientePorWhatsapp encontrou cliente (ehAntigo), não pedir nome — ir directo ao menu
-      if (dadosCliente && dadosCliente.ehAntigo) {
-        state.clientName = (dadosCliente.nome || pushName || '').trim() || ((pushName || '').trim().split(/\s+/)[0]) || '';
+      // [CPA] Cliente antigo → menu. Novo → usar pushName (NUNCA pedir nome), ir directo ao menu.
+      state.clientName = dadosCliente && dadosCliente.nome ? dadosCliente.nome.trim() : extrairNome(pushName);
+      state.step = 'escolha_servico';
+      console.log(`📤 DEBUG: Inicio para ${senderNum} — nome: ${state.clientName}`);
+      if (dadosCliente && dadosCliente.ehAntigo && vendasCliente.length > 0) {
         const { msg, step } = await buildServiceMenuMsg(state, state.clientName);
         state.step = step;
         await sendWhatsAppMessage(senderNum, msg);
-        return res.status(200).send('OK');
-      }
-      state.step = 'captura_nome';
-      console.log(`📤 DEBUG: A enviar saudação inicial para ${senderNum}`);
-      if (shouldSendIntro(senderNum)) {
+      } else if (shouldSendIntro(senderNum)) {
         markIntroSent(senderNum);
-        const [nfOk, pvOk] = await Promise.all([hasAnyStock('Netflix'), hasAnyStock('Prime Video')]);
-        const svcList = [nfOk ? '*Netflix*' : null, pvOk ? '*Prime Video*' : null].filter(Boolean).join(' e ');
-        const svcLine = svcList ? `Estou aqui para ajudá-lo(a) a contratar ou renovar planos de ${svcList} em Angola!\n\n` : `Estou aqui para ajudá-lo(a) com os nossos serviços de streaming em Angola!\n\n`;
-        await sendWhatsAppMessage(senderNum,
-          `Olá, Caríssimo(a)! 👋 Sou *${BOT_NAME}*, Assistente da ${branding.nome}.\n\n` +
-          svcLine +
-          `Se preferir falar com o responsável, posso passá-lo(a) para a equipa.\n\nCom quem tenho o prazer de falar? 😊`
-        );
+        const { gerarTabelaPrecos } = require('../funil-zara');
+        const msg = await gerarTabelaPrecos();
+        await sendWhatsAppMessage(senderNum, `Olá, Caríssimo(a)! 👋 Sou *${BOT_NAME}*, Assistente da ${branding.nome}.\n\n${msg}`);
       } else {
         await sendWhatsAppMessage(senderNum, `Olá, Caríssimo(a)! 😊 Como posso ajudar?`);
       }
@@ -1077,7 +1093,7 @@ async function handleWebhookInner(req, res, body, messageData) {
         state.totalValor = state.lastPlanPrice;
         state.step = 'aguardando_comprovativo';
         await sendWhatsAppMessage(senderNum, `Ótimo${state.clientName ? ', ' + state.clientName : ''}! 🎉`);
-        await sendPaymentMessages(senderNum, state);
+        await enviarFechoConsolidado(senderNum, state);
       } else {
         state.step = 'escolha_plano';
         await sendWhatsAppMessage(senderNum, `Sem problema! Aqui estão os planos disponíveis:\n\n${formatPriceTable(state.serviceKey)}\n\nQual plano deseja? (${planChoicesText(state.serviceKey)})`);
@@ -1085,19 +1101,10 @@ async function handleWebhookInner(req, res, body, messageData) {
       return res.status(200).send('OK');
     }
 
-    // ---- STEP: captura_nome ----
+    // ---- STEP: captura_nome (legado — novos fluxos usam extrairNome no inicio; aqui nunca pedir nome) ----
     if (state.step === 'captura_nome') {
-      const raw = textMessage.trim();
-      const saudacaoCurta = /^(oi|ola|olá|hey|hi|hello|epa|bom dia|boa tarde|boa noite|tudo bem)$/i.test(raw) || raw.length <= 3;
-      const antiLixo = /\b(netflix|prime|quero)\b/i.test(raw);
-      const usarPushName = saudacaoCurta || antiLixo;
-      const primeiroNome = (pushName || '').trim().split(/\s+/)[0] || '';
-      const name = usarPushName && primeiroNome ? primeiroNome : raw;
-      if (!name || name.length < 2) {
-        await sendWhatsAppMessage(senderNum, 'Por favor, diga-me o seu nome para continuarmos. 😊');
-        return res.status(200).send('OK');
-      }
-      state.clientName = name;
+      state.clientName = state.clientName || extrairNome(pushName);
+      const name = state.clientName;
       try {
         const migrated = await findClientByName(name);
         if (migrated) {
@@ -1339,7 +1346,7 @@ async function handleWebhookInner(req, res, body, messageData) {
           state.valor = addedItem.totalPrice;
           state.step = 'aguardando_comprovativo';
           await sendWhatsAppMessage(senderNum, 'Excelente escolha! 🎉');
-          await sendPaymentMessages(senderNum, state);
+          await enviarFechoConsolidado(senderNum, state);
         } else {
           state.step = 'resumo_pedido';
           const lines = state.cart.map((item, i) => {
@@ -1406,7 +1413,7 @@ async function handleWebhookInner(req, res, body, messageData) {
       const lower = textMessage.toLowerCase().trim();
       if (['sim', 's', 'ok', 'confirmo', 'confirmar', 'yes'].includes(lower)) {
         state.step = 'aguardando_comprovativo';
-        await sendPaymentMessages(senderNum, state);
+        await enviarFechoConsolidado(senderNum, state);
       } else if (['nao', 'não', 'n', 'no', 'cancelar'].includes(lower)) {
         state.cart = [];
         state.totalValor = 0;

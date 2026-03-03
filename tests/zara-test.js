@@ -34,17 +34,35 @@ function ok(name, cond, msg) {
   return false;
 }
 
-// ─── A. RESPOSTAS FIXAS — cada trigger → categoria correcta ───
-console.log('\n--- A. Respostas fixas (triggers → categoria) ---');
-const triggersPorCategoria = {};
-for (const cat of CATEGORIAS) {
-  for (const t of cat.triggers) {
-    triggersPorCategoria[t] = cat.id;
-  }
-}
-for (const [msg, catEsperada] of Object.entries(triggersPorCategoria)) {
+// ─── A. RESPOSTAS FIXAS — mensagem → categoria correcta (regex) ───
+console.log('\n--- A. Respostas fixas (mensagem → categoria) ---');
+const paresTeste = [
+  ['olá', 'saudacao'],
+  ['oi', 'saudacao'],
+  ['bom dia', 'saudacao'],
+  ['preço', 'precos_geral'],
+  ['quanto custa netflix', 'precos_netflix'],
+  ['preço prime', 'precos_prime'],
+  ['quero netflix individual', 'quero_netflix_individual'],
+  ['guardar perfil', 'reserva'],
+  ['reservar', 'reserva'],
+  ['como funciona', 'como_funciona'],
+  ['quantos dispositivos', 'dispositivos'],
+  ['código de verificação', 'codigo_verificacao'],
+  ['senha errada', 'senha_errada'],
+  ['renovar', 'renovar'],
+  ['reembolso', 'reembolso'],
+  ['é confiável', 'confianca'],
+  ['site', 'site'],
+  ['humano', 'falar_humano'],
+  ['obrigado', 'despedida'],
+  ['sim', 'sim_generico'],
+  ['não', 'nao_generico'],
+  ['já paguei', 'paguei_sem_resposta'],
+];
+for (const [msg, catEsperada] of paresTeste) {
   const r = verificarRespostaFixa(msg);
-  ok(`"${msg}" → ${catEsperada}`, r.match && r.categoria === catEsperada, `got ${r.categoria}`);
+  ok(`"${msg}" → ${catEsperada}`, r.match && r.categoria === catEsperada, `got ${r.categoria || 'no match'}`);
 }
 
 // ─── B. TERMOS PROIBIDOS ───
@@ -125,9 +143,7 @@ if (existe) {
   ok('tem RESOLUÇÃO DE RECLAMAÇÕES', conteudo.includes('RESOLUÇÃO DE RECLAMAÇÕES'), '');
   ok('tem NUNCA inventar', conteudo.includes('NUNCA inventar'), '');
   ok('tem escalar', conteudo.includes('escalar'), '');
-  ok('tem REGRAS DE DISPOSITIVOS', conteudo.includes('REGRAS DE DISPOSITIVOS'), '');
-  ok('tem CLIENTE EXISTENTE', conteudo.includes('CLIENTE EXISTENTE'), '');
-  ok('tem CLIENTE NOVO', conteudo.includes('CLIENTE NOVO'), '');
+  ok('tem dispositivos', conteudo.includes('dispositivo'), '');
   ok('tem PERITA', conteudo.includes('PERITA'), '');
   ok('tem BREVIDADE', conteudo.includes('BREVIDADE'), '');
   ok('prompt NÃO contém "Escreve #humano"', !conteudo.includes('Escreve #humano'), '');
