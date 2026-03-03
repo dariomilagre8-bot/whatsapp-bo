@@ -7,7 +7,12 @@
     "start": "node index.js",
     "test": "node tests/zara-test.js",
     "test:http": "node tests/webhook-test.js",
-    "deploy": "bash scripts/test-and-deploy.sh"
+    "deploy": "bash scripts/test-and-deploy.sh",
+    "start:test": "bash scripts/start-test.sh",
+    "start:prod": "bash scripts/start-prod.sh",
+    "setup:test-db": "node scripts/setup-test-db.js",
+    "setup:test-sheet": "node scripts/setup-test-sheet.js",
+    "create:test-instance": "node scripts/create-test-instance.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",

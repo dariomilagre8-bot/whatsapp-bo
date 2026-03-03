@@ -1,5 +1,6 @@
 // chatHistories, clientStates, pendingVerifications, pausedClients, lastIntroTimes + persistência Supabase
 const { supabase } = require('../../supabase');
+const { TABLES } = require('../config-tables');
 
 const chatHistories = {};
 const clientStates = {};
@@ -122,7 +123,7 @@ async function getContextoCliente(phone) {
   if (!supabase) return { existe: false };
   try {
     const { data: cliente } = await supabase
-      .from('clientes')
+      .from(TABLES.CLIENTES)
       .select('id, nome, whatsapp, email')
       .eq('whatsapp', phone)
       .single();
@@ -130,7 +131,7 @@ async function getContextoCliente(phone) {
     if (!cliente) return { existe: false };
 
     const { data: venda } = await supabase
-      .from('vendas')
+      .from(TABLES.VENDAS)
       .select('id, plataforma, plano, status, data_expiracao, data_venda')
       .eq('whatsapp', phone)
       .in('status', ['ativo', 'pendente', 'expirado'])
@@ -149,7 +150,7 @@ async function getContextoCliente(phone) {
 
     // Busca credenciais em perfis_entregues
     const { data: perfis } = await supabase
-      .from('perfis_entregues')
+      .from(TABLES.PERFIS)
       .select('email_conta, senha_conta, nome_perfil, pin, plataforma')
       .eq('venda_id', venda.id);
 

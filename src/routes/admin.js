@@ -16,6 +16,7 @@ const branding = require('../../branding');
 const notif = require('../utils/notificacoes');
 const expiracaoModulo = require('../../expiracao-modulo');
 const { runBackup } = require('../../scripts/backup-supabase');
+const { TABLES } = require('../config-tables');
 
 const { CATALOGO, MAIN_BOSS } = config;
 const { clientStates, chatHistories, pendingVerifications, pausedClients, initClientState } = estados;
@@ -166,8 +167,8 @@ router.get('/expiracoes-db', async (req, res) => {
     today.setHours(0, 0, 0, 0);
     const msPerDay = 24 * 60 * 60 * 1000;
     const { data: vendas, error } = await supabase
-      .from('vendas')
-      .select('id, plataforma, plano, data_expiracao, data_venda, valor_total, clientes(nome, whatsapp)')
+      .from(TABLES.VENDAS)
+      .select(`id, plataforma, plano, data_expiracao, data_venda, valor_total, ${TABLES.CLIENTES}(nome, whatsapp)`)
       .eq('status', 'ativo')
       .order('data_expiracao', { ascending: true });
     if (error) throw new Error(error.message);
@@ -338,8 +339,8 @@ router.get('/clientes-db', async (req, res) => {
       { data: todosClientes, error: errC },
       { data: vendasAtivas, error: errV },
     ] = await Promise.all([
-      supabase.from('clientes').select('id, nome, whatsapp').order('nome'),
-      supabase.from('vendas').select('id, cliente_id, plataforma, plano, quantidade, valor_total, data_venda, data_expiracao').eq('status', 'ativo'),
+      supabase.from(TABLES.CLIENTES).select('id, nome, whatsapp').order('nome'),
+      supabase.from(TABLES.VENDAS).select('id, cliente_id, plataforma, plano, quantidade, valor_total, data_venda, data_expiracao').eq('status', 'ativo'),
     ]);
     if (errC) throw new Error(errC.message);
     if (errV) throw new Error(errV.message);
@@ -556,8 +557,8 @@ router.post('/broadcast/expiracoes', async (req, res) => {
       const cutoff = new Date(today);
       cutoff.setDate(cutoff.getDate() + diasAte + 1);
       const { data: vendas, error } = await supabase
-        .from('vendas')
-        .select('plataforma, data_expiracao, clientes(nome, whatsapp)')
+        .from(TABLES.VENDAS)
+        .select(`plataforma, data_expiracao, ${TABLES.CLIENTES}(nome, whatsapp)`)
         .eq('status', 'ativo')
         .lte('data_expiracao', cutoff.toISOString());
       if (error) throw new Error(error.message);
@@ -676,12 +677,12 @@ router.get('/financeiro-db', async (req, res) => {
       { data: vendasSemana },
       { data: clientesAtivos },
     ] = await Promise.all([
-      supabase.from('vendas').select('valor_total, plataforma, quantidade').eq('status', 'ativo'),
-      supabase.from('vendas').select('valor_total, quantidade').gte('data_venda', today.toISOString()).lt('data_venda', tomorrow.toISOString()),
-      supabase.from('vendas').select('valor_total, quantidade').gte('data_venda', thisMonthStart).eq('status', 'ativo'),
-      supabase.from('vendas').select('valor_total, quantidade').gte('data_venda', lastMonthStart).lt('data_venda', lastMonthEnd).eq('status', 'ativo'),
-      supabase.from('vendas').select('valor_total, quantidade, data_venda, plataforma').gte('data_venda', sevenDaysAgo).eq('status', 'ativo'),
-      supabase.from('vendas').select('cliente_id').eq('status', 'ativo'),
+      supabase.from(TABLES.VENDAS).select('valor_total, plataforma, quantidade').eq('status', 'ativo'),
+      supabase.from(TABLES.VENDAS).select('valor_total, quantidade').gte('data_venda', today.toISOString()).lt('data_venda', tomorrow.toISOString()),
+      supabase.from(TABLES.VENDAS).select('valor_total, quantidade').gte('data_venda', thisMonthStart).eq('status', 'ativo'),
+      supabase.from(TABLES.VENDAS).select('valor_total, quantidade').gte('data_venda', lastMonthStart).lt('data_venda', lastMonthEnd).eq('status', 'ativo'),
+      supabase.from(TABLES.VENDAS).select('valor_total, quantidade, data_venda, plataforma').gte('data_venda', sevenDaysAgo).eq('status', 'ativo'),
+      supabase.from(TABLES.VENDAS).select('cliente_id').eq('status', 'ativo'),
     ]);
     const sum = (arr) => (arr || []).reduce((s, r) => s + (r.valor_total || 0), 0);
     const cnt = (arr) => (arr || []).reduce((s, r) => s + (r.quantidade || 1), 0);

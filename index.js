@@ -2,6 +2,7 @@ require('dotenv').config();
 const path = require('path');
 const { execFile } = require('child_process');
 const branding = require('./branding');
+const { IS_TEST } = require('./src/config-tables');
 const express = require('express');
 const cors = require('cors');
 const config = require('./src/config');
@@ -86,6 +87,9 @@ function executarBackup() {
 }
 agendarBackup();
 
+if (IS_TEST) {
+  console.log('⚠️  MODO TESTE — tabelas: clientes_teste, vendas_teste, perfis_entregues_teste');
+}
 console.log('📱 Telefones Reais:', config.REAL_PHONES);
 console.log('🖥️ Todos os IDs aceites:', config.ALL_SUPERVISORS);
 console.log('👑 Chefe Principal:', config.MAIN_BOSS);

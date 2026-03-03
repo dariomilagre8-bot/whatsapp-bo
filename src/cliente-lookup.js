@@ -4,6 +4,7 @@
  */
 const { supabase } = require('../supabase');
 const { fetchAllRows, isDisponivel, normalizePlataforma, checkClientInSheet } = require('../googleSheets');
+const { TABLES } = require('./config-tables');
 
 /**
  * 1A. Busca cliente por WhatsApp — Supabase primeiro, fallback Google Sheets.
@@ -17,7 +18,7 @@ async function buscarClientePorWhatsapp(phone) {
   try {
     if (supabase) {
       const { data, error } = await supabase
-        .from('clientes')
+        .from(TABLES.CLIENTES)
         .select('nome, whatsapp, email, criado_em')
         .eq('whatsapp', clean)
         .maybeSingle();
@@ -65,7 +66,7 @@ async function buscarVendasDoCliente(phone) {
   try {
     if (!supabase) return [];
     const { data, error } = await supabase
-      .from('vendas')
+      .from(TABLES.VENDAS)
       .select('plataforma, plano, data_venda, data_expiracao, status')
       .eq('whatsapp', clean)
       .order('data_venda', { ascending: false });
@@ -104,7 +105,7 @@ async function buscarPerfisDoCliente(phone) {
 
   try {
     const { data: vendas } = await supabase
-      .from('vendas')
+      .from(TABLES.VENDAS)
       .select('id')
       .eq('whatsapp', clean)
       .order('data_venda', { ascending: false });
@@ -112,7 +113,7 @@ async function buscarPerfisDoCliente(phone) {
 
     const ids = vendas.map((v) => v.id).filter(Boolean);
     const { data: perfis } = await supabase
-      .from('perfis_entregues')
+      .from(TABLES.PERFIS)
       .select('email_conta, nome_perfil, plataforma')
       .in('venda_id', ids);
     if (!perfis) return [];

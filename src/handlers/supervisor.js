@@ -15,6 +15,7 @@ const {
 const { supabase } = require('../../supabase');
 const branding = require('../../branding');
 const notif = require('../utils/notificacoes');
+const { TABLES } = require('../config-tables');
 
 const {
   ALL_SUPERVISORS,
@@ -172,7 +173,7 @@ async function processApproval(targetClient, senderNum) {
     if (supabase) {
       try {
         const { data: cliente } = await supabase
-          .from('clientes')
+          .from(TABLES.CLIENTES)
           .upsert({ whatsapp: targetClient, nome: pedido.clientName || '' }, { onConflict: 'whatsapp' })
           .select()
           .single();
@@ -183,7 +184,7 @@ async function processApproval(targetClient, senderNum) {
             const pricePerUnit = svcInfo.planos ? (svcInfo.planos[result.item.plan.toLowerCase()] || 0) : 0;
             const qty = result.item.quantity || 1;
 
-            await supabase.from('vendas').insert({
+            await supabase.from(TABLES.VENDAS).insert({
               cliente_id: cliente ? cliente.id : null,
               whatsapp: targetClient,
               plataforma: result.item.plataforma,

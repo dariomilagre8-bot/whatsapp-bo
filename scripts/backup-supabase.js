@@ -1,13 +1,16 @@
 /**
  * Backup diário Supabase — clientes, vendas, perfis_entregues
  * Uso: node scripts/backup-supabase.js
+ * Em modo teste (NODE_ENV=test): faz backup das tabelas de teste.
  * Em falha: envia alerta WhatsApp ao BOSS_NUMBER (só quando executado como script)
  */
-require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
+const envFile = process.env.NODE_ENV === 'test' ? '.env.test' : '.env';
+require('dotenv').config({ path: require('path').join(__dirname, '..', envFile) });
 const { createClient } = require('@supabase/supabase-js');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
+const { TABLES } = require('../src/config-tables');
 
 const BACKUPS_DIR = path.join(__dirname, '..', 'backups');
 const MAX_BACKUPS = 7;
@@ -51,12 +54,13 @@ async function runBackup() {
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
   const data = dataHoje();
-  const totais = { clientes: 0, vendas: 0, perfis_entregues: 0 };
+  const nomeTabelas = [TABLES.CLIENTES, TABLES.VENDAS, TABLES.PERFIS];
+  const totais = { [TABLES.CLIENTES]: 0, [TABLES.VENDAS]: 0, [TABLES.PERFIS]: 0 };
   const tabelas = {};
 
   if (!fs.existsSync(BACKUPS_DIR)) fs.mkdirSync(BACKUPS_DIR, { recursive: true });
 
-  for (const nome of ['clientes', 'vendas', 'perfis_entregues']) {
+  for (const nome of nomeTabelas) {
     try {
       const { data: rows, error } = await supabase.from(nome).select('*');
       if (error) {
@@ -95,7 +99,7 @@ async function runBackup() {
 async function run() {
   try {
     const { data, totais } = await runBackup();
-    console.log(`Backup OK: ${totais.clientes} clientes, ${totais.vendas} vendas, ${totais.perfis_entregues} perfis — ${data}`);
+    console.log(`Backup OK: ${totais[TABLES.CLIENTES]} clientes, ${totais[TABLES.VENDAS]} vendas, ${totais[TABLES.PERFIS]} perfis — ${data}`);
     process.exit(0);
   } catch (err) {
     const msg = err.message || String(err);
