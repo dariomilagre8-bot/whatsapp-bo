@@ -7,6 +7,7 @@ const fs = require('fs');
 const {
   verificarRespostaFixa,
   getCategoriaRespostaFixa,
+  getRespostaPrecosSeSemPlano,
   CATEGORIAS,
   CATEGORIAS_ESCALAR_URGENTE,
   CATEGORIAS_ESCALAR_NORMAL,
@@ -68,6 +69,17 @@ for (const termo of informais) {
 // ─── B3. Categoria reserva ───
 ok('"guardar perfil" → reserva', getCategoriaRespostaFixa('guardar perfil') === 'reserva', '');
 ok('"reservar" → reserva', getCategoriaRespostaFixa('reservar') === 'reserva', '');
+
+// ─── B4. Nenhuma resposta fixa contém "preferes" (tratamento formal) ───
+ok('respostas sem "preferes"', !todasRespostas.toLowerCase().includes('preferes'), 'encontrado: preferes');
+
+// ─── B5. Comprar sem plano → resposta de preços (não pagamento) ───
+const overrideNetflix = getRespostaPrecosSeSemPlano('quero netflix', {});
+ok('"quero netflix" sem plano → precos_netflix', overrideNetflix && overrideNetflix.categoria === 'precos_netflix', overrideNetflix ? `got ${overrideNetflix.categoria}` : 'null');
+const overridePrime = getRespostaPrecosSeSemPlano('quero prime', {});
+ok('"quero prime" sem plano → precos_prime', overridePrime && overridePrime.categoria === 'precos_prime', overridePrime ? `got ${overridePrime.categoria}` : 'null');
+const noOverride = getRespostaPrecosSeSemPlano('quero netflix', { plano: 'individual' });
+ok('"quero netflix" com plano → sem override', noOverride === null, noOverride ? 'expected null' : '');
 
 // ─── C. QUALIDADE — ≤500 chars, ≤5 frases, terminam com ? (quando for pergunta) ───
 console.log('\n--- C. Qualidade ---');

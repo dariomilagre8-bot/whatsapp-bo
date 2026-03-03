@@ -96,6 +96,7 @@ function initClientState(extra) {
     serviceKey: null,
     plataforma: null,
     plano: null,
+    ultimaPlataforma: null, // 'netflix' | 'prime' | null — contexto para disponibilidade
     valor: null,
     totalValor: 0,
     lastActivity: Date.now(),

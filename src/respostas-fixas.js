@@ -70,7 +70,7 @@ const CATEGORIAS = [
   {
     id: 'quero_comprar',
     triggers: ['quero comprar', 'quero', 'vou levar', 'pode ser', 'aceito', 'bora', 'vamos', 'manda', 'quero um', 'quero netflix', 'quero prime', 'quero assinar'],
-    resposta: 'Excelente escolha! 🎉\nPara finalizar:\n1. Diga-me o plano que escolheu\n2. Faça a transferência\n3. Envie o comprovativo aqui\nQual plano deseja?',
+    resposta: 'Excelente escolha! 🎉\nPara finalizar:\n1. Diga-me o plano que escolheu\n2. Faça a transferência\n3. Envie o comprovativo aqui\nQual plano prefere? (Individual / Partilha / Família)',
   },
   {
     id: 'falar_humano',
@@ -131,6 +131,23 @@ function getCategoriaRespostaFixa(mensagem) {
   return r.match ? r.categoria : null;
 }
 
+/**
+ * [CPA Ronda 2] Se a intenção for comprar mas faltar plano no state, devolve categoria e resposta de preços.
+ * @param {string} mensagem
+ * @param {{ plano?: string, cart?: Array<{ plan?: string }> }} state
+ * @returns {{ categoria: string, resposta: string } | null } precos_netflix, precos_prime ou precos_geral; null se já tem plano
+ */
+function getRespostaPrecosSeSemPlano(mensagem, state) {
+  const r = verificarRespostaFixa(mensagem);
+  if (!r.match || r.categoria !== 'quero_comprar') return null;
+  const temPlano = !!(state && (state.plano || (state.cart && state.cart[0] && state.cart[0].plan)));
+  if (temPlano) return null;
+  const norm = normalizar(mensagem);
+  const catPrecos = norm.includes('netflix') ? 'precos_netflix' : norm.includes('prime') || norm.includes('amazon') ? 'precos_prime' : 'precos_geral';
+  const cat = CATEGORIAS.find(c => c.id === catPrecos);
+  return cat ? { categoria: cat.id, resposta: cat.resposta } : null;
+}
+
 const CATEGORIAS_ESCALAR_URGENTE = ['codigo_verificacao', 'senha_errada', 'paguei_sem_resposta'];
 const CATEGORIAS_ESCALAR_NORMAL = ['falar_humano', 'reembolso', 'reserva'];
 const CATEGORIAS_PAUSAR_BOT = ['codigo_verificacao', 'senha_errada', 'falar_humano'];
@@ -142,4 +159,5 @@ module.exports = {
   CATEGORIAS_PAUSAR_BOT,
   verificarRespostaFixa,
   getCategoriaRespostaFixa,
+  getRespostaPrecosSeSemPlano,
 };

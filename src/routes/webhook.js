@@ -22,6 +22,8 @@ const branding = require('../../branding');
 const {
   verificarRespostaFixa,
   getCategoriaRespostaFixa,
+  getRespostaPrecosSeSemPlano,
+  CATEGORIAS,
   CATEGORIAS_ESCALAR_URGENTE,
   CATEGORIAS_ESCALAR_NORMAL,
   CATEGORIAS_PAUSAR_BOT,
@@ -523,9 +525,17 @@ async function handleWebhook(req, res) {
 
     // [CPA] Respostas fixas Zara — prioridade sobre IA (memória local para saudação, 24h)
     if (textMessage && textMessage.trim()) {
-      const fixa = verificarRespostaFixa(textMessage);
+      let fixa = verificarRespostaFixa(textMessage);
+      let cat = fixa.match ? fixa.categoria : null;
+      // [CPA Ronda 2] quero_comprar sem plano → forçar precos (evitar gatilho de pagamento prematuro)
+      if (cat === 'quero_comprar') {
+        const precosOverride = getRespostaPrecosSeSemPlano(textMessage, state);
+        if (precosOverride) {
+          fixa = { match: true, categoria: precosOverride.categoria, resposta: precosOverride.resposta };
+          cat = precosOverride.categoria;
+        }
+      }
       if (fixa.match) {
-        const cat = fixa.categoria;
         if (cat === 'saudacao') {
           const jaRecebeu = memoriaLocal.get(`saudacao:${senderNum}`);
           if (jaRecebeu) {
@@ -576,7 +586,7 @@ async function handleWebhook(req, res) {
                 if (!stock.disponivel) {
                   const tipoLabel = tipoConta === 'full_account' ? 'Individual' : 'Partilhado/Família';
                   await sendWhatsAppMessage(senderNum,
-                    `De momento não temos contas ${platNorm} ${tipoLabel} disponíveis.\nPosso avisar-te quando tiver? Ou preferes ver outro plano?`);
+                    `De momento não temos contas ${platNorm} ${tipoLabel} disponíveis.\nPosso avisar quando tiver? Ou prefere ver outro plano?`);
                   if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ Stock esgotado: ${platNorm} ${tipoLabel}\nCliente: ${senderNum}`);
                   return res.status(200).send('OK');
                 }
@@ -627,7 +637,15 @@ async function handleWebhook(req, res) {
           if (CATEGORIAS_ESCALAR_NORMAL.includes(cat) && cat !== 'falar_humano' && cat !== 'reembolso' && cat !== 'reserva') {
             // falar_humano, reembolso e reserva já tratados acima
           }
-          await sendWhatsAppMessage(senderNum, fixa.resposta);
+          // [CPA Ronda 2] Memória de plataforma para perguntas de disponibilidade
+          if (cat === 'precos_netflix') state.ultimaPlataforma = 'netflix';
+          if (cat === 'precos_prime') state.ultimaPlataforma = 'prime';
+          let msgEnviar = fixa.resposta;
+          if (cat === 'quero_comprar' && state.plataforma && state.plano) {
+            const planoLabel = (state.plano || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+            msgEnviar = `Excelente escolha do plano ${planoLabel} de ${state.plataforma}! 🎉\nPara finalizar:\n1. Faça a transferência\n2. Envie o comprovativo aqui\nQualquer dúvida, estou aqui.`;
+          }
+          await sendWhatsAppMessage(senderNum, msgEnviar);
           return res.status(200).send('OK');
         }
       }
@@ -981,9 +999,14 @@ async function handleWebhook(req, res) {
 
     // ---- STEP: captura_nome ----
     if (state.step === 'captura_nome') {
-      const name = textMessage.trim();
-      if (name.length < 2) {
-        await sendWhatsAppMessage(senderNum, 'Por favor, diz-me o teu nome para continuarmos. 😊');
+      const raw = textMessage.trim();
+      const saudacaoCurta = /^(oi|ola|olá|hey|hi|hello|epa|bom dia|boa tarde|boa noite|tudo bem)$/i.test(raw) || raw.length <= 3;
+      const antiLixo = /\b(netflix|prime|quero)\b/i.test(raw);
+      const usarPushName = saudacaoCurta || antiLixo;
+      const primeiroNome = (pushName || '').trim().split(/\s+/)[0] || '';
+      const name = usarPushName && primeiroNome ? primeiroNome : raw;
+      if (!name || name.length < 2) {
+        await sendWhatsAppMessage(senderNum, 'Por favor, diga-me o seu nome para continuarmos. 😊');
         return res.status(200).send('OK');
       }
       state.clientName = name;
@@ -1056,6 +1079,7 @@ async function handleWebhook(req, res) {
         state.currentItemIndex = 0;
         state.serviceKey = available[0];
         state.plataforma = CATALOGO[available[0]].nome;
+        state.ultimaPlataforma = available[0] === 'netflix' ? 'netflix' : 'prime';
         state.step = 'escolha_plano';
         let msg = '';
         if (available.length > 1) msg = `Ótimo! Vamos configurar os dois serviços.\n\nVamos começar com o ${CATALOGO[available[0]].nome}:\n\n`;
@@ -1101,8 +1125,10 @@ async function handleWebhook(req, res) {
       if (objKey && state.objeccoes && !state.objeccoes.includes(objKey)) state.objeccoes.push(objKey);
       const objeccoesLine = (state.objeccoes && state.objeccoes.length > 0) ? `\nObjecções já levantadas por este cliente (não repetir a mesma resposta, varia ou aprofunda): ${state.objeccoes.join(', ')}.` : '';
       const stockInfoStr = `Netflix: ${netflixSlots} perfis disponíveis | Prime Video: ${primeSlots} perfis disponíveis`;
+      const ultimaPlatStr = state.ultimaPlataforma === 'netflix' ? 'Netflix' : state.ultimaPlataforma === 'prime' ? 'Prime Video' : 'não definida';
       const contextoClienteLine = (state.contextoClienteStr) ? `\n\nCONTEXTO CLIENTE (usa apenas esta informação, NUNCA inventes):\n${state.contextoClienteStr}` : '\n\nCONTEXTO CLIENTE: CLIENTE NOVO.';
-      const promptFinal = SYSTEM_PROMPT.replace('[STOCK_PLACEHOLDER]', stockInfoStr) + objeccoesLine + contextoClienteLine;
+      const contextoPlataforma = `\nÚltima plataforma na conversa: ${ultimaPlatStr}. Se o cliente perguntar sobre disponibilidade/stock sem especificar, responde sobre essa. Se não definida, pergunta: "Gostaria de verificar a disponibilidade para Netflix ou Prime Video?"`;
+      const promptFinal = SYSTEM_PROMPT.replace('[STOCK_PLACEHOLDER]', stockInfoStr) + objeccoesLine + contextoClienteLine + contextoPlataforma;
       try {
         const model = genAI.getGenerativeModel({
           model: 'gemini-2.5-flash',
@@ -1123,7 +1149,7 @@ async function handleWebhook(req, res) {
         await sendWhatsAppMessage(senderNum, aiText);
       } catch (e) {
         console.error('Erro AI:', e.message);
-        await sendWhatsAppMessage(senderNum, `${state.clientName || ''}, temos Netflix e Prime Video. Qual te interessa?`);
+        await sendWhatsAppMessage(senderNum, `${tratamentoFormal(state.clientName)}, temos Netflix e Prime Video. Qual lhe interessa?`);
       }
       return res.status(200).send('OK');
     }
@@ -1232,7 +1258,7 @@ async function handleWebhook(req, res) {
       if (switchedService) {
         const hasSwStock = await hasAnyStock(CATALOGO[switchedService].nome);
         if (!hasSwStock) {
-          await sendWhatsAppMessage(senderNum, `😔 De momento não temos *${CATALOGO[switchedService].nome}* disponível.\n\nMas temos *${CATALOGO[state.serviceKey].nome}* disponível! Qual plano preferes?\n\n${formatPriceTable(state.serviceKey)}`);
+          await sendWhatsAppMessage(senderNum, `😔 De momento não temos *${CATALOGO[switchedService].nome}* disponível.\n\nMas temos *${CATALOGO[state.serviceKey].nome}* disponível! Qual plano prefere? (Individual / Partilha / Família)\n\n${formatPriceTable(state.serviceKey)}`);
           if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ *STOCK ESGOTADO* de ${CATALOGO[switchedService].nome}!\nCliente: ${senderNum} (${state.clientName || 'sem nome'}) solicitou em mid-flow.\nMantido no fluxo de ${CATALOGO[state.serviceKey].nome}.`);
         } else {
           state.serviceKey = switchedService;
@@ -1241,7 +1267,7 @@ async function handleWebhook(req, res) {
             state.interestStack = [switchedService];
             state.currentItemIndex = 0;
           } else state.currentItemIndex = state.interestStack.indexOf(switchedService);
-          await sendWhatsAppMessage(senderNum, `${formatPriceTable(switchedService)}\n\nQual plano preferes? (${planChoicesText(switchedService)})`);
+          await sendWhatsAppMessage(senderNum, `${formatPriceTable(switchedService)}\n\nQual plano prefere? (${planChoicesText(switchedService)})`);
         }
         return res.status(200).send('OK');
       }
@@ -1252,7 +1278,7 @@ async function handleWebhook(req, res) {
         const availPlans = Object.entries(CATALOGO[state.serviceKey].planos).map(([p, price]) => `- ${p.charAt(0).toUpperCase() + p.slice(1)}: ${PLAN_SLOTS[p] || 1} perfil(s), ${price.toLocaleString('pt')} Kz`).join('\n');
         const choicesStr = planChoicesText(state.serviceKey);
         const otherSvc = state.serviceKey === 'netflix' ? 'Prime Video' : 'Netflix';
-        const planContext = `Tu és o Assistente de IA da ${branding.nome}. O cliente está a escolher um plano de ${state.plataforma} APENAS.\n\nPLANOS DE ${state.plataforma.toUpperCase()} DISPONÍVEIS:\n${availPlans}\n\nREGRAS: Fala APENAS sobre ${state.plataforma}. Responde em 1-2 frases curtas. Termina com: "Qual plano preferes? (${choicesStr})"${objeccoesLinePlan}`;
+        const planContext = `Tu és o Assistente de IA da ${branding.nome}. O cliente está a escolher um plano de ${state.plataforma} APENAS.\n\nPLANOS DE ${state.plataforma.toUpperCase()} DISPONÍVEIS:\n${availPlans}\n\nREGRAS: Fala APENAS sobre ${state.plataforma}. Responde em 1-2 frases curtas. Termina com: "Qual plano prefere? (${choicesStr})"${objeccoesLinePlan}`;
         const model = genAI.getGenerativeModel({
           model: 'gemini-2.5-flash',
           systemInstruction: { parts: [{ text: planContext }] }
