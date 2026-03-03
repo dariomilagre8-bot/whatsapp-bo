@@ -97,6 +97,7 @@ function initClientState(extra) {
     plataforma: null,
     plano: null,
     ultimaPlataforma: null, // 'netflix' | 'prime' | null — contexto para disponibilidade
+    aguardandoCrossSellPrime: false, // [CPA P5] após "Netflix sem stock" → "Sim" envia preços Prime
     valor: null,
     totalValor: 0,
     lastActivity: Date.now(),

@@ -23,6 +23,9 @@ const {
   verificarRespostaFixa,
   getCategoriaRespostaFixa,
   getRespostaPrecosSeSemPlano,
+  RESPOSTA_SEM_STOCK_NETFLIX_CROSSSELL,
+  RESPOSTA_COMPROVATIVO_RECEBIDO,
+  RESPOSTA_FECHO_IBAN,
   CATEGORIAS,
   CATEGORIAS_ESCALAR_URGENTE,
   CATEGORIAS_ESCALAR_NORMAL,
@@ -260,7 +263,7 @@ function validarResposta(texto) {
     /^olá[,.]?\s*confirmamos/i,
   ];
   if (INVALIDAS.some(p => p.test(texto.trim()))) {
-    return `Estou aqui para te ajudar! Tens alguma dúvida sobre os nossos planos? 😊`;
+    return `Estou aqui para ajudá-lo(a)! Tem alguma dúvida sobre os nossos planos? 😊`;
   }
   if (texto.trim().length < 15) {
     return `Podes dar-me mais detalhes? Quero garantir que te ajudo correctamente. 😊`;
@@ -494,6 +497,16 @@ async function handleWebhook(req, res) {
     markDirty(senderNum);
     console.log(`🔍 DEBUG: step="${state.step}" para ${senderNum}`);
 
+    // [CPA] Blindagem imagem/documento: assumir comprovativo_recebido, responder, notificar, pausar (imune a falta de conversation)
+    if (isImage || isDoc) {
+      await sendWhatsAppMessage(senderNum, RESPOSTA_COMPROVATIVO_RECEBIDO);
+      const nomeOuNum = (state.clientName || pushName || senderNum).toString().trim() || senderNum;
+      if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `💰 *POSSÍVEL PAGAMENTO* — ${nomeOuNum} enviou uma ${isImage ? 'imagem' : 'comprovativo/documento'}. Verifica o WhatsApp!`);
+      memoriaLocal.set(`pausado:${senderNum}`, true, null);
+      pausedClients[senderNum] = true;
+      return res.status(200).send('OK');
+    }
+
     // [CPA] Contexto do cliente — consultar dados reais (uma vez por mensagem)
     let dadosCliente = null;
     let vendasCliente = [];
@@ -522,6 +535,24 @@ async function handleWebhook(req, res) {
     if (textMessage && (await escalacaoHandler.handleHumanTransfer(depsEscalacao, senderNum, state, textMessage))) return res.status(200).send('OK');
     if (textMessage && (await escalacaoHandler.handleEscalacao(depsEscalacao, senderNum, state, textMessage, pushName))) return res.status(200).send('OK');
     if (textMessage && (await escalacaoHandler.handleLocationIssue(depsEscalacao, senderNum, state, textMessage))) return res.status(200).send('OK');
+
+    // [CPA P5] Resposta "Sim" após cross-sell Netflix→Prime: assumir contexto Prime e enviar preços
+    if (textMessage && state.aguardandoCrossSellPrime && /^(sim|quero|gostaria|yes|ok|claro|pode ser|envia|manda|por favor)$/i.test(textMessage.trim())) {
+      const primeDisponivel = await hasAnyStock('Prime Video');
+      if (primeDisponivel) {
+        state.aguardandoCrossSellPrime = false;
+        state.serviceKey = 'prime_video';
+        state.plataforma = 'Prime Video';
+        state.ultimaPlataforma = 'prime';
+        state.step = 'escolha_plano';
+        state.interestStack = ['prime_video'];
+        state.currentItemIndex = 0;
+        const catPrime = CATEGORIAS.find(c => c.id === 'precos_prime');
+        await sendWhatsAppMessage(senderNum, catPrime ? catPrime.resposta : `📺 Prime Video:\n\n• Individual — 3.000 Kz/mês\n• Partilhado — 5.500 Kz/mês\n• Família — 8.000 Kz/mês\n\nQual lhe interessa?`);
+        return res.status(200).send('OK');
+      }
+      state.aguardandoCrossSellPrime = false;
+    }
 
     // [CPA] Respostas fixas Zara — prioridade sobre IA (memória local para saudação, 24h)
     if (textMessage && textMessage.trim()) {
@@ -585,6 +616,16 @@ async function handleWebhook(req, res) {
                 const stock = await clienteLookup.verificarStock(platNorm, tipoConta);
                 if (!stock.disponivel) {
                   const tipoLabel = tipoConta === 'full_account' ? 'Individual' : 'Partilhado/Família';
+                  // [CPA P5] Cross-sell: Netflix sem stock → sugerir Prime Video se disponível
+                  if (platNorm === 'Netflix') {
+                    const primeDisponivel = await hasAnyStock('Prime Video');
+                    if (primeDisponivel) {
+                      await sendWhatsAppMessage(senderNum, RESPOSTA_SEM_STOCK_NETFLIX_CROSSSELL);
+                      state.aguardandoCrossSellPrime = true;
+                      if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ Stock Netflix esgotado — cross-sell Prime enviado\nCliente: ${senderNum}`);
+                      return res.status(200).send('OK');
+                    }
+                  }
                   await sendWhatsAppMessage(senderNum,
                     `De momento não temos contas ${platNorm} ${tipoLabel} disponíveis.\nPosso avisar quando tiver? Ou prefere ver outro plano?`);
                   if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ Stock esgotado: ${platNorm} ${tipoLabel}\nCliente: ${senderNum}`);
@@ -679,7 +720,7 @@ async function handleWebhook(req, res) {
         state.repeatTracker.count++;
         if (state.repeatTracker.count >= 2) {
           pausedClients[senderNum] = true;
-          await sendWhatsAppMessage(senderNum, `Parece que estou com dificuldades em entender o teu pedido. Vou chamar a nossa equipa para te ajudar! 🛠️\n\n— *${BOT_NAME}*, Assistente Virtual ${branding.nome}`);
+          await sendWhatsAppMessage(senderNum, `Parece que estou com dificuldades em entender o seu pedido. Vou chamar a nossa equipa para ajudá-lo(a)! 🛠️\n\n— *${BOT_NAME}*, Assistente Virtual ${branding.nome}`);
           if (MAIN_BOSS) {
             await sendWhatsAppMessage(MAIN_BOSS, `🔁 *LOOP / PEDIDO NÃO PERCEBIDO*\n👤 ${senderNum}${state.clientName ? ' (' + state.clientName + ')' : ''}\n💬 "${textMessage}" (repetido ${state.repeatTracker.count}x)\n📍 Step: ${state.step}\n\nBot pausado. Use *retomar ${senderNum}* quando resolver.`);
           }
@@ -857,7 +898,7 @@ async function handleWebhook(req, res) {
           let aiText = resAI.response.text();
           const validacaoComp = validarRespostaZara(aiText);
           if (!validacaoComp.valido) {
-            aiText = 'Vou confirmar com a equipa. Dá-me um momento!';
+            aiText = validacaoComp.substituir || 'Vou confirmar com a equipa. Dá-me um momento!';
             if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ Resposta IA comprovativo bloqueada: ${validacaoComp.motivo}\nCliente: ${senderNum}`);
           }
           chatHistories[senderNum] = chatHistories[senderNum] || [];
@@ -953,13 +994,21 @@ async function handleWebhook(req, res) {
         );
         return res.status(200).send('OK');
       }
+      // [CPA] Se buscarClientePorWhatsapp encontrou cliente (ehAntigo), não pedir nome — ir directo ao menu
+      if (dadosCliente && dadosCliente.ehAntigo) {
+        state.clientName = (dadosCliente.nome || pushName || '').trim() || ((pushName || '').trim().split(/\s+/)[0]) || '';
+        const { msg, step } = await buildServiceMenuMsg(state, state.clientName);
+        state.step = step;
+        await sendWhatsAppMessage(senderNum, msg);
+        return res.status(200).send('OK');
+      }
       state.step = 'captura_nome';
       console.log(`📤 DEBUG: A enviar saudação inicial para ${senderNum}`);
       if (shouldSendIntro(senderNum)) {
         markIntroSent(senderNum);
         const [nfOk, pvOk] = await Promise.all([hasAnyStock('Netflix'), hasAnyStock('Prime Video')]);
         const svcList = [nfOk ? '*Netflix*' : null, pvOk ? '*Prime Video*' : null].filter(Boolean).join(' e ');
-        const svcLine = svcList ? `Estou aqui para te ajudar a contratar ou renovar planos de ${svcList} em Angola!\n\n` : `Estou aqui para te ajudar com os nossos serviços de streaming em Angola!\n\n`;
+        const svcLine = svcList ? `Estou aqui para ajudá-lo(a) a contratar ou renovar planos de ${svcList} em Angola!\n\n` : `Estou aqui para ajudá-lo(a) com os nossos serviços de streaming em Angola!\n\n`;
         await sendWhatsAppMessage(senderNum,
           `Olá, Caríssimo(a)! 👋 Sou *${BOT_NAME}*, Assistente da ${branding.nome}.\n\n` +
           svcLine +
@@ -1070,6 +1119,16 @@ async function handleWebhook(req, res) {
           else outOfStock.push(svc);
         }
         for (const svc of outOfStock) {
+          // [CPA P5] Cross-sell: Netflix sem stock → sugerir Prime Video se disponível
+          if (svc === 'netflix') {
+            const primeDisponivel = await hasAnyStock('Prime Video');
+            if (primeDisponivel) {
+              await sendWhatsAppMessage(senderNum, RESPOSTA_SEM_STOCK_NETFLIX_CROSSSELL);
+              state.aguardandoCrossSellPrime = true;
+              if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ *STOCK ESGOTADO* Netflix — cross-sell Prime enviado\nCliente: ${senderNum} (${state.clientName || 'sem nome'})`);
+              return res.status(200).send('OK');
+            }
+          }
           await sendWhatsAppMessage(senderNum, `😔 De momento não temos *${CATALOGO[svc].nome}* disponível. Vamos notificá-lo assim que houver stock!`);
           if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ *STOCK ESGOTADO* de ${CATALOGO[svc].nome}!\nCliente: ${senderNum} (${state.clientName || 'sem nome'})`);
           logLostSale(senderNum, state.clientName, [svc], 'escolha_servico', `Stock esgotado: ${CATALOGO[svc].nome}`);
@@ -1140,7 +1199,7 @@ async function handleWebhook(req, res) {
         let aiText = validarResposta(resAI.response.text());
         const validacao = validarRespostaZara(aiText);
         if (!validacao.valido) {
-          aiText = 'Vou confirmar com a equipa. Dá-me um momento!';
+          aiText = validacao.substituir || 'Vou confirmar com a equipa. Dá-me um momento!';
           if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ Resposta IA bloqueada (anti-alucinação): ${validacao.motivo}\nCliente: ${senderNum}\nResposta original truncada.`);
         }
         chatHistories[senderNum].push({ role: 'user', parts: [{ text: textMessage || 'Olá' }] });
@@ -1329,7 +1388,7 @@ async function handleWebhook(req, res) {
     const phone = req.body?.data?.key?.senderPn || req.body?.data?.key?.remoteJid?.replace('@s.whatsapp.net', '').replace('@lid', '');
     if (phone) {
       await sendWhatsAppMessage(phone,
-        `Peço desculpa, ocorreu um problema do meu lado 😔\nVou chamar um colega para te ajudar agora. Um momento!`
+        `Peço desculpa, ocorreu um problema do meu lado 😔\nVou chamar um colega para ajudá-lo(a) agora. Um momento!`
       ).catch(() => {});
       if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS,
         `🆘 FALLBACK UNIVERSAL\n📞 ${phone}\nMotivo: ${error.message}\nAcção: assumir conversa urgente`

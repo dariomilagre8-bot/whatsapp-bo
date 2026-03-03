@@ -185,12 +185,14 @@ ok('CATEGORIAS_PAUSAR_BOT inclui codigo_verificacao e senha_errada',
 
 // ─── J. VALIDAR RESPOSTA (validarRespostaZara) ───
 console.log('\n--- J. Validar resposta Zara ---');
-const { validarRespostaZara } = require('../src/validar-resposta');
+const { validarRespostaZara, MSG_PRECO_INVALIDO } = require('../src/validar-resposta');
 ok('senha: abc123 → inválido', !validarRespostaZara('A senha: abc123 está errada').valido, '');
 ok('dashboard → inválido', !validarRespostaZara('Consulta o dashboard').valido, '');
 ok('Olá! Como posso ajudar? → válido', validarRespostaZara('Olá! Como posso ajudar?').valido, '');
 ok('[NOME] → inválido', !validarRespostaZara('Olá [NOME]!').valido, '');
 ok('netfixxxdabanda bloqueado', !validarRespostaZara('Email: netfixxxdabanda1@gmail.com').valido, '');
+const valPreco = validarRespostaZara('O plano custa 9999 Kz por mês.');
+ok('preço Kz inventado (9999) → inválido', !valPreco.valido && valPreco.substituir === MSG_PRECO_INVALIDO, '');
 
 // ─── K. CLIENTE LOOKUP — funções existem e exportam ───
 console.log('\n--- K. Cliente lookup ---');

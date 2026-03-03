@@ -148,12 +148,32 @@ function getRespostaPrecosSeSemPlano(mensagem, state) {
   return cat ? { categoria: cat.id, resposta: cat.resposta } : null;
 }
 
+/** [CPA P5] Cross-sell Prime Video quando Netflix sem stock — mensagem para enviar ao cliente */
+const RESPOSTA_SEM_STOCK_NETFLIX_CROSSSELL =
+  'Infelizmente, o nosso stock para a Netflix esgotou temporariamente. 😔\n\n' +
+  'No entanto, como procura bons filmes e séries, o Prime Video tem um catálogo excelente (incluindo séries de sucesso e filmes originais) e temos contas disponíveis para entrega imediata a partir de apenas 3.000 Kz/mês. 🍿\n\n' +
+  'Gostaria de ver a tabela de preços do Prime Video para garantir o seu entretenimento hoje?';
+
+/** [CPA] Resposta quando cliente envia imagem/documento (comprovativo) — webhook trata e pausa */
+const RESPOSTA_COMPROVATIVO_RECEBIDO =
+  'Recebi o seu documento/imagem! 📄 Vou encaminhar para o responsável validar o pagamento. O seu perfil será entregue em breve. 😊';
+
+/** [CPA] Texto de FECHO com IBAN — usar ao pedir comprovativo (IBAN pode ser substituído por config) */
+const RESPOSTA_FECHO_IBAN =
+  'Excelente! 🎉 Para finalizar:\n' +
+  '1. Faça a transferência (IBAN: AO06 0000 0000 0000 0000 0 - StreamZone)\n' +
+  '2. Envie o comprovativo/foto por aqui.\n' +
+  'Assim que receber a foto, valido e entrego o perfil!';
+
 const CATEGORIAS_ESCALAR_URGENTE = ['codigo_verificacao', 'senha_errada', 'paguei_sem_resposta'];
 const CATEGORIAS_ESCALAR_NORMAL = ['falar_humano', 'reembolso', 'reserva'];
 const CATEGORIAS_PAUSAR_BOT = ['codigo_verificacao', 'senha_errada', 'falar_humano'];
 
 module.exports = {
   CATEGORIAS,
+  RESPOSTA_SEM_STOCK_NETFLIX_CROSSSELL,
+  RESPOSTA_COMPROVATIVO_RECEBIDO,
+  RESPOSTA_FECHO_IBAN,
   CATEGORIAS_ESCALAR_URGENTE,
   CATEGORIAS_ESCALAR_NORMAL,
   CATEGORIAS_PAUSAR_BOT,
