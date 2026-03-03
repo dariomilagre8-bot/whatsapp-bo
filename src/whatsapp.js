@@ -4,8 +4,16 @@ const https = require('https');
 const { cleanNumber } = require('../googleSheets');
 const branding = require('../branding');
 const { CATALOGO, PAYMENT } = require('./config');
+const { getInstanceName } = require('./evolution-instance-context');
 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+
+// Instância a usar: do contexto do webhook (quando várias instâncias usam o mesmo endpoint) ou env
+function getSendInstanceName() {
+  const fromContext = getInstanceName();
+  if (fromContext) return fromContext;
+  return process.env.EVOLUTION_INSTANCE_NAME || '';
+}
 
 // Retorna { sent: boolean, invalidNumber: boolean }
 async function sendWhatsAppMessage(number, text) {
@@ -17,7 +25,8 @@ async function sendWhatsAppMessage(number, text) {
       return { sent: false, invalidNumber: false };
     }
     const finalAddress = cleanTarget + '@s.whatsapp.net';
-    const url = `${process.env.EVOLUTION_API_URL}/message/sendText/${process.env.EVOLUTION_INSTANCE_NAME}`;
+    const instanceName = getSendInstanceName();
+    const url = `${process.env.EVOLUTION_API_URL}/message/sendText/${encodeURIComponent(instanceName)}`;
     console.log(`📤 SEND: URL=${url}`);
     console.log(`📤 SEND: Para=${finalAddress} | Texto=${text.substring(0, 60)}...`);
     await axios.post(url, {

@@ -34,6 +34,7 @@ const {
 const { memoriaLocal } = require('../memoria-local');
 const clienteLookup = require('../cliente-lookup');
 const { validarRespostaZara } = require('../validar-resposta');
+const { runWithInstance } = require('../evolution-instance-context');
 
 const {
   genAI,
@@ -434,6 +435,18 @@ async function processarComandoSupervisor(comando, supervisorPhone) {
   );
 }
 
+// Nomes de instâncias aceites (vazio = aceitar qualquer). Ex: "Streamzone Braulio,Zara-Teste"
+function getAllowedInstances() {
+  const raw = process.env.EVOLUTION_ALLOWED_INSTANCES || '';
+  if (!raw.trim()) return null;
+  return raw.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+// Extrai o nome da instância do payload (Evolution API v2 pode enviar em vários sítios)
+function getInstanceFromBody(body) {
+  return body.instance || body.instanceName || body.data?.instance || body.data?.instanceName || null;
+}
+
 async function handleWebhook(req, res) {
   try {
     const body = req.body;
@@ -441,6 +454,32 @@ async function handleWebhook(req, res) {
     const messageData = body.data;
     if (messageData.key.fromMe) return res.status(200).send('Ignore self');
 
+    const incomingInstance = getInstanceFromBody(body);
+    const allowed = getAllowedInstances();
+    if (allowed && allowed.length > 0) {
+      const allowedSet = new Set(allowed);
+      if (incomingInstance && !allowedSet.has(incomingInstance)) {
+        console.log(`[webhook] Instância "${incomingInstance}" não está em EVOLUTION_ALLOWED_INSTANCES — ignorar`);
+        return res.status(200).send('OK');
+      }
+      if (!incomingInstance) {
+        console.log('[webhook] Payload sem nome de instância — usar instância default do env');
+      }
+    }
+
+    const instanceToUse = incomingInstance || process.env.EVOLUTION_INSTANCE_NAME || null;
+
+    return await runWithInstance(instanceToUse, async () => {
+      return await handleWebhookInner(req, res, body, messageData);
+    });
+  } catch (err) {
+    console.error('[webhook] Erro:', err);
+    return res.status(500).send('Error');
+  }
+}
+
+async function handleWebhookInner(req, res, body, messageData) {
+  try {
     const remoteJid = messageData.key.remoteJid;
     const senderPn = messageData.key.senderPn || '';
     const rawJid = cleanNumber(remoteJid);
