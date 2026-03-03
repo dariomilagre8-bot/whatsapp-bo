@@ -34,11 +34,14 @@ app.use(cors({
 }));
 
 app.get('/health', (req, res) => {
+  const k = process.env.EVOLUTION_API_KEY || '';
   res.json({
     status: 'ok',
     uptime: Math.floor(process.uptime()),
     version: process.env.npm_package_version || '1.0.0',
     servico: 'StreamZone Bot',
+    evo_key_prefix: k ? k.substring(0, 8) + '...' : '(não definida)',
+    evo_instance: process.env.EVOLUTION_INSTANCE_NAME || '(não definida)',
   });
 });
 
