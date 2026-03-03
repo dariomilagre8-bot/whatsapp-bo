@@ -1,14 +1,25 @@
 // Cliente Evolution API + envio de mensagens
 const axios = require('axios');
 const https = require('https');
+const { AsyncLocalStorage } = require('async_hooks');
 const { cleanNumber } = require('../googleSheets');
 const branding = require('../branding');
 const { CATALOGO, PAYMENT } = require('./config');
-const { getInstanceName } = require('./evolution-instance-context');
 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-// Instância a usar: do contexto do webhook (quando várias instâncias usam o mesmo endpoint) ou env
+// Contexto da instância por pedido (AsyncLocalStorage — sem dependência externa)
+const _instanceStorage = new AsyncLocalStorage();
+
+function getInstanceName() {
+  return _instanceStorage.getStore()?.instanceName ?? null;
+}
+
+function runWithInstance(instanceName, fn) {
+  return _instanceStorage.run({ instanceName: instanceName || null }, fn);
+}
+
+// Instância a usar: do contexto do webhook ou env
 function getSendInstanceName() {
   const fromContext = getInstanceName();
   if (fromContext) return fromContext;
@@ -109,4 +120,5 @@ module.exports = {
   sendWhatsAppMessage,
   sendCredentialsEmail,
   sendPaymentMessages,
+  runWithInstance,
 };

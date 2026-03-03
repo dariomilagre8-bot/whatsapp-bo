@@ -34,7 +34,7 @@ const {
 const { memoriaLocal } = require('../memoria-local');
 const clienteLookup = require('../cliente-lookup');
 const { validarRespostaZara } = require('../validar-resposta');
-const { runWithInstance } = require('../evolution-instance-context');
+const { runWithInstance } = require('../whatsapp');
 
 const {
   genAI,
