@@ -707,9 +707,17 @@ async function handleWebhookInner(req, res, body, messageData) {
       state.aguardandoCrossSellPrime = false;
     }
 
-    // [CPA] Respostas fixas Zara — prioridade sobre IA (memória local para saudação, 24h)
+    // [CPA] Respostas fixas Zara — prioridade sobre IA; stock dinâmico: se 0, deixa IA responder
+    let netflixSlots = 0;
+    let primeSlots = 0;
     if (textMessage && textMessage.trim()) {
-      let fixa = verificarRespostaFixa(textMessage);
+      try {
+        [netflixSlots, primeSlots] = await Promise.all([
+          countAvailableProfiles('netflix').catch(() => 0),
+          countAvailableProfiles('prime_video').catch(() => 0),
+        ]);
+      } catch (_) {}
+      let fixa = verificarRespostaFixa(textMessage, netflixSlots, primeSlots);
       let cat = fixa.match ? fixa.categoria : null;
       // [CPA Ronda 2] quero_comprar sem plano → forçar precos (evitar gatilho de pagamento prematuro)
       if (cat === 'quero_comprar') {

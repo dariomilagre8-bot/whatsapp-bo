@@ -217,8 +217,10 @@ const CATEGORIAS_PAUSAR_BOT = ['codigo_verificacao', 'senha_errada', 'falar_huma
 /**
  * Verifica se a mensagem corresponde a alguma resposta fixa.
  * Usa o primeiro match por ordem de categoria (prioridade).
+ * Se precos_netflix e stock Netflix <= 0 (ou precos_prime e stock Prime <= 0), anula o match
+ * para o fluxo cair na IA, que avisa sobre stock esgotado.
  */
-function verificarRespostaFixa(mensagem) {
+function verificarRespostaFixa(mensagem, netflixSlots = 1, primeSlots = 1) {
   const norm = normalizar(mensagem);
   if (!norm) return { match: false };
 
@@ -226,6 +228,8 @@ function verificarRespostaFixa(mensagem) {
     for (const re of cat.padroes) {
       const regex = new RegExp(re.source, re.flags || 'i');
       if (regex.test(norm)) {
+        if (cat.id === 'precos_netflix' && netflixSlots <= 0) return { match: false };
+        if (cat.id === 'precos_prime' && primeSlots <= 0) return { match: false };
         return { match: true, categoria: cat.id, resposta: cat.resposta };
       }
     }
