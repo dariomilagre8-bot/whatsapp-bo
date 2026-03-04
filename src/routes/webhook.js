@@ -548,7 +548,7 @@ async function handleWebhookInner(req, res, body, messageData) {
     const lidId = remoteJid.includes('@lid') ? rawJid : null;
 
     const pushName = messageData.pushName || '';
-    let textMessage = messageData.message?.conversation || messageData.message?.extendedTextMessage?.text || '';
+    let textMessage = messageData.message?.conversation || messageData.message?.extendedTextMessage?.text || messageData.message?.imageMessage?.caption || messageData.message?.documentMessage?.caption || '';
     const docMsg = messageData.message?.documentMessage;
     const docMime = (docMsg?.mimetype || '').toLowerCase();
     const docFilename = (docMsg?.fileName || '').toLowerCase();
