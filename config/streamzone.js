@@ -43,7 +43,7 @@ module.exports = {
 
   // ═══════ STOCK (Google Sheets) ═══════
   stock: {
-    sheetName: 'Página1', // Nome da aba
+    sheetName: 'Sheet1', // Nome da aba
     platformCol: 'A',     // Coluna da plataforma
     statusCol: 'F',       // Coluna do status
     availableValue: 'disponivel', // Valor que indica disponível
