@@ -6,6 +6,7 @@ let model = null;
 
 function init(apiKey) {
   const genAI = new GoogleGenerativeAI(apiKey);
+  // Modelo estável; SDK não expõe apiVersion no getGenerativeModel
   model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 }
 

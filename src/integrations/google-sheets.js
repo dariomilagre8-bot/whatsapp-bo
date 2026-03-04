@@ -25,14 +25,22 @@ async function getStock(stockConfig) {
     const rows = res.data.values || [];
     const stock = {};
 
+    // Normalizar plataforma para chave canónica (insensível a maiúsculas/espaços)
+    const normalizePlatform = (raw) => {
+      const s = (raw || '').toString().trim().toLowerCase();
+      if (s === 'netflix') return 'Netflix';
+      if (s === 'prime video' || s === 'prime') return 'Prime Video';
+      return (raw || '').toString().trim();
+    };
+
     // Contar linhas disponíveis por plataforma
     for (let i = 1; i < rows.length; i++) { // skip header
       const row = rows[i];
-      const platform = (row[0] || '').trim(); // Coluna A
-      const status = (row[5] || '').trim().toLowerCase(); // Coluna F
+      const platform = normalizePlatform(row[0]); // Coluna A
+      const status = (row[5] ?? '').toString().trim().toLowerCase(); // Coluna F
 
       if (!stock[platform]) stock[platform] = 0;
-      if (status === stockConfig.availableValue) {
+      if (status === (stockConfig.availableValue || 'disponivel').toLowerCase()) {
         stock[platform]++;
       }
     }
