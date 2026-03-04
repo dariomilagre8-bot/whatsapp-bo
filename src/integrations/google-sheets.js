@@ -39,12 +39,13 @@ async function getStock(stockConfig) {
       const platformValue = row[0];
       const statusValue = row[5];
       const platform = normalizePlatform(platformValue); // Coluna A
-      const status = (statusValue ?? '').toString().trim().toLowerCase(); // Coluna F
+      const statusStr = (statusValue ?? '').toString().trim().toLowerCase(); // Coluna F
+      const isAvailable = statusStr.includes('disponivel') && !statusStr.includes('indisponivel');
 
       console.log('DEBUG STOCK:', platformValue, statusValue);
 
       if (!stock[platform]) stock[platform] = 0;
-      if (status === (stockConfig.availableValue || 'disponivel').toLowerCase()) {
+      if (isAvailable) {
         stock[platform]++;
       }
     }
