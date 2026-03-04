@@ -36,8 +36,12 @@ async function getStock(stockConfig) {
     // Contar linhas disponíveis por plataforma
     for (let i = 1; i < rows.length; i++) { // skip header
       const row = rows[i];
-      const platform = normalizePlatform(row[0]); // Coluna A
-      const status = (row[5] ?? '').toString().trim().toLowerCase(); // Coluna F
+      const platformValue = row[0];
+      const statusValue = row[5];
+      const platform = normalizePlatform(platformValue); // Coluna A
+      const status = (statusValue ?? '').toString().trim().toLowerCase(); // Coluna F
+
+      console.log('DEBUG STOCK:', platformValue, statusValue);
 
       if (!stock[platform]) stock[platform] = 0;
       if (status === (stockConfig.availableValue || 'disponivel').toLowerCase()) {
