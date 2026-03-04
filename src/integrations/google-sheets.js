@@ -33,13 +33,18 @@ async function getStock(stockConfig) {
       return (raw || '').toString().trim();
     };
 
+    // Normalizar texto para comparação (remove acentos: disponível -> disponivel)
+    const normalizeForStatus = (str) =>
+      (str || '').toString().trim().toLowerCase()
+        .normalize('NFD').replace(/\p{Diacritic}/gu, '');
+
     // Contar linhas disponíveis por plataforma
     for (let i = 1; i < rows.length; i++) { // skip header
       const row = rows[i];
       const platformValue = row[0];
       const statusValue = row[5];
       const platform = normalizePlatform(platformValue); // Coluna A
-      const statusStr = (statusValue ?? '').toString().trim().toLowerCase(); // Coluna F
+      const statusStr = normalizeForStatus(statusValue); // Coluna F
       const isAvailable = statusStr.includes('disponivel') && !statusStr.includes('indisponivel');
 
       console.log('DEBUG STOCK:', platformValue, statusValue);
