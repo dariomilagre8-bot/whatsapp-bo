@@ -21,7 +21,7 @@ if (fs.existsSync(credPath)) {
   console.log('✅ Google Sheets inicializado');
 }
 
-supabaseIntegration.init(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+supabaseIntegration.init(process.env.SUPABASE_URL, process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_KEY);
 console.log('✅ Supabase inicializado');
 
 llm.init(process.env.GEMINI_API_KEY);
