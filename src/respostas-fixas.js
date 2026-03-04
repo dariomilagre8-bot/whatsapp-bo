@@ -19,6 +19,12 @@ const CATEGORIAS = [
     resposta: 'Olá, Caríssimo(a)! 👋 Sou a Zara, Assistente da StreamZone Connect. Temos Netflix e Prime Video a preços acessíveis. O que gostaria de ver? 🎬',
   },
   {
+    id: 'disponibilidade_futura',
+    padroes: [/\b(quando (ter[aá]|volta|chega|tem|haver[aá])|previs[aã]o|data|prazo).*(netflix|prime|stock|dispon)/i],
+    resposta: 'Ainda não temos data prevista para reposição. Posso notificá-lo(a) assim que estiver disponível! 📢 Entretanto, temos outros planos que podem interessar.',
+    acao: 'manter_step',
+  },
+  {
     id: 'precos_netflix',
     padroes: [/^netflix$/i, /netflix\s+(pre[cç]o|quanto|custa|planos)/, /(pre[cç]o|quanto|custa|planos)\s+netflix/, /netflix\s+quanto/, /quanto\s+custa\s+netflix/],
     resposta: '🎬 *Netflix:*\n• Individual — 5.000 Kz (1 dispositivo)\n• Partilhado — 9.000 Kz (2 dispositivos)\n• Família — 13.500 Kz (3 dispositivos)\n\nQual lhe interessa? 😊',
