@@ -17,7 +17,7 @@ app.use(express.json());
 // ── Init serviços ──
 const credPath = path.join(__dirname, 'credentials.json');
 if (fs.existsSync(credPath)) {
-  googleSheets.init(credPath, process.env.GOOGLE_SHEETS_ID || process.env.GOOGLE_SHEET_ID);
+  googleSheets.init(credPath, process.env.GOOGLE_SHEETS_ID || process.env.GOOGLE_SHEET_ID || '1P5N1ulKdnGRfLNjEIShaGNGvD1bJuaXUcNwTn3gNyxc');
   console.log('✅ Google Sheets inicializado');
 }
 
@@ -57,7 +57,7 @@ const systemPrompt = fs.readFileSync(path.join(__dirname, 'prompts/streamzone.tx
 const evolutionConfig = {
   apiUrl: process.env.EVOLUTION_API_URL,
   apiKey: process.env.EVOLUTION_API_KEY,
-  instance: process.env.EVOLUTION_INSTANCE || process.env.EVOLUTION_INSTANCE_NAME,
+  instance: process.env.EVOLUTION_INSTANCE || process.env.EVOLUTION_INSTANCE_NAME || 'Zara-Teste',
 };
 
 // ── Routes ──
