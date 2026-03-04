@@ -6,7 +6,7 @@ let model = null;
 
 function init(apiKey) {
   const genAI = new GoogleGenerativeAI(apiKey);
-  model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
+  model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash-preview-05-20' });
 }
 
 async function generate(systemPrompt, userMessage, history = []) {
