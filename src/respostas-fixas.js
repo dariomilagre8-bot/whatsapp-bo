@@ -20,7 +20,10 @@ const CATEGORIAS = [
   },
   {
     id: 'disponibilidade_futura',
-    padroes: [/\b(quando (ter[aá]|volta|chega|tem|haver[aá])|previs[aã]o|data|prazo).*(netflix|prime|stock|dispon)/i],
+    padroes: [
+      /\b(qu[ae]ndo|qnd|qdo|previs[aã]o|data|prazo).*(ter[aá]|volta|chega|tem|haver[aá]|netflix|prime|stock|dispon)/i,
+      /\b(tem|haver[aã])\s*(previs[aã]o|data|prazo)/i,
+    ],
     resposta: 'Ainda não temos data prevista para reposição. Posso notificá-lo(a) assim que estiver disponível! 📢 Entretanto, temos outros planos que podem interessar.',
     acao: 'manter_step',
   },

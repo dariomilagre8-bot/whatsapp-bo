@@ -684,6 +684,57 @@ async function handleWebhookInner(req, res, body, messageData) {
     }
     state.contextoClienteStr = contextoCliente;
 
+    // [CPA] Respostas fixas ANTES de escalação e step — match aqui = responder e sair (não entrar em handler de step)
+    let netflixSlotsEarly = 0;
+    let primeSlotsEarly = 0;
+    if (textMessage && textMessage.trim()) {
+      try {
+        [netflixSlotsEarly, primeSlotsEarly] = await Promise.all([
+          countAvailableProfiles('netflix').catch(() => 0),
+          countAvailableProfiles('prime_video').catch(() => 0),
+        ]);
+      } catch (_) {}
+      const fixaEarly = verificarRespostaFixa(textMessage, netflixSlotsEarly, primeSlotsEarly);
+      if (fixaEarly.match) {
+        const catToUse = fixaEarly.categoria;
+        if (catToUse === 'disponibilidade_futura') {
+          await sendWhatsAppMessage(senderNum, fixaEarly.resposta);
+          return res.status(200).send('OK');
+        }
+        if (catToUse === 'saudacao') {
+          const jaRecebeu = _saudacaoJaEnviada(senderNum);
+          if (!jaRecebeu) {
+            _marcarSaudacao(senderNum, 24 * 60 * 60 * 1000);
+            const nomeSaud = (dadosCliente && dadosCliente.nome) ? dadosCliente.nome.trim() : (state.clientName || pushName || '');
+            const trat = tratamentoFormal(nomeSaud);
+            if (dadosCliente && dadosCliente.ehAntigo && vendasCliente.length > 0) {
+              const vendaActiva = vendasCliente.find(v => v.status === 'ativo' && v.diasRestantes != null && v.diasRestantes > 0);
+              const vendaExpirada = vendasCliente.find(v => v.status === 'ativo' && v.diasRestantes != null && v.diasRestantes <= 0);
+              if (vendaActiva && vendaActiva.diasRestantes > 7) {
+                await sendWhatsAppMessage(senderNum, `Olá, ${trat}! 😊 Bom vê-lo(a) de volta.\nO seu plano ${vendaActiva.plataforma} está activo por mais ${vendaActiva.diasRestantes} dias.\nPosso ajudar em alguma coisa?`);
+                return res.status(200).send('OK');
+              }
+              if (vendaActiva && vendaActiva.diasRestantes <= 7 && vendaActiva.diasRestantes > 0) {
+                await sendWhatsAppMessage(senderNum, `Olá, ${trat}! 😊\nO seu plano ${vendaActiva.plataforma} expira em ${vendaActiva.diasRestantes} dias.\nGostaria de renovar para não perder o acesso?`);
+                return res.status(200).send('OK');
+              }
+              if (vendaExpirada) {
+                const dias = Math.abs(vendaExpirada.diasRestantes || 0);
+                await sendWhatsAppMessage(senderNum, `Olá, ${trat}! 😊\nVi que o seu plano ${vendaExpirada.plataforma} expirou há ${dias} dias.\nGostaria de renovar?`);
+                return res.status(200).send('OK');
+              }
+            }
+            if (dadosCliente && dadosCliente.ehAntigo && vendasCliente.length === 0) {
+              await sendWhatsAppMessage(senderNum, `Olá, ${trat}! Bom vê-lo(a) de volta. 😊\nGostaria de ver os nossos planos?`);
+              return res.status(200).send('OK');
+            }
+            await sendWhatsAppMessage(senderNum, fixaEarly.resposta);
+            return res.status(200).send('OK');
+          }
+        }
+      }
+    }
+
     const depsEscalacao = { pausedClients, markDirty, sendWhatsAppMessage, MAIN_BOSS, checkClientInSheet, branding };
     if (textMessage && (await escalacaoHandler.handleHumanTransfer(depsEscalacao, senderNum, state, textMessage))) return res.status(200).send('OK');
     if (textMessage && (await escalacaoHandler.handleEscalacao(depsEscalacao, senderNum, state, textMessage, pushName))) return res.status(200).send('OK');
@@ -707,7 +758,8 @@ async function handleWebhookInner(req, res, body, messageData) {
       state.aguardandoCrossSellPrime = false;
     }
 
-    // [CPA] Respostas fixas Zara — prioridade sobre IA; stock dinâmico: se 0, deixa IA responder
+    // [CPA] Respostas fixas ANTES da lógica de step — verificarRespostaFixa() antes de qualquer if (state.step === ...). Se match, responder e sair.
+    // Stock dinâmico: se 0, deixa IA responder.
     let netflixSlots = 0;
     let primeSlots = 0;
     if (textMessage && textMessage.trim()) {
@@ -783,13 +835,26 @@ async function handleWebhookInner(req, res, body, messageData) {
                     if (primeDisponivel) {
                       await sendWhatsAppMessage(senderNum, RESPOSTA_SEM_STOCK_NETFLIX_CROSSSELL);
                       state.aguardandoCrossSellPrime = true;
-                      if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ Stock Netflix esgotado — cross-sell Prime enviado\nCliente: ${senderNum}`);
+                      if (MAIN_BOSS) {
+                        if (!state.stockEsgotadoNotificadoPara) state.stockEsgotadoNotificadoPara = {};
+                        if (!state.stockEsgotadoNotificadoPara.netflix) {
+                          await sendWhatsAppMessage(MAIN_BOSS, `⚠️ Stock Netflix esgotado — cross-sell Prime enviado\nCliente: ${senderNum}`);
+                          state.stockEsgotadoNotificadoPara.netflix = true;
+                        }
+                      }
                       return res.status(200).send('OK');
                     }
                   }
                   await sendWhatsAppMessage(senderNum,
                     `De momento não temos contas ${platNorm} ${tipoLabel} disponíveis.\nPosso avisar quando tiver? Ou prefere ver outro plano?`);
-                  if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ Stock esgotado: ${platNorm} ${tipoLabel}\nCliente: ${senderNum}`);
+                  if (MAIN_BOSS) {
+                    if (!state.stockEsgotadoNotificadoPara) state.stockEsgotadoNotificadoPara = {};
+                    const key = platNorm === 'Netflix' ? 'netflix' : 'prime_video';
+                    if (!state.stockEsgotadoNotificadoPara[key]) {
+                      await sendWhatsAppMessage(MAIN_BOSS, `⚠️ Stock esgotado: ${platNorm} ${tipoLabel}\nCliente: ${senderNum}`);
+                      state.stockEsgotadoNotificadoPara[key] = true;
+                    }
+                  }
                   return res.status(200).send('OK');
                 }
               } catch (e) {
@@ -1274,13 +1339,24 @@ async function handleWebhookInner(req, res, body, messageData) {
             if (primeDisponivel) {
               await sendWhatsAppMessage(senderNum, RESPOSTA_SEM_STOCK_NETFLIX_CROSSSELL);
               state.aguardandoCrossSellPrime = true;
-              if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ *STOCK ESGOTADO* Netflix — cross-sell Prime enviado\nCliente: ${senderNum} (${state.clientName || 'sem nome'})`);
+              if (MAIN_BOSS) {
+                if (!state.stockEsgotadoNotificadoPara) state.stockEsgotadoNotificadoPara = {};
+                if (!state.stockEsgotadoNotificadoPara.netflix) {
+                  await sendWhatsAppMessage(MAIN_BOSS, `⚠️ *STOCK ESGOTADO* Netflix — cross-sell Prime enviado\nCliente: ${senderNum} (${state.clientName || 'sem nome'})`);
+                  state.stockEsgotadoNotificadoPara.netflix = true;
+                }
+              }
               return res.status(200).send('OK');
             }
           }
           await sendWhatsAppMessage(senderNum, `😔 De momento não temos *${CATALOGO[svc].nome}* disponível. Vamos notificá-lo assim que houver stock!`);
-          if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ *STOCK ESGOTADO* de ${CATALOGO[svc].nome}!\nCliente: ${senderNum} (${state.clientName || 'sem nome'})`);
-          logLostSale(senderNum, state.clientName, [svc], 'escolha_servico', `Stock esgotado: ${CATALOGO[svc].nome}`);
+          if (MAIN_BOSS) {
+            if (!state.stockEsgotadoNotificadoPara) state.stockEsgotadoNotificadoPara = {};
+            if (!state.stockEsgotadoNotificadoPara[svc]) {
+              await sendWhatsAppMessage(MAIN_BOSS, `⚠️ *STOCK ESGOTADO* de ${CATALOGO[svc].nome}!\nCliente: ${senderNum} (${state.clientName || 'sem nome'})`);
+              state.stockEsgotadoNotificadoPara[svc] = true;
+            }
+          }
         }
         if (available.length === 0) return res.status(200).send('OK');
         state.interestStack = available;
@@ -1469,7 +1545,13 @@ async function handleWebhookInner(req, res, body, messageData) {
         const hasSwStock = await hasAnyStock(CATALOGO[switchedService].nome);
         if (!hasSwStock) {
           await sendWhatsAppMessage(senderNum, `😔 De momento não temos *${CATALOGO[switchedService].nome}* disponível.\n\nMas temos *${CATALOGO[state.serviceKey].nome}* disponível! Qual plano prefere? (Individual / Partilha / Família)\n\n${formatPriceTable(state.serviceKey)}`);
-          if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ *STOCK ESGOTADO* de ${CATALOGO[switchedService].nome}!\nCliente: ${senderNum} (${state.clientName || 'sem nome'}) solicitou em mid-flow.\nMantido no fluxo de ${CATALOGO[state.serviceKey].nome}.`);
+          if (MAIN_BOSS) {
+            if (!state.stockEsgotadoNotificadoPara) state.stockEsgotadoNotificadoPara = {};
+            if (!state.stockEsgotadoNotificadoPara[switchedService]) {
+              await sendWhatsAppMessage(MAIN_BOSS, `⚠️ *STOCK ESGOTADO* de ${CATALOGO[switchedService].nome}!\nCliente: ${senderNum} (${state.clientName || 'sem nome'}) solicitou em mid-flow.\nMantido no fluxo de ${CATALOGO[state.serviceKey].nome}.`);
+              state.stockEsgotadoNotificadoPara[switchedService] = true;
+            }
+          }
         } else {
           state.serviceKey = switchedService;
           state.plataforma = CATALOGO[switchedService].nome;
