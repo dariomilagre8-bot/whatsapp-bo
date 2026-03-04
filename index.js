@@ -17,7 +17,7 @@ app.use(express.json());
 // ── Init serviços ──
 const credPath = path.join(__dirname, 'credentials.json');
 if (fs.existsSync(credPath)) {
-  googleSheets.init(credPath, process.env.GOOGLE_SHEETS_ID || process.env.GOOGLE_SHEET_ID || '1P5N1ulKdnGRfLNjEIShaGNGvD1bJuaXUcNwTn3gNyxc');
+  googleSheets.init(credPath, process.env.GOOGLE_SHEETS_ID || process.env.GOOGLE_SHEET_ID || '115TLB1Scd1Dx3UEgv6Dfz_F6pJi5X4jaGVZbuXRGhSU');
   console.log('✅ Google Sheets inicializado');
 }
 
