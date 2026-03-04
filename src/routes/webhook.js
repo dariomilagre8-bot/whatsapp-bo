@@ -32,7 +32,9 @@ const {
   CATEGORIAS_PAUSAR_BOT,
   RESPOSTA_IMAGEM_FORA_CONTEXTO,
 } = require('../respostas-fixas');
-const { memoriaLocal } = require('../memoria-local');
+const { obterSessao, adicionarMensagem } = require('../agent/memoria-db');
+const { processarComprativo } = require('../services/storage');
+const { processarAudio } = require('../services/audio');
 const clienteLookup = require('../cliente-lookup');
 const { validarRespostaZara } = require('../validar-resposta');
 const { runWithInstance } = require('../evolution-instance-context');
@@ -59,8 +61,49 @@ const {
   RESPOSTAS_TEXTO,
 } = config;
 
-const { clientStates, chatHistories, pendingVerifications, pausedClients, initClientState, markDirty, cleanupSession, getContextoCliente } = estados;
+const { clientStates, pendingVerifications, pausedClients, initClientState, markDirty, cleanupSession, getContextoCliente } = estados;
 const { logLostSale } = notif;
+
+// Memórias leves (substitui memoria-local.js sem Map())
+const _mem = {
+  globalPaused: false,
+  pausados: Object.create(null), // phone -> true
+  saudacao: Object.create(null), // phone -> expiresAtMs
+  reembolso: Object.create(null), // phone -> { count, expiresAtMs }
+};
+
+function _nowMs() { return Date.now(); }
+function _isExpiredMs(expiresAtMs) { return expiresAtMs != null && _nowMs() >= expiresAtMs; }
+function _saudacaoJaEnviada(phone) {
+  const exp = _mem.saudacao[phone];
+  if (!exp) return false;
+  if (_isExpiredMs(exp)) { delete _mem.saudacao[phone]; return false; }
+  return true;
+}
+function _marcarSaudacao(phone, ttlMs) {
+  _mem.saudacao[phone] = _nowMs() + ttlMs;
+}
+function _isPausado(phone) {
+  return !!_mem.globalPaused || !!_mem.pausados[phone] || !!pausedClients[phone];
+}
+function _pausar(phone) {
+  _mem.pausados[phone] = true;
+  pausedClients[phone] = true;
+}
+function _retomar(phone) {
+  delete _mem.pausados[phone];
+  delete pausedClients[phone];
+}
+function _incrReembolso(phone, ttlMs) {
+  const entry = _mem.reembolso[phone];
+  if (!entry || _isExpiredMs(entry.expiresAtMs)) {
+    _mem.reembolso[phone] = { count: 1, expiresAtMs: _nowMs() + ttlMs };
+    return 1;
+  }
+  entry.count += 1;
+  entry.expiresAtMs = _nowMs() + ttlMs;
+  return entry.count;
+}
 
 /** [CPA] Fecho em 1 única mensagem quando um único item; senão envia resumo + dados (compatível com multi-item). */
 async function enviarFechoConsolidado(senderNum, state) {
@@ -352,29 +395,27 @@ async function processarComandoSupervisor(comando, supervisorPhone) {
   const alvo = partes[1];
 
   if (accao === '#pausar' && alvo === 'todos') {
-    memoriaLocal.set('pausado:global', true, null);
+    _mem.globalPaused = true;
     await sendWhatsAppMessage(supervisorPhone, '✅ Bot pausado para todos. Modo manutenção activo.');
     return;
   }
   if (accao === '#pausar' && alvo) {
     const num = String(alvo || '').replace(/\D/g, '') || alvo;
     if (num) {
-      memoriaLocal.set(`pausado:${num}`, true, null);
-      pausedClients[num] = true;
+      _pausar(num);
       await sendWhatsAppMessage(supervisorPhone, `✅ Bot pausado para ${num}. Tu assumes a conversa.`);
     }
     return;
   }
   if (accao === '#retomar' && alvo === 'todos') {
-    memoriaLocal.del('pausado:global');
+    _mem.globalPaused = false;
     await sendWhatsAppMessage(supervisorPhone, '✅ Bot reactivado para todos.');
     return;
   }
   if (accao === '#retomar' && alvo) {
     const num = String(alvo || '').replace(/\D/g, '') || alvo;
     if (num) {
-      memoriaLocal.del(`pausado:${num}`);
-      delete pausedClients[num];
+      _retomar(num);
       await sendWhatsAppMessage(supervisorPhone, `✅ Bot reactivado para ${num}.`);
     }
     return;
@@ -382,7 +423,7 @@ async function processarComandoSupervisor(comando, supervisorPhone) {
   if (accao === '#status' && alvo) {
     const num = String(alvo || '').replace(/\D/g, '') || alvo;
     if (num) {
-      const pausado = memoriaLocal.get(`pausado:${num}`) || pausedClients[num];
+      const pausado = _isPausado(num);
       const estado = pausado ? 'pausado' : 'activo';
       const state = clientStates[num];
       let extra = '';
@@ -507,18 +548,30 @@ async function handleWebhookInner(req, res, body, messageData) {
     const lidId = remoteJid.includes('@lid') ? rawJid : null;
 
     const pushName = messageData.pushName || '';
-    const textMessage = messageData.message?.conversation || messageData.message?.extendedTextMessage?.text || '';
+    let textMessage = messageData.message?.conversation || messageData.message?.extendedTextMessage?.text || '';
     const docMsg = messageData.message?.documentMessage;
     const docMime = (docMsg?.mimetype || '').toLowerCase();
     const docFilename = (docMsg?.fileName || '').toLowerCase();
     const isPdf = docMsg && (docMime.includes('pdf') || docFilename.endsWith('.pdf'));
     const isDoc = !!docMsg;
     const isImage = !!messageData.message?.imageMessage;
+    const isAudio = !!messageData.message?.audioMessage || !!messageData.message?.pttMessage;
 
     const quotedMessage = messageData.message?.extendedTextMessage?.contextInfo?.quotedMessage;
     const quotedText = quotedMessage?.conversation || quotedMessage?.extendedTextMessage?.text || '';
 
-    console.log(`📩 De: ${senderNum} (${pushName}) | Msg: ${textMessage}${lidId ? ` [LID: ${lidId}]` : ''}${quotedText ? ` [Quoted: ${quotedText.substring(0, 50)}...]` : ''}`);
+    // Pipeline de Áudio: transcreve e trata como mensagem escrita
+    if (isAudio) {
+      try {
+        const textoAudio = await processarAudio(messageData);
+        textMessage = (textoAudio || '').trim();
+      } catch (e) {
+        console.error('[webhook] Falha na transcrição de áudio:', e.message);
+        textMessage = '';
+      }
+    }
+
+    console.log(`📩 De: ${senderNum} (${pushName}) | Msg: ${textMessage}${isAudio ? ' [Áudio→Texto]' : ''}${lidId ? ` [LID: ${lidId}]` : ''}${quotedText ? ` [Quoted: ${quotedText.substring(0, 50)}...]` : ''}`);
 
     // [CPA] BLOCO 1 — Comandos do supervisor com # (apenas para BOSS/SUPERVISOR)
     const textoTrimmed = (textMessage || '').trim();
@@ -535,36 +588,68 @@ async function handleWebhookInner(req, res, body, messageData) {
       return res.status(200).send('OK');
     }
 
-    // [CPA] BLOCO 2 — Bot pausado (memoriaLocal global ou individual) → silêncio
-    const pausadoGlobal = memoriaLocal.get('pausado:global');
-    const pausadoIndividual = memoriaLocal.get(`pausado:${senderNum}`);
-    if (pausadoGlobal || pausadoIndividual) {
+    // [CPA] BLOCO 2 — Bot pausado → silêncio
+    if (_isPausado(senderNum)) {
       console.log(`[CPA] Bot pausado para ${senderNum} — não responde`);
       return res.status(200).send('OK');
     }
 
-    if (pausedClients[senderNum]) {
-      console.log(`⏸️ ${senderNum} está pausado.`);
-      return res.status(200).send('OK');
-    }
-
     if (!clientStates[senderNum]) clientStates[senderNum] = initClientState();
-    if (!chatHistories[senderNum]) chatHistories[senderNum] = [];
     const state = clientStates[senderNum];
     state.lastActivity = Date.now();
     markDirty(senderNum);
     console.log(`🔍 DEBUG: step="${state.step}" para ${senderNum}`);
 
-    // [CPA] Imagem/documento: só no step aguardando_comprovativo = comprovativo (agradecer + notificar + pausar). Fora = pedir descrição, NUNCA escalar nem pausar.
+    // Memória persistente: carregar histórico + última plataforma (Supabase)
+    let chatHistory = [];
+    try {
+      const sessao = await obterSessao(senderNum);
+      chatHistory = Array.isArray(sessao?.contexto) ? sessao.contexto : [];
+      if (!state.ultimaPlataforma && sessao?.ultimaPlataforma) state.ultimaPlataforma = sessao.ultimaPlataforma;
+    } catch (_) {}
+
+    // Pipeline de Anexos (Imagens/Docs): Triagem de Comprovativos vs Prints de Suporte
     if (isImage || isDoc) {
-      if (state.step === 'aguardando_comprovativo') {
-        await sendWhatsAppMessage(senderNum, RESPOSTA_COMPROVATIVO_RECEBIDO);
+      try {
+        const { url } = await processarComprativo(messageData);
         const nomeOuNum = (state.clientName || pushName || senderNum).toString().trim() || senderNum;
-        if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `💰 *POSSÍVEL PAGAMENTO* — ${nomeOuNum} enviou uma ${isImage ? 'imagem' : 'comprovativo/documento'}. Verifica o WhatsApp!`);
-        memoriaLocal.set(`pausado:${senderNum}`, true, null);
-        pausedClients[senderNum] = true;
-      } else {
-        await sendWhatsAppMessage(senderNum, RESPOSTA_IMAGEM_FORA_CONTEXTO);
+
+        // Lógica de Triagem: É compra ou suporte?
+        // Se tem itens no carrinho, está no step de comprovativo, ou a legenda fala em pagamento.
+        const textoLegenda = textMessage.toLowerCase();
+        const isFluxoCompra = state.step === 'aguardando_comprovativo' ||
+                              (state.cart && state.cart.length > 0) ||
+                              textoLegenda.includes('pago') ||
+                              textoLegenda.includes('comprovativo') ||
+                              textoLegenda.includes('transfer');
+
+        if (isFluxoCompra) {
+          await sendWhatsAppMessage(senderNum, RESPOSTA_COMPROVATIVO_RECEBIDO);
+          if (MAIN_BOSS) {
+            const contextoPedido = (state.cart && state.cart.length > 0)
+              ? state.cart.map(i => `${(i.quantity || 1) > 1 ? (i.quantity + 'x ') : ''}${i.plataforma} ${i.plan}`).join(' | ')
+              : (state.plataforma && state.plano ? `${state.plataforma} ${state.plano}` : '—');
+            await sendWhatsAppMessage(
+              MAIN_BOSS,
+              `💰 *COMPROVATIVO RECEBIDO*\n👤 ${nomeOuNum}\n📞 ${senderNum}\n📦 Pedido: ${contextoPedido}\n🔗 URL: ${url}\n\nBot pausado. Use *#retomar ${senderNum}* quando terminar.`
+            );
+          }
+        } else {
+          // É um print de erro (Suporte Técnico)
+          await sendWhatsAppMessage(senderNum, "📸 Recebi a sua imagem. Se for um erro de acesso à plataforma, fique descansado(a) que já encaminhei para a equipa técnica analisar!");
+          if (MAIN_BOSS) {
+            await sendWhatsAppMessage(
+              MAIN_BOSS,
+              `🛠️ *TICKET DE SUPORTE (Print/Anexo)*\n👤 ${nomeOuNum}\n📞 ${senderNum}\n🔗 URL: ${url}\n💬 Legenda: ${textMessage || 'Sem legenda'}\n\nBot pausado. Use *#retomar ${senderNum}* para responder ao erro.`
+            );
+          }
+        }
+        _pausar(senderNum);
+      } catch (e) {
+        console.error('[webhook] Erro no upload do anexo:', e.message);
+        await sendWhatsAppMessage(senderNum, "📸 Recebi a sua imagem, mas houve um erro interno ao processar. O responsável já foi notificado.");
+        if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ Upload de anexo falhou\nCliente: ${senderNum}\nMotivo: ${e.message}`);
+        _pausar(senderNum);
       }
       return res.status(200).send('OK');
     }
@@ -630,11 +715,11 @@ async function handleWebhookInner(req, res, body, messageData) {
       }
       if (fixa.match) {
         if (cat === 'saudacao') {
-          const jaRecebeu = memoriaLocal.get(`saudacao:${senderNum}`);
+          const jaRecebeu = _saudacaoJaEnviada(senderNum);
           if (jaRecebeu) {
             // Não enviar saudação de novo — deixar fluxo/IA tratar
           } else {
-            memoriaLocal.set(`saudacao:${senderNum}`, true, 86400);
+            _marcarSaudacao(senderNum, 24 * 60 * 60 * 1000);
             // [CPA] Saudação inteligente: formal + renovação só quando diasRestantes <= 7 ou expirado
             const nomeSaud = (dadosCliente && dadosCliente.nome) ? dadosCliente.nome.trim() : (state.clientName || pushName || '');
             const trat = tratamentoFormal(nomeSaud);
@@ -710,8 +795,7 @@ async function handleWebhookInner(req, res, body, messageData) {
                 state.clientName || pushName, senderNum, 'Quer falar com responsável', textMessage, false
               ) + `\n\nBot pausado. Use *#retomar ${senderNum}* quando terminar.`);
             }
-            memoriaLocal.set(`pausado:${senderNum}`, true, null);
-            pausedClients[senderNum] = true;
+            _pausar(senderNum);
           }
           // [CPA] Escalação automática por categoria (codigo_verificacao, senha_errada, paguei_sem_resposta, reembolso 2x)
           if (CATEGORIAS_ESCALAR_URGENTE.includes(cat) && MAIN_BOSS) {
@@ -720,12 +804,11 @@ async function handleWebhookInner(req, res, body, messageData) {
               state.clientName || pushName, senderNum, problemaLabel, textMessage, true
             ));
             if (CATEGORIAS_PAUSAR_BOT.includes(cat)) {
-              memoriaLocal.set(`pausado:${senderNum}`, true, null);
-              pausedClients[senderNum] = true;
+              _pausar(senderNum);
             }
           }
           if (cat === 'reembolso') {
-            const count = memoriaLocal.incr(`reembolso:${senderNum}`, 3600);
+            const count = _incrReembolso(senderNum, 60 * 60 * 1000);
             if (count >= 2 && MAIN_BOSS) {
               await sendWhatsAppMessage(MAIN_BOSS, formatarNotificacaoSuporteStreamzone(
                 state.clientName || pushName, senderNum, 'Pedido de reembolso (insistência)', textMessage, false
@@ -743,6 +826,10 @@ async function handleWebhookInner(req, res, body, messageData) {
           // [CPA Ronda 2] Memória de plataforma para perguntas de disponibilidade
           if (cat === 'precos_netflix') state.ultimaPlataforma = 'netflix';
           if (cat === 'precos_prime') state.ultimaPlataforma = 'prime';
+          // Persistir última plataforma quando aplicável
+          if (cat === 'precos_netflix' || cat === 'precos_prime') {
+            await adicionarMensagem(senderNum, { role: 'user', parts: [{ text: textMessage }] }, state.ultimaPlataforma).catch(() => {});
+          }
           let msgEnviar = fixa.resposta;
           if (cat === 'quero_comprar' && state.plataforma && state.plano) {
             const planoLabel = (state.plano || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
@@ -955,7 +1042,7 @@ async function handleWebhookInner(req, res, body, messageData) {
             systemInstruction: { parts: [{ text: contextPrompt }] },
             generationConfig: { temperature: 0.3, maxOutputTokens: 300 },
           });
-          const chat = model.startChat({ history: [...FEW_SHOT_EXAMPLES, ...(chatHistories[senderNum] || [])] });
+          const chat = model.startChat({ history: [...FEW_SHOT_EXAMPLES, ...(chatHistory || [])] });
           const resAI = await chat.sendMessage(textMessage);
           let aiText = resAI.response.text();
           const validacaoComp = validarRespostaZara(aiText);
@@ -963,9 +1050,11 @@ async function handleWebhookInner(req, res, body, messageData) {
             aiText = validacaoComp.substituir || 'Vou confirmar com a equipa. Dá-me um momento!';
             if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ Resposta IA comprovativo bloqueada: ${validacaoComp.motivo}\nCliente: ${senderNum}`);
           }
-          chatHistories[senderNum] = chatHistories[senderNum] || [];
-          chatHistories[senderNum].push({ role: 'user', parts: [{ text: textMessage }] });
-          chatHistories[senderNum].push({ role: 'model', parts: [{ text: aiText }] });
+          chatHistory = chatHistory || [];
+          chatHistory.push({ role: 'user', parts: [{ text: textMessage }] });
+          chatHistory.push({ role: 'model', parts: [{ text: aiText }] });
+          await adicionarMensagem(senderNum, { role: 'user', parts: [{ text: textMessage }] }, state.ultimaPlataforma).catch(() => {});
+          await adicionarMensagem(senderNum, { role: 'model', parts: [{ text: aiText }] }, state.ultimaPlataforma).catch(() => {});
           await sendWhatsAppMessage(senderNum, aiText);
         } catch (e) {
           console.error('Erro AI comprovativo:', e.message);
@@ -1240,7 +1329,7 @@ async function handleWebhookInner(req, res, body, messageData) {
           systemInstruction: { parts: [{ text: promptFinal }] },
           generationConfig: { temperature: 0.3, maxOutputTokens: 300 },
         });
-        const chat = model.startChat({ history: [...FEW_SHOT_EXAMPLES, ...(chatHistories[senderNum] || [])] });
+        const chat = model.startChat({ history: [...FEW_SHOT_EXAMPLES, ...(chatHistory || [])] });
         const resAI = await chat.sendMessage(textMessage || 'Olá');
         let aiText = validarResposta(resAI.response.text());
         const validacao = validarRespostaZara(aiText);
@@ -1248,8 +1337,11 @@ async function handleWebhookInner(req, res, body, messageData) {
           aiText = validacao.substituir || 'Vou confirmar com a equipa. Dá-me um momento!';
           if (MAIN_BOSS) await sendWhatsAppMessage(MAIN_BOSS, `⚠️ Resposta IA bloqueada (anti-alucinação): ${validacao.motivo}\nCliente: ${senderNum}\nResposta original truncada.`);
         }
-        chatHistories[senderNum].push({ role: 'user', parts: [{ text: textMessage || 'Olá' }] });
-        chatHistories[senderNum].push({ role: 'model', parts: [{ text: aiText }] });
+        chatHistory = chatHistory || [];
+        chatHistory.push({ role: 'user', parts: [{ text: textMessage || 'Olá' }] });
+        chatHistory.push({ role: 'model', parts: [{ text: aiText }] });
+        await adicionarMensagem(senderNum, { role: 'user', parts: [{ text: textMessage || 'Olá' }] }, state.ultimaPlataforma).catch(() => {});
+        await adicionarMensagem(senderNum, { role: 'model', parts: [{ text: aiText }] }, state.ultimaPlataforma).catch(() => {});
         if (state.score) state.score.mensagens_enviadas = (state.score.mensagens_enviadas || 0) + 1;
         await sendWhatsAppMessage(senderNum, aiText);
       } catch (e) {
@@ -1302,8 +1394,7 @@ async function handleWebhookInner(req, res, body, messageData) {
             state.recovery30minSent = false;
             await sendWhatsAppMessage(senderNum, `😔 De momento temos apenas ${availableSlots} perfil(is) disponível(eis) para ${state.plataforma}, mas precisavas de ${totalSlots}. Já passei a informação ao nosso supervisor para resolver isto o mais rápido possível. Vais receber uma resposta em breve!`);
             if (MAIN_BOSS) {
-              const history = chatHistories[senderNum] || [];
-              const last10 = history.slice(-10);
+              const last10 = (chatHistory || []).slice(-10);
               const contextLines = last10.length > 0 ? last10.map(h => {
                 const role = h.role === 'user' ? '👤' : '🤖';
                 const text = (h.parts[0]?.text || '').substring(0, 100);
@@ -1388,14 +1479,15 @@ async function handleWebhookInner(req, res, body, messageData) {
           model: 'gemini-2.5-flash',
           systemInstruction: { parts: [{ text: planContext }] }
         });
-        const recentHistory = (chatHistories[senderNum] || []).slice(-10);
+        const recentHistory = (chatHistory || []).slice(-10);
         const chat = model.startChat({ history: recentHistory });
         const resAI = await chat.sendMessage(textMessage);
         const aiReplyPlan = resAI.response.text();
-        chatHistories[senderNum] = chatHistories[senderNum] || [];
-        chatHistories[senderNum].push({ role: 'user', parts: [{ text: textMessage }] });
-        chatHistories[senderNum].push({ role: 'model', parts: [{ text: aiReplyPlan }] });
-        if (chatHistories[senderNum].length > 20) chatHistories[senderNum] = chatHistories[senderNum].slice(-20);
+        chatHistory = chatHistory || [];
+        chatHistory.push({ role: 'user', parts: [{ text: textMessage }] });
+        chatHistory.push({ role: 'model', parts: [{ text: aiReplyPlan }] });
+        await adicionarMensagem(senderNum, { role: 'user', parts: [{ text: textMessage }] }, state.ultimaPlataforma).catch(() => {});
+        await adicionarMensagem(senderNum, { role: 'model', parts: [{ text: aiReplyPlan }] }, state.ultimaPlataforma).catch(() => {});
         await sendWhatsAppMessage(senderNum, aiReplyPlan);
       } catch (e) {
         console.error('Erro AI plano:', e.message);
