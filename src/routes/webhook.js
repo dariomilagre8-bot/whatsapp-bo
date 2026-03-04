@@ -569,6 +569,12 @@ async function handleWebhookInner(req, res, body, messageData) {
         console.error('[webhook] Falha na transcrição de áudio:', e.message);
         textMessage = '';
       }
+
+      // Protecção: Se o áudio falhou ou não tem base64, não deixa a IA alucinar
+      if (!textMessage) {
+        await sendWhatsAppMessage(senderNum, "Desculpe, não consegui ouvir o seu áudio (formato não suportado). Pode escrever a sua mensagem por favor? ✍️");
+        return res.status(200).send('OK');
+      }
     }
 
     console.log(`📩 De: ${senderNum} (${pushName}) | Msg: ${textMessage}${isAudio ? ' [Áudio→Texto]' : ''}${lidId ? ` [LID: ${lidId}]` : ''}${quotedText ? ` [Quoted: ${quotedText.substring(0, 50)}...]` : ''}`);
