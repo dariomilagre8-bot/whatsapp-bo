@@ -34,7 +34,7 @@ function createWebhookHandler(config, stateMachine, stockFn, evolutionConfig, sy
       const isImage = !!(messageData.imageMessage || messageData.documentMessage);
       const isAudio = !!(messageData.audioMessage || messageData.pttMessage);
 
-      const supervisors = (process.env.SUPERVISOR_NUMBERS || '').split(',').map(s => s.trim());
+      const supervisors = (process.env.SUPERVISOR_NUMBERS || process.env.SUPERVISOR_NUMBER || process.env.BOSS_NUMBER || '').split(',').map(s => s.trim());
 
       console.log(`\n📩 De: ${senderNum} (${pushName}) | Msg: "${textMessage.substring(0, 50)}" | Img: ${isImage} | Audio: ${isAudio}`);
 
