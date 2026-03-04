@@ -1,102 +1,86 @@
+// index.js
 require('dotenv').config();
-const path = require('path');
-const { execFile } = require('child_process');
-const branding = require('./branding');
-const { IS_TEST } = require('./src/config-tables');
-const express = require('express');
-const cors = require('cors');
-const config = require('./src/config');
-const { port, MAIN_BOSS } = config;
-const { fetchAllRows, markProfileAvailable, isIndisponivel } = require('./googleSheets');
-const estados = require('./src/utils/estados');
-const { loadSessionsOnStartup } = estados;
-const { sendWhatsAppMessage } = require('./src/whatsapp');
-const notif = require('./src/utils/notificacoes');
-const { initExpiracaoScheduler } = require('./src/handlers/expiracoes');
-const qrRouter = require('./src/routes/qr');
-const chatRouter = require('./src/routes/chat');
-const checkoutRouter = require('./src/routes/checkout');
-const publicRouter = require('./src/routes/public');
-const adminRouter = require('./src/routes/admin');
-const { handleWebhook } = require('./src/routes/webhook');
 
-const { clientStates, pendingVerifications, cleanupSession } = estados;
-estados.startFlushInterval();
-notif.init({ sendWhatsAppMessage, MAIN_BOSS, cleanupSession, clientStates, pendingVerifications });
-notif.startSweeps();
+const express = require('express');
+const config = require('./config/streamzone');
+const StateMachine = require('./src/engine/state-machine');
+const { createWebhookHandler } = require('./src/routes/webhook');
+const llm = require('./src/engine/llm');
+const googleSheets = require('./src/integrations/google-sheets');
+const supabaseIntegration = require('./src/integrations/supabase');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(express.json());
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'x-admin-secret'],
-}));
+
+// ── Init serviços ──
+const credPath = path.join(__dirname, 'credentials.json');
+if (fs.existsSync(credPath)) {
+  googleSheets.init(credPath, process.env.GOOGLE_SHEETS_ID);
+  console.log('✅ Google Sheets inicializado');
+}
+
+supabaseIntegration.init(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+console.log('✅ Supabase inicializado');
+
+llm.init(process.env.GEMINI_API_KEY);
+console.log('✅ Gemini inicializado');
+
+// ── State Machine ──
+const stateMachine = new StateMachine(config);
+
+// Limpeza de sessões expiradas a cada hora
+setInterval(() => stateMachine.cleanup(), 60 * 60 * 1000);
+
+// ── Stock function (cached 60s) ──
+let stockCache = {};
+let stockCacheTime = 0;
+const STOCK_CACHE_TTL = 60 * 1000; // 60 segundos
+
+async function getStock() {
+  const now = Date.now();
+  if (now - stockCacheTime < STOCK_CACHE_TTL) return stockCache;
+  try {
+    stockCache = await googleSheets.getStock(config.stock);
+    stockCacheTime = now;
+  } catch (err) {
+    console.error('[STOCK] Cache refresh failed:', err.message);
+  }
+  return stockCache;
+}
+
+// ── System prompt ──
+const systemPrompt = fs.readFileSync(path.join(__dirname, 'prompts/streamzone.txt'), 'utf-8');
+
+// ── Evolution API config ──
+const evolutionConfig = {
+  apiUrl: process.env.EVOLUTION_API_URL,
+  apiKey: process.env.EVOLUTION_API_KEY,
+  instance: process.env.EVOLUTION_INSTANCE,
+};
+
+// ── Routes ──
+const webhookHandler = createWebhookHandler(config, stateMachine, getStock, evolutionConfig, systemPrompt);
+app.post('/webhook', webhookHandler);
 
 app.get('/health', (req, res) => {
-  const k = process.env.EVOLUTION_API_KEY || '';
   res.json({
     status: 'ok',
-    uptime: Math.floor(process.uptime()),
-    version: process.env.npm_package_version || '1.0.0',
-    servico: 'StreamZone Bot',
-    evo_key_prefix: k ? k.substring(0, 8) + '...' : '(não definida)',
-    evo_instance: process.env.EVOLUTION_INSTANCE_NAME || '(não definida)',
+    engine: 'Palanca Bot Engine v1.0',
+    bot: config.identity.botName,
+    business: config.identity.businessName,
+    sessions: stateMachine.sessions.size,
+    uptime: process.uptime(),
   });
 });
 
-app.use('/', qrRouter);
-app.use('/api', chatRouter);
-app.use('/api', checkoutRouter);
-app.use('/api', publicRouter);
-app.get('/api/branding', (req, res) => res.json(branding));
-app.get('/api/version', (req, res) => res.json({ v: '20260225-refactor-fase2', started: new Date().toISOString() }));
-app.use('/api/admin', adminRouter);
-app.post('/webhook', handleWebhook);
-
-initExpiracaoScheduler({
-  sendWhatsAppMessage,
-  MAIN_BOSS,
-  branding,
-  fetchAllRows,
-  markProfileAvailable,
-  isIndisponivel,
-});
-
-// [CPA] Backup diário automático — 3h da manhã
-function agendarBackup() {
-  const agora = new Date();
-  const proxima3h = new Date();
-  proxima3h.setHours(3, 0, 0, 0);
-  if (proxima3h <= agora) proxima3h.setDate(proxima3h.getDate() + 1);
-  const delay = proxima3h - agora;
-  setTimeout(() => {
-    executarBackup();
-    setInterval(executarBackup, 24 * 60 * 60 * 1000);
-  }, delay);
-  console.log(`[CPA] Backup agendado para ${proxima3h.toISOString()}`);
-}
-
-function executarBackup() {
-  console.log('[CPA] Iniciando backup Supabase...');
-  const scriptPath = path.join(__dirname, 'scripts', 'backup-supabase.js');
-  execFile('node', [scriptPath], { cwd: __dirname }, (err, stdout, stderr) => {
-    if (err) {
-      console.error('[CPA] Backup falhou:', err.message);
-    } else {
-      console.log('[CPA] Backup OK:', (stdout || '').trim());
-    }
-  });
-}
-agendarBackup();
-
-if (IS_TEST) {
-  console.log('⚠️  MODO TESTE — tabelas: clientes_teste, vendas_teste, perfis_entregues_teste');
-}
-console.log('📱 Telefones Reais:', config.REAL_PHONES);
-console.log('🖥️ Todos os IDs aceites:', config.ALL_SUPERVISORS);
-console.log('👑 Chefe Principal:', config.MAIN_BOSS);
-
-loadSessionsOnStartup().then(() => {
-  app.listen(port, '0.0.0.0', () => console.log(`Bot v17.0 (${branding.nome}) rodando na porta ${port}`));
+// ── Start ──
+const PORT = process.env.PORT || 80;
+app.listen(PORT, () => {
+  console.log(`\n🚀 Palanca Bot Engine v1.0`);
+  console.log(`🤖 Bot: ${config.identity.botName} (${config.identity.businessName})`);
+  console.log(`📡 Porta: ${PORT}`);
+  console.log(`👑 Supervisores: ${process.env.SUPERVISOR_NUMBERS}`);
+  console.log(`✅ Pronto!\n`);
 });

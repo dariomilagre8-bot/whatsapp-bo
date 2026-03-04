@@ -1,33 +1,18 @@
 {
-  "name": "whatsapp-bot",
-  "version": "1.0.1",
-  "description": "Bot WhatsApp com Gemini",
+  "name": "palanca-engine",
+  "version": "1.0.0",
+  "description": "Palanca Bot Engine — Framework de bots WhatsApp by Palanca Automações",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "node tests/zara-test.js",
-    "test:http": "node tests/webhook-test.js",
-    "deploy": "bash scripts/test-and-deploy.sh",
-    "start:test": "bash scripts/start-test.sh",
-    "start:prod": "bash scripts/start-prod.sh",
-    "setup:test-db": "node scripts/setup-test-db.js",
-    "setup:test-sheet": "node scripts/setup-test-sheet.js",
-    "create:test-instance": "node scripts/create-test-instance.js"
+    "dev": "node --watch index.js",
+    "test": "node tests/engine.test.js"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.21.0",
-    "@sentry/node": "^10.39.0",
-    "@sentry/profiling-node": "^10.39.0",
-    "@supabase/supabase-js": "^2.97.0",
-    "axios": "^1.6.0",
-    "cors": "^2.8.6",
-    "dotenv": "^16.3.1",
     "express": "^4.18.2",
-    "googleapis": "^140.0.1",
-    "multer": "^2.0.2",
-    "nodemailer": "^6.10.1"
-  },
-  "engines": {
-    "node": "20.x"
+    "googleapis": "^118.0.0",
+    "@supabase/supabase-js": "^2.38.0",
+    "@google/generative-ai": "^0.21.0",
+    "dotenv": "^16.3.1"
   }
 }

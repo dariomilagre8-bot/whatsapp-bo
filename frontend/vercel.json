@@ -1,8 +1,0 @@
-{
-  "rewrites": [
-    {
-      "source": "/api/:path*",
-      "destination": "https://whatssiru.46.224.99.52.nip.io/api/:path*"
-    }
-  ]
-}
