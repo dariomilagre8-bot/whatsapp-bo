@@ -4,6 +4,7 @@
 const { sendText } = require('../engine/sender');
 const llm = require('../engine/llm');
 const { extractName } = require('../utils/name-extractor');
+const { getClientByPhone } = require('../integrations/supabase');
 
 /**
  * Cria o handler do webhook com pipeline estrito: A) Inventário B) Memória C) Prompt D) Resposta.
@@ -98,14 +99,17 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       // Pipeline LLM-First: A → B → C → D
       // ═══════════════════════════════════════════════════════════════
 
-      // Passo A: Inventário atualizado (Google Sheets, status disponivel com includes, case insensitive)
+      // Passo A: Inventário atualizado (Google Sheets, por Plataforma + Plano + Valor)
       const inventoryString = await getInventoryFn();
+
+      // Passo A+: Reconhecimento de cliente (Supabase)
+      const { customerName, isReturningCustomer } = await getClientByPhone(senderNum);
 
       // Passo B: Últimas 5 mensagens (memória)
       const history = (session.history || []).slice(-5);
 
-      // Passo C: Dynamic Prompt e chamada ao Gemini
-      const systemInstruction = llm.buildDynamicPrompt(inventoryString);
+      // Passo C: Dynamic Prompt (com contexto do cliente) e chamada ao Gemini
+      const systemInstruction = llm.buildDynamicPrompt(inventoryString, customerName, isReturningCustomer);
       const response = await llm.generate(systemInstruction, textMessage, history);
 
       // Passo D: Enviar resposta ao utilizador

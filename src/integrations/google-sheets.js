@@ -64,9 +64,21 @@ async function getStock(stockConfig) {
 }
 
 /**
- * Lê a planilha e devolve uma string formatada para injetar no prompt (LLM-First).
- * Filtra por status disponível (includes 'disponivel', case insensitive, sem acentos).
- * Formato: "Netflix (Disponível) - 5000 Kz | Prime Video (Disponível) - 3000 Kz"
+ * Normaliza nome do plano (planilha pode ter "Perfil 1", "Individual", "Partilha", "Família", "Conta Completa", etc.)
+ */
+function normalizePlanName(raw) {
+  const s = (raw || '').toString().trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+  if (s.includes('individual') || s === 'perfil 1' || s === '1 perfil') return 'Individual';
+  if (s.includes('partilha') || s.includes('partilhado')) return 'Partilha';
+  if (s.includes('família') || s.includes('familia') || s.includes('completa') || s.includes('5 perfil')) return 'Conta Completa (5 Perfis)';
+  return (raw || '').toString().trim() || 'Plano';
+}
+
+/**
+ * Lê a planilha real e agrupa por Plataforma + Plano + Valor.
+ * Colunas assumidas: A=Plataforma, D=Plano/Perfil, F=Status, H=Preço/Valor.
+ * Filtra Status que inclui 'disponivel' (sem acentos, minúsculas).
+ * Formato: "[Plataforma] - [Plano] (Disponível) - [Valor] Kz"
  */
 async function getInventoryForPrompt(stockConfig, productsConfig) {
   if (!sheets) return 'Nenhum dado de inventário disponível no momento.';
@@ -87,28 +99,30 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
       return (raw || '').toString().trim();
     };
 
-    const platformCounts = {};
+    const seen = new Set();
+    const parts = [];
+    const platformCol = 0;
+    const planCol = 3;
+    const statusCol = 5;
+    const priceCol = 7;
+
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const platform = normalizePlatform(row[0]);
-      const statusStr = normalizeForStatus(row[5] ?? '');
+      const platform = normalizePlatform(row[platformCol]);
+      const statusStr = normalizeForStatus(row[statusCol] ?? '');
       const isAvailable = statusStr.includes('disponivel') && !statusStr.includes('indisponivel');
       if (!isAvailable || !platform) continue;
-      platformCounts[platform] = (platformCounts[platform] || 0) + 1;
+
+      const plan = normalizePlanName(row[planCol]);
+      const rawPrice = row[priceCol];
+      const value = (typeof rawPrice === 'number' ? rawPrice : parseInt(String(rawPrice || '0').replace(/\D/g, ''), 10)) || 0;
+      const key = `${platform}|${plan}|${value}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      parts.push(`${platform} - ${plan} (Disponível) - ${value} Kz`);
     }
 
-    const parts = [];
-    for (const [platform, count] of Object.entries(platformCounts)) {
-      if (count === 0) continue;
-      const product = productsConfig && productsConfig[platform];
-      const minPrice = product && product.plans
-        ? Math.min(...Object.values(product.plans).map((p) => p.price))
-        : null;
-      const priceStr = minPrice != null ? ` - ${minPrice} Kz` : '';
-      parts.push(`${platform} (Disponível)${priceStr}`);
-    }
-
-    return parts.length ? parts.join(' | ') : 'Nenhum plano disponível no momento. Todos os planos estão esgotados.';
+    return parts.length ? parts.join('\n') : 'Nenhum plano disponível no momento. Todos os planos estão esgotados.';
   } catch (err) {
     console.error('[STOCK] getInventoryForPrompt Error:', err.message);
     return 'Erro ao carregar inventário. Não invente preços.';
