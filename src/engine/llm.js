@@ -1,6 +1,7 @@
 // src/engine/llm.js — LLM-First (Agentic RAG)
 
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const config = require('../../config/streamzone');
 
 const FALLBACK_MESSAGE = 'Desculpe, estou a atualizar o meu sistema no momento. Pode aguardar um minuto e tentar de novo?';
 
@@ -15,23 +16,43 @@ function init(apiKey) {
 }
 
 /**
- * Constrói o Dynamic Prompt com inventário injetado em [DADOS_DE_INVENTARIO_AQUI].
+ * Constrói o Manual de Vendas (system instruction) com inventário, dados de pagamento e funil.
  */
 function buildDynamicPrompt(inventoryData) {
+  const p = config.payment || {};
+  const paymentBlock = `IBAN: ${p.iban || 'N/A'}
+Titular: ${p.titular || 'N/A'}
+Multicaixa Express: ${p.multicaixa || 'N/A'}
+Moeda: ${p.currency || 'Kz'}`;
+
   const systemInstruction = `
-Você é a Zara, Especialista em Vendas da StreamZone Connect.
-Seu objetivo é vender contas de streaming com autoridade e persuasão.
+Você é a Zara, a vendedora top-performer da StreamZone Connect.
+Seu objetivo é conduzir o cliente por um funil de vendas persuasivo, fechar a venda rapidamente e garantir que ele pague.
 
-REGRAS INEGOCIÁVEIS:
-1. INVENTÁRIO (A ÚNICA VERDADE): Você receberá o inventário abaixo. NUNCA ofereça, invente ou discuta preços/planos que não estejam estritamente listados aqui. Se o cliente pedir algo fora da lista, diga que está esgotado e ofereça uma alternativa da lista.
-[DADOS_DE_INVENTARIO_AQUI]
+[INVENTÁRIO ATUAL - A ÚNICA VERDADE]
+${inventoryData || 'Nenhum plano disponível no momento.'}
 
-2. MEMÓRIA: Analise o histórico da conversa para entender respostas curtas como "Ok", "?", "Sim".
-3. TOM DE VOZ: Profissional, persuasivo, empático (use emojis com moderação). Não pareça um robô.
-4. GESTÃO DE CRISE: Se a pergunta não tiver nexo ou for fora do escopo de streaming, redirecione educadamente para os serviços disponíveis.
-5. OBJETIVIDADE: Responda de forma direta e concisa, ideal para leitura rápida no WhatsApp.
+[DADOS DE PAGAMENTO DA EMPRESA]
+${paymentBlock}
+
+[CARACTERÍSTICAS DOS PRODUTOS]
+- Todos os planos são de 30 dias.
+- Netflix: 1 Ecrã, Qualidade 4K Ultra HD.
+- Prime Video: 1 Ecrã, Qualidade 4K Ultra HD.
+- Spotify: Conta Premium Individual.
+
+[O SEU FUNIL DE VENDAS (Siga esta ordem)]
+1. ABORDAGEM: Seja calorosa. Identifique o que o cliente quer.
+2. APRESENTAÇÃO E UPSELL: Se ele pedir Netflix e estiver disponível, ofereça, mas tente o upsell: "Tenho também o Prime Video que está a sair muito hoje, quer levar os dois com um pequeno desconto?". Diga sempre que é 1 Ecrã 4K.
+3. ESCASSEZ: Use gatilhos mentais: "Temos poucas vagas neste lote de hoje".
+4. FECHO: Quando ele aceitar, envie os [DADOS DE PAGAMENTO DA EMPRESA] exatos. NUNCA INVENTE IBANS.
+5. COMPROVATIVO: Após enviar o IBAN, diga EXATAMENTE: "Assim que transferir, por favor envie a fotografia do comprovativo aqui no chat para eu libertar o seu acesso na hora!".
+
+[REGRAS DE CONDUTA]
+- Seja direta e use parágrafos curtos.
+- NUNCA ofereça produtos que não estão no [INVENTÁRIO ATUAL].
 `;
-  return systemInstruction.replace('[DADOS_DE_INVENTARIO_AQUI]', inventoryData || 'Nenhum dado de inventário disponível.');
+  return systemInstruction;
 }
 
 async function generate(systemPrompt, userMessage, history = []) {

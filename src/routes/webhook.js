@@ -65,23 +65,19 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         return;
       }
 
-      // ── Media: imagem e áudio (mantidos) ──
-      if (isImage) {
-        if (session.state === 'aguardando_comprovativo') {
-          await sendText(senderNum, config.systemMessages?.imageInPaymentStep ?? 'Recebi o comprovativo. Vou encaminhar ao responsável.', evolutionConfig);
-          for (const sup of supervisors) {
-            await sendText(sup, `🔔 COMPROVATIVO de ${senderNum} (${session.name})\nPlano: ${session.platform} ${session.plan}`, evolutionConfig);
-          }
-          session.paused = true;
-          stateMachine.setState(senderNum, 'pausado');
-        } else {
-          await sendText(senderNum, config.systemMessages?.imageOutOfContext ?? 'Recebi a imagem. Pode descrever por texto o que precisa?', evolutionConfig);
-        }
+      // ── Media: validação estrita ANTES de qualquer chamada à IA ──
+      if (isAudio) {
+        await sendText(senderNum, 'Desculpe, no momento não consigo ouvir mensagens de voz. Poderia escrever por favor? ✍️', evolutionConfig);
         return;
       }
 
-      if (isAudio) {
-        await sendText(senderNum, config.systemMessages?.audioReceived ?? 'Recebi o áudio. Para melhor atendimento, pode escrever por texto?', evolutionConfig);
+      if (isImage) {
+        await sendText(senderNum, 'Recebi a sua imagem! Vou validar o comprovativo e já lhe entrego o seu acesso. Aguarde um momento. ⏳', evolutionConfig);
+        session.paused = true;
+        stateMachine.setState(senderNum, 'pausado');
+        for (const sup of supervisors) {
+          if (sup) await sendText(sup, `🔔 COMPROVATIVO de ${senderNum} (${session.name})\nPlano: ${session.platform || 'N/A'} ${session.plan || 'N/A'}`, evolutionConfig);
+        }
         return;
       }
 
