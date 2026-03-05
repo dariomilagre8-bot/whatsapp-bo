@@ -31,12 +31,13 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         || messageData.documentMessage?.caption
         || '';
 
-      const isImage = !!(messageData.imageMessage || messageData.documentMessage);
+      const isImage = !!messageData.imageMessage;
+      const isDocument = !!messageData.documentMessage;
       const isAudio = !!(messageData.audioMessage || messageData.pttMessage);
 
       const supervisors = (process.env.SUPERVISOR_NUMBERS || process.env.SUPERVISOR_NUMBER || process.env.BOSS_NUMBER || '').split(',').map(s => s.trim());
 
-      console.log(`\n📩 De: ${senderNum} (${pushName}) | Msg: "${textMessage.substring(0, 50)}" | Img: ${isImage} | Audio: ${isAudio}`);
+      console.log(`\n📩 De: ${senderNum} (${pushName}) | Msg: "${textMessage.substring(0, 50)}" | Img: ${isImage} | Doc: ${isDocument} | Audio: ${isAudio}`);
 
       const session = stateMachine.getSession(senderNum);
       if (!session.name) session.name = extractName(pushName);
@@ -65,18 +66,28 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         return;
       }
 
-      // ── Media: validação estrita ANTES de qualquer chamada à IA ──
+      // ── Roteamento de media: NUNCA chama a IA ──
       if (isAudio) {
-        await sendText(senderNum, 'Desculpe, no momento não consigo ouvir mensagens de voz. Poderia escrever por favor? ✍️', evolutionConfig);
+        await sendText(senderNum, 'Desculpe, a Zara ainda não consegue ouvir mensagens de voz. 😅 Poderia escrever a sua dúvida, por favor? ✍️', evolutionConfig);
         return;
       }
 
       if (isImage) {
-        await sendText(senderNum, 'Recebi a sua imagem! Vou validar o comprovativo e já lhe entrego o seu acesso. Aguarde um momento. ⏳', evolutionConfig);
+        await sendText(senderNum, 'Recebi a sua imagem! 📸 Se for um erro no seu ecrã (como o bloqueio da Netflix), o nosso suporte técnico já vai intervir para ajudar. 🛠️\n\n⚠️ Nota: Caso isto seja um comprovativo de pagamento, por favor, envie o ficheiro em formato PDF, pois o nosso sistema não processa fotografias.', evolutionConfig);
         session.paused = true;
         stateMachine.setState(senderNum, 'pausado');
         for (const sup of supervisors) {
-          if (sup) await sendText(sup, `🔔 COMPROVATIVO de ${senderNum} (${session.name})\nPlano: ${session.platform || 'N/A'} ${session.plan || 'N/A'}`, evolutionConfig);
+          if (sup) await sendText(sup, `🔔 IMAGEM de ${senderNum} (${session.name})\nPlano: ${session.platform || 'N/A'} ${session.plan || 'N/A'}`, evolutionConfig);
+        }
+        return;
+      }
+
+      if (isDocument) {
+        await sendText(senderNum, 'Recebi o seu ficheiro PDF! 📄 Vou encaminhar para o departamento financeiro validar o seu comprovativo. Assim que for aprovado, o supervisor libertará o seu acesso. Aguarde um momento, por favor. ⏳', evolutionConfig);
+        session.paused = true;
+        stateMachine.setState(senderNum, 'pausado');
+        for (const sup of supervisors) {
+          if (sup) await sendText(sup, `🔔 COMPROVATIVO PDF de ${senderNum} (${session.name})\nPlano: ${session.platform || 'N/A'} ${session.plan || 'N/A'}`, evolutionConfig);
         }
         return;
       }
