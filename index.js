@@ -1,4 +1,4 @@
-// index.js
+// index.js — Palanca Bot Engine (LLM-First / Agentic RAG)
 require('dotenv').config();
 
 const express = require('express');
@@ -8,15 +8,14 @@ const { createWebhookHandler } = require('./src/routes/webhook');
 const llm = require('./src/engine/llm');
 const googleSheets = require('./src/integrations/google-sheets');
 const supabaseIntegration = require('./src/integrations/supabase');
-const fs = require('fs');
 const path = require('path');
 
 const app = express();
 app.use(express.json());
 
-// ── Init serviços ──
+// ── Init serviços (autenticação mantida) ──
 const credPath = path.join(__dirname, 'credentials.json');
-if (fs.existsSync(credPath)) {
+if (require('fs').existsSync(credPath)) {
   googleSheets.init(credPath, process.env.GOOGLE_SHEETS_ID || process.env.GOOGLE_SHEET_ID || '18YCr1alFpUNnj4NOOFItP3umnSJGsl2oPmGihlxOa0s');
   console.log('✅ Google Sheets inicializado');
 }
@@ -27,31 +26,26 @@ console.log('✅ Supabase inicializado');
 llm.init(process.env.GEMINI_API_KEY);
 console.log('✅ Gemini inicializado');
 
-// ── State Machine ──
+// ── State Machine (apenas para histórico + paused + supervisor) ──
 const stateMachine = new StateMachine(config);
-
-// Limpeza de sessões expiradas a cada hora
 setInterval(() => stateMachine.cleanup(), 60 * 60 * 1000);
 
-// ── Stock function (cached 60s) ──
-let stockCache = {};
-let stockCacheTime = 0;
-const STOCK_CACHE_TTL = 60 * 1000; // 60 segundos
+// ── Inventário para o prompt (cache 60s) ──
+let inventoryCache = '';
+let inventoryCacheTime = 0;
+const INVENTORY_TTL = 60 * 1000;
 
-async function getStock() {
+async function getInventoryForPrompt() {
   const now = Date.now();
-  if (now - stockCacheTime < STOCK_CACHE_TTL) return stockCache;
+  if (now - inventoryCacheTime < INVENTORY_TTL && inventoryCache) return inventoryCache;
   try {
-    stockCache = await googleSheets.getStock(config.stock);
-    stockCacheTime = now;
+    inventoryCache = await googleSheets.getInventoryForPrompt(config.stock, config.products);
+    inventoryCacheTime = now;
   } catch (err) {
-    console.error('[STOCK] Cache refresh failed:', err.message);
+    console.error('[INVENTORY] Cache refresh failed:', err.message);
   }
-  return stockCache;
+  return inventoryCache || 'Nenhum dado de inventário disponível no momento.';
 }
-
-// ── System prompt ──
-const systemPrompt = fs.readFileSync(path.join(__dirname, 'prompts/streamzone.txt'), 'utf-8');
 
 // ── Evolution API config ──
 const evolutionConfig = {
@@ -61,13 +55,13 @@ const evolutionConfig = {
 };
 
 // ── Routes ──
-const webhookHandler = createWebhookHandler(config, stateMachine, getStock, evolutionConfig, systemPrompt);
+const webhookHandler = createWebhookHandler(config, stateMachine, getInventoryForPrompt, evolutionConfig);
 app.post('/webhook', webhookHandler);
 
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    engine: 'Palanca Bot Engine v1.0',
+    engine: 'Palanca Bot Engine (LLM-First)',
     bot: config.identity.botName,
     business: config.identity.businessName,
     sessions: stateMachine.sessions.size,
@@ -78,9 +72,9 @@ app.get('/health', (req, res) => {
 // ── Start ──
 const PORT = process.env.PORT || 80;
 app.listen(PORT, () => {
-  console.log(`\n🚀 Palanca Bot Engine v1.0`);
+  console.log(`\n🚀 Palanca Bot Engine (LLM-First)`);
   console.log(`🤖 Bot: ${config.identity.botName} (${config.identity.businessName})`);
   console.log(`📡 Porta: ${PORT}`);
-  console.log(`👑 Supervisores: ${process.env.SUPERVISOR_NUMBERS}`);
+  console.log(`👑 Supervisores: ${process.env.SUPERVISOR_NUMBERS || process.env.SUPERVISOR_NUMBER || process.env.BOSS_NUMBER || '(não definido)'}`);
   console.log(`✅ Pronto!\n`);
 });

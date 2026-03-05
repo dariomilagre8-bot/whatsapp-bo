@@ -13,5 +13,5 @@ COPY . .
 # Expor a porta
 EXPOSE 80
 
-# Comando para iniciar
-CMD [ "npm", "start" ]
+# Comando para iniciar (node directo evita SIGTERM no npm)
+CMD [ "node", "index.js" ]
