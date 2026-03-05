@@ -76,9 +76,12 @@ function normalizePlanName(raw) {
 
 /**
  * Lê a planilha real e agrupa por Plataforma + Plano + Valor.
- * Colunas assumidas: A=Plataforma, D=Plano/Perfil, F=Status, H=Preço/Valor.
+ * Colunas: A=Plataforma, D=Plano/Perfil (opcional), F=Status, H=Preço/Valor.
  * Filtra Status que inclui 'disponivel' (sem acentos, minúsculas).
- * Formato: "[Plataforma] - [Plano] (Disponível) - [Valor] Kz"
+ * Usa o valor EXATO da coluna D (sem normalização) para garantir que o LLM
+ * não invente planos que não existem na planilha.
+ * Se a coluna D não tiver cabeçalho reconhecido como plano, agrupa só por Plataforma+Valor.
+ * Formato: "[Plataforma] - [Plano] - [Valor] Kz"
  */
 async function getInventoryForPrompt(stockConfig, productsConfig) {
   if (!sheets) return 'Nenhum dado de inventário disponível no momento.';
@@ -90,6 +93,8 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
     });
 
     const rows = res.data.values || [];
+    if (rows.length < 2) return 'Nenhum plano disponível no momento. Todos os planos estão esgotados.';
+
     const normalizeForStatus = (str) =>
       (str || '').toString().trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
     const normalizePlatform = (raw) => {
@@ -99,12 +104,18 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
       return (raw || '').toString().trim();
     };
 
-    const seen = new Set();
-    const parts = [];
+    // Detecta se a coluna D (índice 3) é reconhecida como coluna de Plano pelo cabeçalho
+    const header = (rows[0] || []).map(h => normalizeForStatus(h));
+    const planKeywords = ['plano', 'perfil', 'tipo', 'categoria', 'plan', 'profile'];
+    const hasPlanCol = planKeywords.some(kw => header[3] && header[3].includes(kw));
+
     const platformCol = 0;
     const planCol = 3;
     const statusCol = 5;
     const priceCol = 7;
+
+    const seen = new Set();
+    const parts = [];
 
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
@@ -113,16 +124,26 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
       const isAvailable = statusStr.includes('disponivel') && !statusStr.includes('indisponivel');
       if (!isAvailable || !platform) continue;
 
-      const plan = normalizePlanName(row[planCol]);
+      // Leitura exata do plano (sem normalização) — garante que o LLM só vende o que existe
+      const rawPlan = hasPlanCol ? (row[planCol] || '').toString().trim() : '';
       const rawPrice = row[priceCol];
-      const value = (typeof rawPrice === 'number' ? rawPrice : parseInt(String(rawPrice || '0').replace(/\D/g, ''), 10)) || 0;
-      const key = `${platform}|${plan}|${value}`;
+      const value = (typeof rawPrice === 'number'
+        ? rawPrice
+        : parseInt(String(rawPrice || '0').replace(/\D/g, ''), 10)) || 0;
+
+      const key = rawPlan ? `${platform}|${rawPlan}|${value}` : `${platform}|${value}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      parts.push(`${platform} - ${plan} (Disponível) - ${value} Kz`);
+
+      const line = rawPlan
+        ? `${platform} - ${rawPlan} - ${value} Kz`
+        : `${platform} - ${value} Kz`;
+      parts.push(line);
     }
 
-    return parts.length ? parts.join('\n') : 'Nenhum plano disponível no momento. Todos os planos estão esgotados.';
+    return parts.length
+      ? parts.join('\n')
+      : 'Nenhum plano disponível no momento. Todos os planos estão esgotados.';
   } catch (err) {
     console.error('[STOCK] getInventoryForPrompt Error:', err.message);
     return 'Erro ao carregar inventário. Não invente preços.';

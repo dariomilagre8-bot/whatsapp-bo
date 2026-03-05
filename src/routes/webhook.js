@@ -99,11 +99,18 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       // Pipeline LLM-First: A → B → C → D
       // ═══════════════════════════════════════════════════════════════
 
-      // Passo A: Inventário atualizado (Google Sheets, por Plataforma + Plano + Valor)
+      // Passo A: Inventário atualizado (Google Sheets — leitura exata de Plataforma + Plano + Valor)
       const inventoryString = await getInventoryFn();
 
-      // Passo A+: Reconhecimento de cliente (Supabase)
-      const { customerName, isReturningCustomer } = await getClientByPhone(senderNum);
+      // Passo A+: Reconhecimento de cliente via Supabase (tabela clientes, coluna telefone)
+      let customerName = null;
+      let isReturningCustomer = false;
+      try {
+        ({ customerName, isReturningCustomer } = await getClientByPhone(senderNum));
+      } catch (sbErr) {
+        console.error('[SUPABASE] Falha ao consultar cliente:', sbErr.message);
+      }
+      console.log(`[CRM] ${senderNum} → cliente: ${customerName || 'NOVO'} | retornante: ${isReturningCustomer}`);
 
       // Passo B: Últimas 5 mensagens (memória)
       const history = (session.history || []).slice(-5);
