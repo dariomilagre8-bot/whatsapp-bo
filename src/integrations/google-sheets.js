@@ -63,4 +63,60 @@ async function getStock(stockConfig) {
   }
 }
 
-module.exports = { init, getStock };
+/**
+ * Lê a planilha e devolve uma string formatada para injetar no prompt (LLM-First).
+ * Filtra por status disponível (includes 'disponivel', case insensitive, sem acentos).
+ * Formato: "Netflix (Disponível) - 5000 Kz | Prime Video (Disponível) - 3000 Kz"
+ */
+async function getInventoryForPrompt(stockConfig, productsConfig) {
+  if (!sheets) return 'Nenhum dado de inventário disponível no momento.';
+
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${stockConfig.sheetName}!A:J`,
+    });
+
+    const rows = res.data.values || [];
+    const normalizeForStatus = (str) =>
+      (str || '').toString().trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+    const normalizePlatform = (raw) => {
+      const s = (raw || '').toString().trim().toLowerCase();
+      if (s === 'netflix') return 'Netflix';
+      if (s === 'prime video' || s === 'prime') return 'Prime Video';
+      return (raw || '').toString().trim();
+    };
+
+    const platformCounts = {};
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const platform = normalizePlatform(row[0]);
+      const statusStr = normalizeForStatus(row[5] ?? '');
+      const isAvailable = statusStr.includes('disponivel') && !statusStr.includes('indisponivel');
+      if (!isAvailable || !platform) continue;
+      platformCounts[platform] = (platformCounts[platform] || 0) + 1;
+    }
+
+    const parts = [];
+    for (const [platform, count] of Object.entries(platformCounts)) {
+      if (count === 0) continue;
+      const product = productsConfig && productsConfig[platform];
+      const minPrice = product && product.plans
+        ? Math.min(...Object.values(product.plans).map((p) => p.price))
+        : null;
+      const priceStr = minPrice != null ? ` - ${minPrice} Kz` : '';
+      parts.push(`${platform} (Disponível)${priceStr}`);
+    }
+
+    return parts.length ? parts.join(' | ') : 'Nenhum plano disponível no momento. Todos os planos estão esgotados.';
+  } catch (err) {
+    console.error('[STOCK] getInventoryForPrompt Error:', err.message);
+    return 'Erro ao carregar inventário. Não invente preços.';
+  }
+}
+
+module.exports = {
+  init,
+  getStock,
+  getInventoryForPrompt,
+};
