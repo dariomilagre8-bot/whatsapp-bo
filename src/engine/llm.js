@@ -6,8 +6,8 @@ const FALLBACK_MESSAGE = 'Desculpe, estou a atualizar o meu sistema no momento. 
 
 let genAI = null;
 let model = null;
-const MODEL_PRIMARY = 'gemini-2.0-flash';
-const MODEL_FALLBACK = 'gemini-1.5-flash';
+const MODEL_PRIMARY = 'gemini-2.5-flash';
+const MODEL_FALLBACK = 'gemini-2.5-flash-lite';
 
 function init(apiKey) {
   genAI = new GoogleGenerativeAI(apiKey);
