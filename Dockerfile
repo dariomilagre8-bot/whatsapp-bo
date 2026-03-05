@@ -13,5 +13,6 @@ COPY . .
 # Expor a porta
 EXPOSE 80
 
-# Comando para iniciar (node directo evita SIGTERM no npm)
+# Comando para iniciar (node directo evita SIGTERM no npm).
+# No Easypanel: se "Start Command" estiver definido, use "node index.js" (não use "npm start").
 CMD [ "node", "index.js" ]
