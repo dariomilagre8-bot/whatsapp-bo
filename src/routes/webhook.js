@@ -40,27 +40,48 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       console.log(`\n📩 De: ${senderNum} (${pushName}) | Msg: "${textMessage.substring(0, 50)}" | Img: ${isImage} | Doc: ${isDocument} | Audio: ${isAudio}`);
 
-      const session = stateMachine.getSession(senderNum);
-      if (!session.name) session.name = extractName(pushName);
-
-      // ── Comandos de supervisor (mantidos) ──
-      if (supervisors.includes(senderNum)) {
-        const cmd = config.supervisorCommands?.[textMessage.trim().toLowerCase()];
+      // ── Comandos de supervisor NO TOPO: ignoram estado de pausa e não passam pelo LLM ──
+      // Se o remetente for supervisor e a mensagem começar por #, executar comando e return imediato.
+      if (supervisors.includes(senderNum) && (typeof textMessage === 'string' && textMessage.trim().startsWith('#'))) {
+        const parts = textMessage.trim().split(/\s+/);
+        const firstWord = (parts[0] || '').toLowerCase();
+        const cmd = config.supervisorCommands?.[firstWord];
+        const target = parts[1] || null;
         if (cmd) {
-          const parts = textMessage.trim().split(/\s+/);
-          const target = parts[1] || null;
           if (cmd === 'unpause' && target) {
             const targetSession = stateMachine.getSession(target);
             targetSession.paused = false;
             stateMachine.setState(target, 'menu');
             await sendText(target, config.systemMessages?.botUnpaused ?? 'O responsável já tratou do assunto. Em que mais posso ajudar?', evolutionConfig);
             await sendText(senderNum, `✅ Bot retomado para ${target}`, evolutionConfig);
+          } else if (cmd === 'reset_session') {
+            let count = 0;
+            if (target) {
+              const targetSession = stateMachine.getSession(target);
+              targetSession.paused = false;
+              stateMachine.setState(target, 'menu');
+              await sendText(target, config.systemMessages?.botUnpaused ?? 'O responsável já tratou do assunto. Em que mais posso ajudar?', evolutionConfig);
+              count = 1;
+              await sendText(senderNum, `✅ Reset/despausado: ${target} (1 número)`, evolutionConfig);
+            } else {
+              for (const [phone, s] of stateMachine.sessions) {
+                s.paused = false;
+                stateMachine.setState(phone, 'menu');
+                count++;
+              }
+              await sendText(senderNum, `✅ DESPAUSAR TODOS: ${count} número(s) libertados. A IA volta a responder a todos.`, evolutionConfig);
+            }
+            console.log(`[SUPERVISOR] #reset by ${senderNum}: ${count} session(s) unpaused`);
           } else if (cmd === 'status') {
-            await sendText(senderNum, `📊 Sessões activas: ${stateMachine.sessions.size}`, evolutionConfig);
+            const pausedCount = [...stateMachine.sessions.values()].filter(s => s.paused).length;
+            await sendText(senderNum, `📊 Sessões activas: ${stateMachine.sessions.size} | Pausadas: ${pausedCount}`, evolutionConfig);
           }
           return;
         }
       }
+
+      const session = stateMachine.getSession(senderNum);
+      if (!session.name) session.name = extractName(pushName);
 
       if (session.paused) {
         console.log(`[PAUSED] ${senderNum}: message ignored`);
