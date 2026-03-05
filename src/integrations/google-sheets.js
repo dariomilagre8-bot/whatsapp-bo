@@ -75,13 +75,10 @@ function normalizePlanName(raw) {
 }
 
 /**
- * Lê a planilha real e agrupa por Plataforma + Plano + Valor.
- * Colunas: A=Plataforma, D=Plano/Perfil (opcional), F=Status, H=Preço/Valor.
- * Filtra Status que inclui 'disponivel' (sem acentos, minúsculas).
- * Usa o valor EXATO da coluna D (sem normalização) para garantir que o LLM
- * não invente planos que não existem na planilha.
- * Se a coluna D não tiver cabeçalho reconhecido como plano, agrupa só por Plataforma+Valor.
- * Formato: "[Plataforma] - [Plano] - [Valor] Kz"
+ * Lê a planilha e agrupa por Plataforma + Plano + Valor, devolvendo CONTAGENS
+ * em vez de listar todas as linhas (reduz tamanho do prompt e evita repetição).
+ * Colunas: A=Plataforma, D=Plano (opcional), F=Status, H=Preço/Valor.
+ * Saída: "Netflix - Individual (5000 Kz): 12 perfis" ou "Netflix - Familia_Completa (13500 Kz): 2 contas".
  */
 async function getInventoryForPrompt(stockConfig, productsConfig) {
   if (!sheets) return 'Nenhum dado de inventário disponível no momento.';
@@ -104,7 +101,6 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
       return (raw || '').toString().trim();
     };
 
-    // Detecta se a coluna D (índice 3) é reconhecida como coluna de Plano pelo cabeçalho
     const header = (rows[0] || []).map(h => normalizeForStatus(h));
     const planKeywords = ['plano', 'perfil', 'tipo', 'categoria', 'plan', 'profile'];
     const hasPlanCol = planKeywords.some(kw => header[3] && header[3].includes(kw));
@@ -114,8 +110,8 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
     const statusCol = 5;
     const priceCol = 7;
 
-    const seen = new Set();
-    const parts = [];
+    /** key -> count (agrupa linhas iguais) */
+    const counts = new Map();
 
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
@@ -124,22 +120,28 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
       const isAvailable = statusStr.includes('disponivel') && !statusStr.includes('indisponivel');
       if (!isAvailable || !platform) continue;
 
-      // Leitura exata do plano (sem normalização) — garante que o LLM só vende o que existe
       const rawPlan = hasPlanCol ? (row[planCol] || '').toString().trim() : '';
       const rawPrice = row[priceCol];
       const value = (typeof rawPrice === 'number'
         ? rawPrice
         : parseInt(String(rawPrice || '0').replace(/\D/g, ''), 10)) || 0;
 
-      const key = rawPlan ? `${platform}|${rawPlan}|${value}` : `${platform}|${value}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-
-      const line = rawPlan
-        ? `${platform} - ${rawPlan} - ${value} Kz`
-        : `${platform} - ${value} Kz`;
-      parts.push(line);
+      const key = rawPlan ? `${platform}|${rawPlan}|${value}` : `${platform}||${value}`;
+      counts.set(key, (counts.get(key) || 0) + 1);
     }
+
+    const parts = [];
+    for (const [key, count] of counts) {
+      const segs = key.split('|');
+      const platform = segs[0] || '';
+      const rawPlan = segs[1] || '';
+      const valueDisplay = segs[2] || segs[segs.length - 1] || '0';
+      const planLabel = rawPlan || 'Plano';
+      const isConta = /familia|completa|completo|5\s*perfil/i.test(planLabel);
+      const unidade = isConta ? 'contas' : 'perfis';
+      parts.push(`${platform} - ${planLabel} (${valueDisplay} Kz): ${count} ${unidade}`);
+    }
+    parts.sort();
 
     return parts.length
       ? parts.join('\n')
