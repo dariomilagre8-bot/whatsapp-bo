@@ -54,7 +54,7 @@ async function generate(systemPrompt, userMessage, history = []) {
     const res = await m.generateContent({
       contents,
       systemInstruction: { parts: [{ text: systemPrompt }] },
-      generationConfig: { maxOutputTokens: 256, temperature: 0.4 },
+      generationConfig: { maxOutputTokens: 800, temperature: 0.4 },
     });
     return res.response.text().trim();
   };
