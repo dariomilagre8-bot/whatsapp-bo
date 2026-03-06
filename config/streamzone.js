@@ -483,6 +483,7 @@ module.exports = {
     '#pausar': 'pause',
     '#status': 'status',
     '#reset': 'reset_session',
+    '#sim': 'approve_sale',
   },
 
   // ═══════ MENSAGENS DO SISTEMA ═══════

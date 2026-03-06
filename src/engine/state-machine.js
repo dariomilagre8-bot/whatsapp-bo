@@ -19,6 +19,7 @@ class StateMachine {
         lastResponseId: null,
         history: [],
         paused: false,
+        pendingSale: null, // #RESUMO_VENDA capturado para fluxo de aprovação (#sim)
         createdAt: Date.now(),
         lastActivity: Date.now(),
       });
@@ -48,6 +49,7 @@ class StateMachine {
     session.platform = null;
     session.plan = null;
     session.paused = false;
+    session.pendingSale = null;
     session.lastResponse = null;
     session.lastResponseId = null;
     session.history = [];

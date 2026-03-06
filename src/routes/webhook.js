@@ -5,6 +5,7 @@ const { sendText } = require('../engine/sender');
 const llm = require('../engine/llm');
 const { extractName } = require('../utils/name-extractor');
 const { getClientByPhone } = require('../integrations/supabase');
+const { allocateProfile } = require('../integrations/google-sheets');
 
 /**
  * Cria o handler do webhook com pipeline estrito: A) Inventário B) Memória C) Prompt D) Resposta.
@@ -75,6 +76,26 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           } else if (cmd === 'status') {
             const pausedCount = [...stateMachine.sessions.values()].filter(s => s.paused).length;
             await sendText(senderNum, `📊 Sessões activas: ${stateMachine.sessions.size} | Pausadas: ${pausedCount}`, evolutionConfig);
+          } else if (cmd === 'approve_sale' && target) {
+            const targetSession = stateMachine.getSession(target);
+            const pendingSale = targetSession.pendingSale;
+            if (!pendingSale) {
+              await sendText(senderNum, `⚠️ O cliente ${target} não tem venda pendente (#RESUMO_VENDA). Verifique a conversa.`, evolutionConfig);
+              return;
+            }
+            const customerName = targetSession.name || 'Cliente';
+            const credentials = await allocateProfile(config.stock, pendingSale, customerName, target);
+            if (!credentials || (!credentials.email && !credentials.senha)) {
+              await sendText(senderNum, `❌ Não foi possível alocar perfil na planilha (stock ou formato). pendingSale: ${pendingSale}`, evolutionConfig);
+              return;
+            }
+            const accessMsg = `Pagamento aprovado! 🎉 Aqui estão os seus dados de acesso:\n*Email:* ${credentials.email || 'N/A'}\n*Senha:* ${credentials.senha || 'N/A'}${credentials.pin ? `\n*PIN:* ${credentials.pin}` : ''}\n\nMuito obrigado pela preferência!`;
+            await sendText(target, accessMsg, evolutionConfig);
+            targetSession.paused = false;
+            targetSession.pendingSale = null;
+            stateMachine.setState(target, 'menu');
+            await sendText(senderNum, `✅ Venda concluída e planilha atualizada com sucesso. Dados enviados a ${target}.`, evolutionConfig);
+            console.log(`[SUPERVISOR] #sim: venda aprovada para ${target}, perfil alocado`);
           }
           return;
         }
@@ -140,8 +161,15 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const systemInstruction = llm.buildDynamicPrompt(inventoryString, customerName, isReturningCustomer);
       const response = await llm.generate(systemInstruction, textMessage, history);
 
-      // Passo D: Enviar resposta ao utilizador
-      const finalResponse = response || (config.systemMessages?.unknownInput ?? 'Não compreendi. Pode reformular?');
+      // Passo D: Resposta da IA e captura de #RESUMO_VENDA (metadados para fluxo de aprovação)
+      let finalResponse = response || (config.systemMessages?.unknownInput ?? 'Não compreendi. Pode reformular?');
+      const resumoMatch = finalResponse.match(/#RESUMO_VENDA\s*:\s*([^\n#]+)/i);
+      if (resumoMatch) {
+        session.pendingSale = resumoMatch[1].trim();
+        finalResponse = finalResponse.replace(/#RESUMO_VENDA\s*:[^\n]*/gi, '').trim().replace(/\n{2,}/g, '\n');
+        console.log(`[CPA] pendingSale guardado para ${senderNum}:`, session.pendingSale);
+      }
+
       await sendText(senderNum, finalResponse, evolutionConfig);
 
       stateMachine.addToHistory(senderNum, 'user', textMessage);

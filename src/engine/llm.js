@@ -72,6 +72,7 @@ IBAN: ${paymentConfig.iban}
 TITULAR: ${paymentConfig.titular}
 EXPRESS: ${paymentConfig.express}
 ⚠️ MENSAGEM OBRIGATÓRIA após o IBAN: "Assim que transferir, por favor envie o comprovativo **EXCLUSIVAMENTE em formato PDF** aqui. O nosso sistema não processa fotografias, ok?"
+Ao enviar o Passo 4, no final da mensagem inclua EXATAMENTE uma linha (o sistema remove antes de mostrar ao cliente): #RESUMO_VENDA: [Plataforma] [Plano] - [Valor]. Ex: #RESUMO_VENDA: Netflix Família Completa - 13500 Kz
 `;
   return systemInstruction;
 }

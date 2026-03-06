@@ -8,7 +8,7 @@ function init(credentialsPath, sheetId) {
   spreadsheetId = sheetId;
   const auth = new google.auth.GoogleAuth({
     keyFile: credentialsPath,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
   sheets = google.sheets({ version: 'v4', auth });
 }
@@ -152,8 +152,115 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
   }
 }
 
+/**
+ * Índices de colunas para escrita (ajustar conforme a planilha real).
+ * Assumido: A=Plataforma, B=Email, C=Senha, D=Plano, E=PIN, F=Status, G=?, H=Preço, I=Cliente, J=Telefone, K=Data_Ver
+ */
+const COLS = {
+  platform: 0,
+  email: 1,
+  senha: 2,
+  plan: 3,
+  pin: 4,
+  status: 5,
+  cliente: 8,
+  telefone: 9,
+  dataVer: 10,
+};
+
+/**
+ * Procura a primeira linha disponível que corresponda ao pacote vendido (pendingSaleString),
+ * atualiza Status=vendido, Cliente, Telefone, Data_Ver e devolve os dados de acesso.
+ * @param {object} stockConfig - { sheetName }
+ * @param {string} pendingSaleString - ex: "Netflix Família Completa" ou "Netflix - Familia_Completa - 13500 Kz"
+ * @param {string} customerName
+ * @param {string} customerPhone
+ * @returns {Promise<{ email: string, senha: string, pin: string }|null>}
+ */
+async function allocateProfile(stockConfig, pendingSaleString, customerName, customerPhone) {
+  if (!sheets || !spreadsheetId) return null;
+
+  const normalize = (s) => (s || '').toString().trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+  const normalizePlatform = (raw) => {
+    const s = normalize(raw);
+    if (s.includes('netflix')) return 'Netflix';
+    if (s.includes('prime')) return 'Prime Video';
+    return (raw || '').toString().trim();
+  };
+
+  // Extrair plataforma e plano do texto da venda
+  const text = normalize(pendingSaleString);
+  const isNetflix = text.includes('netflix');
+  const isPrime = text.includes('prime');
+  const platform = isNetflix ? 'Netflix' : isPrime ? 'Prime Video' : null;
+  if (!platform) return null;
+
+  const planMatch = text.replace(/netflix|prime|video|\d+|kz|\.|,/gi, '').trim();
+  const wantsIndividual = /individual|1\s*perfil|perfil\s*1|sozinho/i.test(pendingSaleString) || /individual/.test(planMatch);
+  const wantsPartilha = /partilha|partilhado|2\s*perfil/i.test(pendingSaleString) || /partilha/.test(planMatch);
+  const wantsFamilia = /familia|completa|completo|5\s*perfil/i.test(pendingSaleString) || /familia|completa/.test(planMatch);
+
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${stockConfig.sheetName}!A:K`,
+    });
+    const rows = res.data.values || [];
+    if (rows.length < 2) return null;
+
+    const statusCol = 5;
+    const dataVerCol = 10;
+    const rowIndexOffset = 2;
+
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const rowPlatform = normalizePlatform(row[COLS.platform]);
+      const rowStatus = normalize(row[COLS.status] ?? '');
+      const isAvailable = rowStatus.includes('disponivel') && !rowStatus.includes('indisponivel') && !rowStatus.includes('vendido');
+      if (!isAvailable || rowPlatform !== platform) continue;
+
+      const rowPlan = (row[COLS.plan] || '').toString().trim().toLowerCase();
+      const matchPlan = (wantsFamilia && /familia|completa|completo|5/.test(rowPlan)) ||
+        (wantsPartilha && /partilha|partilhado/.test(rowPlan)) ||
+        (wantsIndividual && /individual|perfil\s*1|1\s*perfil/.test(rowPlan)) ||
+        (!wantsFamilia && !wantsPartilha && !wantsIndividual);
+      if (!matchPlan && (wantsIndividual || wantsPartilha || wantsFamilia)) continue;
+
+      const sheetRow = i + 1;
+      const dateStr = new Date().toISOString().slice(0, 10);
+
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `${stockConfig.sheetName}!F${sheetRow}:K${sheetRow}`,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: {
+          values: [[
+            'vendido',
+            row[6] != null ? row[6] : '',
+            row[7] != null ? row[7] : '',
+            customerName || 'Cliente',
+            customerPhone || '',
+            dateStr,
+          ]],
+        },
+      });
+
+      return {
+        email: (row[COLS.email] || '').toString().trim(),
+        senha: (row[COLS.senha] || '').toString().trim(),
+        pin: (row[COLS.pin] || '').toString().trim(),
+      };
+    }
+    return null;
+  } catch (err) {
+    console.error('[STOCK] allocateProfile Error:', err.message);
+    return null;
+  }
+}
+
 module.exports = {
   init,
   getStock,
   getInventoryForPrompt,
+  allocateProfile,
 };
