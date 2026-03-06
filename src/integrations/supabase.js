@@ -13,45 +13,31 @@ function getClient() {
 
 /**
  * Busca cliente na tabela clientes pelo número de WhatsApp.
- * Tenta colunas "whatsapp", "phone" e "telefone" para compatibilidade com diferentes esquemas.
+ * Usa exclusivamente a coluna whatsapp (schema confirmado).
  */
 async function getClientByPhone(phone) {
   if (!supabase) return { customerName: null, isReturningCustomer: false };
   const normalized = (phone || '').replace('@s.whatsapp.net', '').trim();
   if (!normalized) return { customerName: null, isReturningCustomer: false };
 
-  const columnsToTry = ['whatsapp', 'phone', 'telefone'];
-
-  const tryQuery = async (column) => {
-    const { data, error } = await supabase
+  try {
+    let { data, error } = await supabase
       .from('clientes')
       .select('nome')
-      .eq(column, normalized)
+      .eq('whatsapp', normalized)
       .maybeSingle();
     if (error) throw error;
-    return data;
-  };
 
-  try {
-    let data = null;
-    for (const col of columnsToTry) {
-      try {
-        data = await tryQuery(col);
-        if (data) break;
-      } catch (e) {
-        if (e.code === 'PGRST204' || e.message && e.message.includes('does not exist')) continue;
-        throw e;
-      }
-    }
     if (!data && normalized.startsWith('244')) {
       const alt = normalized.replace(/^244/, '');
-      for (const col of columnsToTry) {
-        try {
-          const res = await supabase.from('clientes').select('nome').eq(col, alt).maybeSingle();
-          if (!res.error && res.data) { data = res.data; break; }
-        } catch (_) { continue; }
-      }
+      const res = await supabase
+        .from('clientes')
+        .select('nome')
+        .eq('whatsapp', alt)
+        .maybeSingle();
+      if (!res.error && res.data) data = res.data;
     }
+
     const customerName = (data && data.nome) || null;
     return { customerName, isReturningCustomer: !!data };
   } catch (err) {
