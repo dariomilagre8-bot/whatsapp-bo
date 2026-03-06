@@ -477,6 +477,9 @@ module.exports = {
     },
   },
 
+  // ═══════ SUPERVISOR (autorização) ═══════
+  supervisorNumber: process.env.SUPERVISOR_NUMBER || '244941713216',
+
   // ═══════ COMANDOS DO SUPERVISOR ═══════
   supervisorCommands: {
     '#retomar': 'unpause',

@@ -11,6 +11,14 @@ const botSettings = require('../../config/bot_settings.json');
 /** Mesma lógica de normalização: trim, lowercase, NFD, remove acentos. */
 const normalizeText = (text) => text ? text.toString().trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '') : '';
 
+/** Verifica se o remetente é o supervisor oficial (blindagem: só dígitos). */
+const isSupervisor = (senderId) => {
+  if (!senderId) return false;
+  const cleanSender = senderId.toString().replace(/[^0-9]/g, '');
+  const adminNumber = (process.env.SUPERVISOR_NUMBER || '244941713216').replace(/[^0-9]/g, '');
+  return cleanSender === adminNumber || cleanSender.includes(adminNumber);
+};
+
 /**
  * Cria o handler do webhook com pipeline estrito: A) Inventário B) Memória C) Prompt D) Resposta.
  * getInventoryFn: async () => string (dados do Google Sheets formatados para o prompt).
@@ -41,7 +49,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const isDocument = !!messageData.documentMessage;
       const isAudio = !!(messageData.audioMessage || messageData.pttMessage);
 
-      const supervisors = (process.env.SUPERVISOR_NUMBERS || process.env.SUPERVISOR_NUMBER || process.env.BOSS_NUMBER || '').split(',').map(s => s.trim());
+      const supervisors = (process.env.SUPERVISOR_NUMBERS || process.env.SUPERVISOR_NUMBER || '244941713216').split(',').map(s => s.trim()).filter(Boolean);
 
       console.log(`\n📩 De: ${senderNum} (${pushName}) | Msg: "${textMessage.substring(0, 50)}" | Img: ${isImage} | Doc: ${isDocument} | Audio: ${isAudio}`);
 
@@ -49,14 +57,13 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const partsBody = (typeof textMessage === 'string' ? textMessage : '').trim().split(/\s+/).filter(Boolean);
       const firstToken = partsBody[0] ? normalizeText(partsBody[0]) : '';
       const hasTarget = !!partsBody[1];
-      if (supervisors.includes(senderNum) && (firstToken === '#sim' || firstToken === '#nao') && !hasTarget) {
+      if (isSupervisor(senderNum) && (firstToken === '#sim' || firstToken === '#nao') && !hasTarget) {
         await sendText(senderNum, 'Comando incompleto. Por favor, use: #sim [número_do_cliente] ou #nao [número_do_cliente]', evolutionConfig);
         return;
       }
 
       // ── Comandos de supervisor NO TOPO: ignoram estado de pausa e não passam pelo LLM ──
-      // Se o remetente for supervisor e a mensagem começar por #, executar comando e return imediato.
-      if (supervisors.includes(senderNum) && (typeof textMessage === 'string' && textMessage.trim().startsWith('#'))) {
+      if (isSupervisor(senderNum) && (typeof textMessage === 'string' && textMessage.trim().startsWith('#'))) {
         const parts = textMessage.trim().split(/\s+/);
         const firstWord = (parts[0] || '').toLowerCase();
         const cmd = config.supervisorCommands?.[firstWord];
