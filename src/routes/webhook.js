@@ -82,27 +82,36 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             const pendingSale = targetSession.pendingSale;
             if (!pendingSale) {
               const metaTag = botSettings.metadata_tag || '#RESUMO_VENDA';
-              await sendText(senderNum, `⚠️ O cliente ${target} não tem venda pendente (${metaTag}). Verifique a conversa.`, evolutionConfig);
+              await sendText(senderNum, `O cliente ${target} não tem venda pendente (${metaTag}). Verifique a conversa.`, evolutionConfig);
               return;
             }
             const stillHasStock = await hasStockForPendingSale(config.stock, pendingSale);
             if (!stillHasStock) {
-              await sendText(senderNum, `❌ Erro Crítico: Stock esgotou no último segundo. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfig);
+              await sendText(senderNum, `Erro: Stock esgotou. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfig);
               return;
             }
             const customerName = targetSession.name || 'Cliente';
             const credentials = await allocateProfile(config.stock, pendingSale, customerName, target);
             if (!credentials || (!credentials.email && !credentials.senha)) {
-              await sendText(senderNum, `❌ Erro Crítico: Stock esgotou no último segundo. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfig);
+              await sendText(senderNum, `Erro: Stock esgotou. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfig);
               return;
             }
-            const accessMsg = `Pagamento aprovado! 🎉 Aqui estão os seus dados de acesso:\n*Email:* ${credentials.email || 'Aguardando Dados'}\n*Senha:* ${credentials.senha || 'Aguardando Dados'}${credentials.pin ? `\n*PIN:* ${credentials.pin}` : ''}\n\nMuito obrigado pela preferência!`;
+            const accessMsg = `Pagamento aprovado. Aqui estão os seus dados de acesso:\n*Email:* ${credentials.email || 'Aguardando Dados'}\n*Senha:* ${credentials.senha || 'Aguardando Dados'}${credentials.pin ? `\n*PIN:* ${credentials.pin}` : ''}\n\nObrigado pela preferência.`;
             await sendText(target, accessMsg, evolutionConfig);
             targetSession.paused = false;
             targetSession.pendingSale = null;
             stateMachine.setState(target, 'menu');
-            await sendText(senderNum, `✅ Venda concluída e planilha atualizada com sucesso. Dados enviados a ${target}.`, evolutionConfig);
+            await sendText(senderNum, `Venda concluída e planilha atualizada. Dados enviados a ${target}.`, evolutionConfig);
             console.log(`[SUPERVISOR] #sim: venda aprovada para ${target}, perfil alocado`);
+          } else if (cmd === 'reject_sale' && target) {
+            const targetSession = stateMachine.getSession(target);
+            const rejectMsg = 'Informamos que o departamento financeiro não conseguiu validar o seu comprovativo de pagamento. A sua reserva encontra-se suspensa. Por favor, verifique os dados da transferência e reenvie um comprovativo válido em PDF, ou contacte-nos para esclarecimentos.';
+            await sendText(target, rejectMsg, evolutionConfig);
+            targetSession.paused = false;
+            targetSession.pendingSale = null;
+            stateMachine.setState(target, 'menu');
+            await sendText(senderNum, `Rejeição enviada ao cliente ${target}. Sessão desbloqueada.`, evolutionConfig);
+            console.log(`[SUPERVISOR] #nao: comprovativo rejeitado para ${target}`);
           }
           return;
         }
@@ -141,7 +150,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         const isPdf = fileName.endsWith('.pdf') || mimetype === 'application/pdf';
 
         if (!isPdf) {
-          await sendText(senderNum, 'Peço imensas desculpas, mas o meu sistema apenas consegue processar documentos em formato PDF. Poderia converter o seu ficheiro e reenviar, por favor? ✨', evolutionConfig);
+          await sendText(senderNum, 'O sistema financeiro exige que o comprovativo seja enviado exclusivamente em formato PDF. Por favor, converta o seu ficheiro e reenvie o documento.', evolutionConfig);
           console.log(`[WEBHOOK] Documento rejeitado (não-PDF): fileName="${docMsg.fileName}" mimetype="${docMsg.mimetype}" de ${senderNum}`);
           return;
         }
@@ -152,7 +161,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         const customerName = session.name || 'Cliente';
         const planInfo = session.pendingSale || 'Aguardando Extração';
         for (const sup of supervisors) {
-          if (sup) await sendText(sup, `🔔 COMPROVATIVO RECEBIDO\n\nCliente: ${customerName}\nPlano: ${planInfo}\n\n💡 PARA ENTREGAR: Responda a esta mensagem com: #sim ${senderNum}`, evolutionConfig);
+          if (sup) await sendText(sup, `COMPROVATIVO RECEBIDO\n\nCliente: ${customerName}\nPlano: ${planInfo}\n\n💡 PARA ENTREGAR: Responda com: #sim ${senderNum}\n🚫 PARA REJEITAR: Responda com: #nao ${senderNum}`, evolutionConfig);
         }
         return;
       }

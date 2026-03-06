@@ -168,14 +168,21 @@ function classifyPlanType(rawPlan) {
  * Devolve contagens de stock por plataforma e tipo de plano para o prompt (verificação pré-pagamento).
  * Retorno: { netflix_individual, netflix_partilha, netflix_familia, prime_individual, prime_partilha, prime_familia } e erro: string | null.
  */
+const STOCK_PROMPT_TIMEOUT_MS = 12000;
+
 async function getStockCountsForPrompt(stockConfig) {
   if (!sheets || !spreadsheetId) return { counts: null, erro: 'ERRO DE SINCRONIZAÇÃO' };
 
+  const fetchPromise = sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `${stockConfig.sheetName}!A:N`,
+  });
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('STOCK_TIMEOUT')), STOCK_PROMPT_TIMEOUT_MS)
+  );
+
   try {
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId,
-      range: `${stockConfig.sheetName}!A:N`,
-    });
+    const res = await Promise.race([fetchPromise, timeoutPromise]);
     const rows = res.data.values || [];
     if (rows.length < 2) return { counts: { netflix_individual: 0, netflix_partilha: 0, netflix_familia: 0, prime_individual: 0, prime_partilha: 0, prime_familia: 0 }, erro: null };
 

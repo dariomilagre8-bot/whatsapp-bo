@@ -484,6 +484,8 @@ module.exports = {
     '#status': 'status',
     '#reset': 'reset_session',
     '#sim': 'approve_sale',
+    '#nao': 'reject_sale',
+    '#não': 'reject_sale',
   },
 
   // ═══════ MENSAGENS DO SISTEMA ═══════
