@@ -146,12 +146,13 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           return;
         }
 
-        await sendText(senderNum, 'Recebi o seu ficheiro PDF! 📄 Vou encaminhar para o departamento financeiro validar o seu comprovativo. Assim que for aprovado, o supervisor libertará o seu acesso. Aguarde um momento, por favor. ⏳', evolutionConfig);
+            await sendText(senderNum, 'Recebi o seu ficheiro PDF! 📄 Vou encaminhar para o departamento financeiro validar o seu comprovativo. Assim que for aprovado, o supervisor libertará o seu acesso. Aguarde um momento, por favor. ⏳', evolutionConfig);
         session.paused = true;
         stateMachine.setState(senderNum, 'pausado');
-        const saleInfo = session.pendingSale || `${session.platform || 'Aguardando Dados'} ${session.plan || ''}`.trim();
+        const customerName = session.name || 'Cliente';
+        const planInfo = session.pendingSale || 'Aguardando Extração';
         for (const sup of supervisors) {
-          if (sup) await sendText(sup, `🔔 COMPROVATIVO PDF de ${senderNum} (${session.name || 'Cliente'})\nPlano: ${saleInfo}`, evolutionConfig);
+          if (sup) await sendText(sup, `🔔 COMPROVATIVO RECEBIDO\n\nCliente: ${customerName}\nPlano: ${planInfo}\n\n💡 PARA ENTREGAR: Responda a esta mensagem com: #sim ${senderNum}`, evolutionConfig);
         }
         return;
       }

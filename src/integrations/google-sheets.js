@@ -38,13 +38,13 @@ async function getStock(stockConfig) {
       (str || '').toString().trim().toLowerCase()
         .normalize('NFD').replace(/\p{Diacritic}/gu, '');
 
-    // Contar linhas disponíveis por plataforma
+    // Contar linhas disponíveis por plataforma (A=0, F=5)
     for (let i = 1; i < rows.length; i++) { // skip header
       const row = rows[i];
-      const platformValue = row[0];
-      const statusValue = row[5];
-      const platform = normalizePlatform(platformValue); // Coluna A
-      const statusStr = normalizeForStatus(statusValue); // Coluna F
+      const platformValue = (row[0] != null ? String(row[0]).trim() : '');
+      const statusValue = (row[5] != null ? String(row[5]).trim() : '');
+      const platform = normalizePlatform(platformValue);
+      const statusStr = normalizeForStatus(statusValue);
       const isAvailable = statusStr.includes('disponivel') && !statusStr.includes('indisponivel');
 
       console.log('DEBUG STOCK:', platformValue, statusValue);
@@ -86,7 +86,7 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${stockConfig.sheetName}!A:J`,
+      range: `${stockConfig.sheetName}!A:N`,
     });
 
     const rows = res.data.values || [];
@@ -100,28 +100,29 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
       if (s === 'prime video' || s === 'prime') return 'Prime Video';
       return (raw || '').toString().trim();
     };
+    const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
 
     const header = (rows[0] || []).map(h => normalizeForStatus(h));
     const planKeywords = ['plano', 'perfil', 'tipo', 'categoria', 'plan', 'profile'];
-    const hasPlanCol = planKeywords.some(kw => header[3] && header[3].includes(kw));
+    const hasPlanCol = planKeywords.some(kw => header[12] && header[12].includes(kw));
 
-    const platformCol = 0;
-    const planCol = 3;
-    const statusCol = 5;
-    const priceCol = 7;
+    const platformCol = 0;   // A
+    const statusCol = 5;     // F
+    const planCol = 12;      // M
+    const priceCol = 13;     // N
 
     /** key -> count (agrupa linhas iguais) */
     const counts = new Map();
 
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const platform = normalizePlatform(row[platformCol]);
-      const statusStr = normalizeForStatus(row[statusCol] ?? '');
+      const platform = normalizePlatform(cell(row, platformCol));
+      const statusStr = normalizeForStatus(cell(row, statusCol));
       const isAvailable = statusStr.includes('disponivel') && !statusStr.includes('indisponivel');
       if (!isAvailable || !platform) continue;
 
-      const rawPlan = hasPlanCol ? (row[planCol] || '').toString().trim() : '';
-      const rawPrice = row[priceCol];
+      const rawPlan = hasPlanCol ? cell(row, planCol) : '';
+      const rawPrice = cell(row, priceCol);
       const value = (typeof rawPrice === 'number'
         ? rawPrice
         : parseInt(String(rawPrice || '0').replace(/\D/g, ''), 10)) || 0;
@@ -173,7 +174,7 @@ async function getStockCountsForPrompt(stockConfig) {
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${stockConfig.sheetName}!A:K`,
+      range: `${stockConfig.sheetName}!A:N`,
     });
     const rows = res.data.values || [];
     if (rows.length < 2) return { counts: { netflix_individual: 0, netflix_partilha: 0, netflix_familia: 0, prime_individual: 0, prime_partilha: 0, prime_familia: 0 }, erro: null };
@@ -185,24 +186,25 @@ async function getStockCountsForPrompt(stockConfig) {
       if (s.includes('prime')) return 'Prime Video';
       return (raw || '').toString().trim();
     };
+    const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
 
     const counts = { netflix_individual: 0, netflix_partilha: 0, netflix_familia: 0, prime_individual: 0, prime_partilha: 0, prime_familia: 0 };
     const header = (rows[0] || []).map(h => normalize(h));
     const planKeywords = ['plano', 'perfil', 'tipo', 'categoria', 'plan', 'profile'];
-    const hasPlanCol = planKeywords.some(kw => header[3] && header[3].includes(kw));
+    const hasPlanCol = planKeywords.some(kw => header[12] && header[12].includes(kw));
 
     const platformCol = 0;
     const statusCol = 5;
-    const planCol = 3;
+    const planCol = 12;
 
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const platform = normalizePlatform(row[platformCol]);
-      const statusStr = normalize(row[statusCol] ?? '');
+      const platform = normalizePlatform(cell(row, platformCol));
+      const statusStr = normalize(cell(row, statusCol));
       const isAvailable = statusStr.includes('disponivel') && !statusStr.includes('indisponivel') && !statusStr.includes('vendido');
       if (!isAvailable || !platform) continue;
 
-      const rawPlan = hasPlanCol ? (row[planCol] || '').toString().trim() : '';
+      const rawPlan = hasPlanCol ? cell(row, planCol) : '';
       const planType = classifyPlanType(rawPlan);
       const key = platform === 'Netflix' ? `netflix_${planType}` : `prime_${planType}`;
       if (counts[key] !== undefined) counts[key]++;
@@ -235,19 +237,21 @@ async function hasStockForPendingSale(stockConfig, pendingSaleString) {
   const wantsPartilha = /partilha|partilhado|2\s*perfil/i.test(pendingSaleString);
   const wantsFamilia = /familia|completa|completo|5\s*perfil/i.test(pendingSaleString);
 
+  const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
+
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${stockConfig.sheetName}!A:K`,
+      range: `${stockConfig.sheetName}!A:N`,
     });
     const rows = res.data.values || [];
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const rowPlatform = normalizePlatform(row[COLS.platform]);
-      const rowStatus = normalize(row[COLS.status] ?? '');
+      const rowPlatform = normalizePlatform(cell(row, COLS.platform));
+      const rowStatus = normalize(cell(row, COLS.status));
       const isAvailable = rowStatus.includes('disponivel') && !rowStatus.includes('indisponivel') && !rowStatus.includes('vendido');
       if (!isAvailable || rowPlatform !== platform) continue;
-      const rowPlan = (row[COLS.plan] || '').toString().trim().toLowerCase();
+      const rowPlan = cell(row, COLS.plan).toLowerCase();
       const matchPlan = (wantsFamilia && /familia|completa|completo|5/.test(rowPlan)) ||
         (wantsPartilha && /partilha|partilhado/.test(rowPlan)) ||
         (wantsIndividual && /individual|perfil\s*1|1\s*perfil/.test(rowPlan)) ||
@@ -262,22 +266,20 @@ async function hasStockForPendingSale(stockConfig, pendingSaleString) {
 }
 
 /**
- * Mapeamento de colunas da planilha (0-based).
- * A=Plataforma, B=Email, C=Senha, D=Plano, E=PIN, F=Status, G=Cliente, H=Telefone, I=Data_Ver, J=Data_Exp, K=QNTD
- * Escrita segura: atualizamos APENAS F a I para não apagar Data_Exp (J) nem QNTD (K).
+ * Mapeamento de colunas da planilha (0-based), alinhado à planilha real.
+ * A=Plataforma, B=Email, C=Senha, F=Status, G=Cliente, H=Telefone, I=Data_Ver, M=Plano, N=Valor
+ * Escrita segura: atualizamos APENAS F a I (Status, Cliente, Telefone, Data_Ver).
  */
 const COLS = {
   platform: 0,   // A
   email: 1,       // B
   senha: 2,       // C
-  plan: 3,        // D
-  pin: 4,         // E
   status: 5,      // F - escrevemos "vendido"
-  cliente: 6,     // G - nome do cliente
+  cliente: 6,     // G
   telefone: 7,    // H - WhatsApp
   dataVer: 8,     // I - data da aprovação
-  // J = Data_Exp (não escrever)
-  // K = QNTD (não escrever)
+  plan: 12,       // M
+  pin: 4,         // E (se existir na planilha)
 };
 
 /**
@@ -312,22 +314,24 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
   const wantsPartilha = /partilha|partilhado|2\s*perfil/i.test(pendingSaleString) || /partilha/.test(planMatch);
   const wantsFamilia = /familia|completa|completo|5\s*perfil/i.test(pendingSaleString) || /familia|completa/.test(planMatch);
 
+  const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
+
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${stockConfig.sheetName}!A:K`,
+      range: `${stockConfig.sheetName}!A:N`,
     });
     const rows = res.data.values || [];
     if (rows.length < 2) return null;
 
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const rowPlatform = normalizePlatform(row[COLS.platform]);
-      const rowStatus = normalize(row[COLS.status] ?? '');
+      const rowPlatform = normalizePlatform(cell(row, COLS.platform));
+      const rowStatus = normalize(cell(row, COLS.status));
       const isAvailable = rowStatus.includes('disponivel') && !rowStatus.includes('indisponivel') && !rowStatus.includes('vendido');
       if (!isAvailable || rowPlatform !== platform) continue;
 
-      const rowPlan = (row[COLS.plan] || '').toString().trim().toLowerCase();
+      const rowPlan = cell(row, COLS.plan).toLowerCase();
       const matchPlan = (wantsFamilia && /familia|completa|completo|5/.test(rowPlan)) ||
         (wantsPartilha && /partilha|partilhado/.test(rowPlan)) ||
         (wantsIndividual && /individual|perfil\s*1|1\s*perfil/.test(rowPlan)) ||
@@ -368,9 +372,9 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
       });
 
       return {
-        email: (row[COLS.email] || '').toString().trim(),
-        senha: (row[COLS.senha] || '').toString().trim(),
-        pin: (row[COLS.pin] || '').toString().trim(),
+        email: cell(row, COLS.email),
+        senha: cell(row, COLS.senha),
+        pin: cell(row, COLS.pin),
       };
     }
     return null;
