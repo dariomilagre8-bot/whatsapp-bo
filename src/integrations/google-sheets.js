@@ -158,11 +158,27 @@ function classifyPlanType(rawPlan) {
   return 'individual';
 }
 
+/** Número de perfis que o plano exige: Individual 1, Partilha 2, Família 4, Família Completa 5. */
+function getProfilesNeeded(pendingSaleString) {
+  const text = normalizeText(pendingSaleString || '');
+  if (/familia\s*completa|completa|5\s*perfil|5\s*pessoa/.test(text)) return 5;
+  if (/familia|4\s*perfil|4\s*pessoa/.test(text)) return 4;
+  if (/partilha|partilhado|2\s*perfil|2\s*pessoa|duas?\s*pessoa/.test(text)) return 2;
+  return 1;
+}
+
 /**
- * Devolve contagens de stock por plataforma e tipo de plano para o prompt (verificação pré-pagamento).
- * Retorno: { netflix_individual, netflix_partilha, netflix_familia, prime_individual, prime_partilha, prime_familia } e erro: string | null.
+ * Agrupamento dinâmico: conta APENAS linhas disponíveis cujo plano seja Individual (normalizeText).
+ * Calcula Partilha/Família/Família Completa por matemática: floor(totalIndividual/2), /4, /5.
+ * Retorno: { netflix_individual, netflix_partilha, netflix_familia, netflix_familia_completa, prime_* } e erro.
  */
 const STOCK_PROMPT_TIMEOUT_MS = 12000;
+
+function isRowIndividualPlan(rawPlan, hasPlanCol) {
+  if (!hasPlanCol || rawPlan === '') return true;
+  const s = normalizeText(rawPlan);
+  return /individual|perfil\s*1|1\s*perfil|^$/.test(s) || s === '';
+}
 
 async function getStockCountsForPrompt(stockConfig) {
   if (!sheets || !spreadsheetId) return { counts: null, erro: 'ERRO DE SINCRONIZAÇÃO' };
@@ -178,38 +194,48 @@ async function getStockCountsForPrompt(stockConfig) {
   try {
     const res = await Promise.race([fetchPromise, timeoutPromise]);
     const rows = res.data.values || [];
-    if (rows.length < 2) return { counts: { netflix_individual: 0, netflix_partilha: 0, netflix_familia: 0, prime_individual: 0, prime_partilha: 0, prime_familia: 0 }, erro: null };
+    const emptyCounts = { netflix_individual: 0, netflix_partilha: 0, netflix_familia: 0, netflix_familia_completa: 0, prime_individual: 0, prime_partilha: 0, prime_familia: 0, prime_familia_completa: 0 };
+    if (rows.length < 2) return { counts: emptyCounts, erro: null };
 
     const normalizePlatform = (raw) => {
       const s = normalizeText(raw);
       if (s.includes('netflix')) return 'Netflix';
       if (s.includes('prime')) return 'Prime Video';
-      return (raw || '').toString().trim();
+      return null;
     };
     const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
-
-    const counts = { netflix_individual: 0, netflix_partilha: 0, netflix_familia: 0, prime_individual: 0, prime_partilha: 0, prime_familia: 0 };
     const header = (rows[0] || []).map(h => normalizeText(h));
     const planKeywords = ['plano', 'perfil', 'tipo', 'categoria', 'plan', 'profile'];
     const hasPlanCol = planKeywords.some(kw => header[12] && header[12].includes(kw));
-
     const platformCol = 0;
     const statusCol = 5;
     const planCol = 12;
 
+    let totalNetflixIndividual = 0;
+    let totalPrimeIndividual = 0;
+
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const platform = normalizePlatform(cell(row, platformCol));
       const statusCell = cell(row, statusCol);
-      const isAvailable = normalizeText(statusCell) === 'disponivel';
-      if (!isAvailable || !platform) continue;
-
+      if (normalizeText(statusCell) !== 'disponivel') continue;
+      const platform = normalizePlatform(cell(row, platformCol));
+      if (!platform) continue;
       const rawPlan = hasPlanCol ? cell(row, planCol) : '';
-      const planType = classifyPlanType(rawPlan);
-      const key = platform === 'Netflix' ? `netflix_${planType}` : `prime_${planType}`;
-      if (counts[key] !== undefined) counts[key]++;
+      if (!isRowIndividualPlan(rawPlan, hasPlanCol)) continue;
+      if (platform === 'Netflix') totalNetflixIndividual++;
+      else totalPrimeIndividual++;
     }
 
+    const counts = {
+      netflix_individual: totalNetflixIndividual,
+      netflix_partilha: Math.floor(totalNetflixIndividual / 2),
+      netflix_familia: Math.floor(totalNetflixIndividual / 4),
+      netflix_familia_completa: Math.floor(totalNetflixIndividual / 5),
+      prime_individual: totalPrimeIndividual,
+      prime_partilha: Math.floor(totalPrimeIndividual / 2),
+      prime_familia: Math.floor(totalPrimeIndividual / 4),
+      prime_familia_completa: Math.floor(totalPrimeIndividual / 5),
+    };
     return { counts, erro: null };
   } catch (err) {
     console.error('[STOCK] getStockCountsForPrompt Error:', err.message);
@@ -218,25 +244,25 @@ async function getStockCountsForPrompt(stockConfig) {
 }
 
 /**
- * Verifica se ainda existe pelo menos uma linha disponível para o pendingSale (re-check antes de #sim).
+ * Verifica se há linhas individuais disponíveis suficientes para o plano (N perfis = N linhas Individual).
  */
 async function hasStockForPendingSale(stockConfig, pendingSaleString) {
   if (!sheets || !spreadsheetId) return false;
-  const normalizePlatform = (raw) => {
-    const s = normalizeText(raw);
-    if (s.includes('netflix')) return 'Netflix';
-    if (s.includes('prime')) return 'Prime Video';
-    return (raw || '').toString().trim();
-  };
+  const required = getProfilesNeeded(pendingSaleString);
   const text = normalizeText(pendingSaleString);
   const platform = text.includes('netflix') ? 'Netflix' : text.includes('prime') ? 'Prime Video' : null;
   if (!platform) return false;
 
-  const wantsIndividual = /individual|1\s*perfil|perfil\s*1|sozinho/i.test(pendingSaleString);
-  const wantsPartilha = /partilha|partilhado|2\s*perfil/i.test(pendingSaleString);
-  const wantsFamilia = /familia|completa|completo|5\s*perfil/i.test(pendingSaleString);
-
+  const normalizePlatform = (raw) => {
+    const s = normalizeText(raw);
+    if (s.includes('netflix')) return 'Netflix';
+    if (s.includes('prime')) return 'Prime Video';
+    return null;
+  };
   const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
+  const header = (rows[0] || []).map(h => normalizeText(h));
+  const planKeywords = ['plano', 'perfil', 'tipo', 'categoria', 'plan', 'profile'];
+  const hasPlanCol = planKeywords.some(kw => header[12] && header[12].includes(kw));
 
   try {
     const res = await sheets.spreadsheets.values.get({
@@ -244,18 +270,16 @@ async function hasStockForPendingSale(stockConfig, pendingSaleString) {
       range: `${stockConfig.sheetName}!A:N`,
     });
     const rows = res.data.values || [];
+    let count = 0;
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       const rowPlatform = normalizePlatform(cell(row, COLS.platform));
-      const statusCell = cell(row, COLS.status);
-      const isAvailable = normalizeText(statusCell) === 'disponivel';
-      if (!isAvailable || rowPlatform !== platform) continue;
-      const rowPlan = normalizeText(cell(row, COLS.plan));
-      const matchPlan = (wantsFamilia && /familia|completa|completo|5/.test(rowPlan)) ||
-        (wantsPartilha && /partilha|partilhado/.test(rowPlan)) ||
-        (wantsIndividual && /individual|perfil\s*1|1\s*perfil/.test(rowPlan)) ||
-        (!wantsFamilia && !wantsPartilha && !wantsIndividual);
-      if (matchPlan) return true;
+      if (rowPlatform !== platform) continue;
+      if (normalizeText(cell(row, COLS.status)) !== 'disponivel') continue;
+      const rawPlan = hasPlanCol ? cell(row, COLS.plan) : '';
+      if (!isRowIndividualPlan(rawPlan, hasPlanCol)) continue;
+      count++;
+      if (count >= required) return true;
     }
     return false;
   } catch (err) {
@@ -282,13 +306,9 @@ const COLS = {
 };
 
 /**
- * Procura a primeira linha disponível que corresponda ao pacote vendido (pendingSaleString),
- * atualiza Status=vendido, Cliente, Telefone, Data_Ver e devolve os dados de acesso.
- * @param {object} stockConfig - { sheetName }
- * @param {string} pendingSaleString - ex: "Netflix Família Completa" ou "Netflix - Familia_Completa - 13500 Kz"
- * @param {string} customerName
- * @param {string} customerPhone
- * @returns {Promise<{ email: string, senha: string, pin: string }|null>}
+ * Alocação múltipla: identifica N perfis (1/2/4/5), procura N linhas Individual disponíveis,
+ * marca todas como vendido e devolve email/senha + lista de perfis (PINs).
+ * @returns {Promise<{ email: string, senha: string, pin: string, perfis: Array<{ pin: string }> }|null>}
  */
 async function allocateProfile(stockConfig, pendingSaleString, customerName, customerPhone) {
   if (!sheets || !spreadsheetId) return null;
@@ -297,21 +317,14 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
     const s = normalizeText(raw);
     if (s.includes('netflix')) return 'Netflix';
     if (s.includes('prime')) return 'Prime Video';
-    return (raw || '').toString().trim();
+    return null;
   };
 
-  // Extrair plataforma e plano do texto da venda
   const text = normalizeText(pendingSaleString);
-  const isNetflix = text.includes('netflix');
-  const isPrime = text.includes('prime');
-  const platform = isNetflix ? 'Netflix' : isPrime ? 'Prime Video' : null;
+  const platform = text.includes('netflix') ? 'Netflix' : text.includes('prime') ? 'Prime Video' : null;
   if (!platform) return null;
 
-  const planMatch = text.replace(/netflix|prime|video|\d+|kz|\.|,/gi, '').trim();
-  const wantsIndividual = /individual|1\s*perfil|perfil\s*1|sozinho/i.test(pendingSaleString) || /individual/.test(planMatch);
-  const wantsPartilha = /partilha|partilhado|2\s*perfil/i.test(pendingSaleString) || /partilha/.test(planMatch);
-  const wantsFamilia = /familia|completa|completo|5\s*perfil/i.test(pendingSaleString) || /familia|completa/.test(planMatch);
-
+  const required = getProfilesNeeded(pendingSaleString);
   const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
 
   try {
@@ -322,24 +335,28 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
     const rows = res.data.values || [];
     if (rows.length < 2) return null;
 
-    for (let i = 1; i < rows.length; i++) {
+    const header = (rows[0] || []).map(h => normalizeText(h));
+    const planKeywords = ['plano', 'perfil', 'tipo', 'categoria', 'plan', 'profile'];
+    const hasPlanCol = planKeywords.some(kw => header[12] && header[12].includes(kw));
+
+    const candidateRows = [];
+    for (let i = 1; i < rows.length && candidateRows.length < required; i++) {
       const row = rows[i];
       const rowPlatform = normalizePlatform(cell(row, COLS.platform));
-      const statusCell = cell(row, COLS.status);
-      const isAvailable = normalizeText(statusCell) === 'disponivel';
-      if (!isAvailable || rowPlatform !== platform) continue;
+      if (rowPlatform !== platform) continue;
+      if (normalizeText(cell(row, COLS.status)) !== 'disponivel') continue;
+      const rawPlan = hasPlanCol ? cell(row, COLS.plan) : '';
+      if (!isRowIndividualPlan(rawPlan, hasPlanCol)) continue;
+      candidateRows.push({ rowIndex: i, row });
+    }
 
-      const rowPlan = normalizeText(cell(row, COLS.plan));
-      const matchPlan = (wantsFamilia && /familia|completa|completo|5/.test(rowPlan)) ||
-        (wantsPartilha && /partilha|partilhado/.test(rowPlan)) ||
-        (wantsIndividual && /individual|perfil\s*1|1\s*perfil/.test(rowPlan)) ||
-        (!wantsFamilia && !wantsPartilha && !wantsIndividual);
-      if (!matchPlan && (wantsIndividual || wantsPartilha || wantsFamilia)) continue;
+    if (candidateRows.length < required) return null;
 
-      const sheetRow = i + 1;
-      const dateStr = new Date().toISOString().slice(0, 10);
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const toUpdate = candidateRows.slice(0, required);
 
-      // Re-check atómico: confirmar que a linha continua disponível antes de escrever (evitar duplicidade)
+    for (const { rowIndex, row } of toUpdate) {
+      const sheetRow = rowIndex + 1;
       try {
         const recheck = await sheets.spreadsheets.values.get({
           spreadsheetId,
@@ -368,14 +385,15 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
           ]],
         },
       });
-
-      return {
-        email: cell(row, COLS.email),
-        senha: cell(row, COLS.senha),
-        pin: cell(row, COLS.pin),
-      };
     }
-    return null;
+
+    const first = toUpdate[0].row;
+    const email = cell(first, COLS.email);
+    const senha = cell(first, COLS.senha);
+    const perfis = toUpdate.map(({ row }, idx) => ({ pin: cell(row, COLS.pin) || '' }));
+    const pin = perfis[0]?.pin || '';
+
+    return { email, senha, pin, perfis };
   } catch (err) {
     console.error('[STOCK] allocateProfile Error:', err.message);
     return null;

@@ -108,7 +108,10 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
               await sendText(senderNum, `Erro: Stock esgotou. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfig);
               return;
             }
-            const accessMsg = `Pagamento aprovado. Aqui estão os seus dados de acesso:\n*Email:* ${credentials.email || 'Aguardando Dados'}\n*Senha:* ${credentials.senha || 'Aguardando Dados'}${credentials.pin ? `\n*PIN:* ${credentials.pin}` : ''}\n\nObrigado pela preferência.`;
+            const perfisLine = (credentials.perfis && credentials.perfis.length > 1)
+              ? `\n*Perfis:* ${credentials.perfis.map((p, i) => `Perfil ${i + 1}${p.pin ? ` (PIN ${p.pin})` : ''}`).join(', ')}`
+              : (credentials.pin ? `\n*PIN:* ${credentials.pin}` : '');
+            const accessMsg = `Pagamento aprovado. Aqui estão os seus dados de acesso:\n*Email:* ${credentials.email || 'Aguardando Dados'}\n*Senha:* ${credentials.senha || 'Aguardando Dados'}${perfisLine}\n\nObrigado pela preferência.`;
             await sendText(target, accessMsg, evolutionConfig);
             targetSession.paused = false;
             targetSession.pendingSale = null;
@@ -180,6 +183,15 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       if (!textMessage.trim()) return;
 
+      // ── Memória anti-amnésia: extrair quantidade (1, 2, 4, 5 ou uma, duas, etc.) e guardar na sessão ──
+      const quantityMatch = (typeof textMessage === 'string' ? textMessage : '').match(/\b(1|2|4|5)\s*(pessoa|perfil|slot)?s?\b/i)
+        || (typeof textMessage === 'string' ? textMessage : '').match(/\b(uma?|duas?|dois|quatro|cinco)\s*(pessoa|perfil)?s?\b/i);
+      if (quantityMatch) {
+        const word = (quantityMatch[1] || '').toLowerCase();
+        const num = { '1': 1, '2': 2, '4': 4, '5': 5, 'um': 1, 'uma': 1, 'dois': 2, 'duas': 2, 'dua': 2, 'quatro': 4, 'cinco': 5 }[word];
+        if (num) session.detectedQuantity = num;
+      }
+
       // ═══════════════════════════════════════════════════════════════
       // Pipeline LLM-First: A → B → C → D
       // ═══════════════════════════════════════════════════════════════
@@ -188,7 +200,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const inventoryString = await getInventoryFn();
       const stockCountsResult = await getStockCountsForPrompt(config.stock);
 
-      // Passo A+: Reconhecimento de cliente via Supabase (tabela clientes, coluna telefone)
+      // Passo A+: Reconhecimento de cliente via Supabase (tabela clientes, coluna whatsapp)
       let customerName = null;
       let isReturningCustomer = false;
       try {
@@ -201,8 +213,8 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       // Passo B: Últimas 5 mensagens (memória)
       const history = (session.history || []).slice(-5);
 
-      // Passo C: Dynamic Prompt (com contexto do cliente + stock em tempo real) e chamada ao Gemini
-      const systemInstruction = llm.buildDynamicPrompt(inventoryString, customerName, isReturningCustomer, stockCountsResult);
+      // Passo C: Dynamic Prompt (com contexto do cliente + stock em tempo real + memória de quantidade) e chamada ao Gemini
+      const systemInstruction = llm.buildDynamicPrompt(inventoryString, customerName, isReturningCustomer, stockCountsResult, session);
       const response = await llm.generate(systemInstruction, textMessage, history);
 
       // Passo D: Resposta da IA e captura do metadata_tag (ex: #RESUMO_VENDA) para fluxo de aprovação (#sim)
