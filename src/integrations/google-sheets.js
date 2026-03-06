@@ -22,7 +22,7 @@ async function getStock(stockConfig) {
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${stockConfig.sheetName}!A:J`,
+      range: `${stockConfig.sheetName}!A:Z`,
     });
 
     const rows = res.data.values || [];
@@ -82,7 +82,7 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${stockConfig.sheetName}!A:N`,
+      range: `${stockConfig.sheetName}!A:Z`,
     });
 
     const rows = res.data.values || [];
@@ -175,9 +175,11 @@ function getProfilesNeeded(pendingSaleString) {
 const STOCK_PROMPT_TIMEOUT_MS = 12000;
 
 function isRowIndividualPlan(rawPlan, hasPlanCol) {
-  if (!hasPlanCol || rawPlan === '') return true;
-  const s = normalizeText(rawPlan);
-  return /individual|perfil\s*1|1\s*perfil|^$/.test(s) || s === '';
+  if (!hasPlanCol) return true;
+  const plano = normalizeText(rawPlan ?? '');
+  if (!plano) return true; // célula vazia = tratar como Individual
+  // Usa 'individu' para capturar tanto 'individual' quanto o erro 'individua' da planilha
+  return plano.includes('individu') || /perfil\s*1|1\s*perfil/.test(plano);
 }
 
 async function getStockCountsForPrompt(stockConfig) {
@@ -185,7 +187,7 @@ async function getStockCountsForPrompt(stockConfig) {
 
   const fetchPromise = sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `${stockConfig.sheetName}!A:N`,
+    range: `${stockConfig.sheetName}!A:Z`,
   });
   const timeoutPromise = new Promise((_, reject) =>
     setTimeout(() => reject(new Error('STOCK_TIMEOUT')), STOCK_PROMPT_TIMEOUT_MS)
@@ -267,7 +269,7 @@ async function hasStockForPendingSale(stockConfig, pendingSaleString) {
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${stockConfig.sheetName}!A:N`,
+      range: `${stockConfig.sheetName}!A:Z`,
     });
     const rows = res.data.values || [];
     let count = 0;
@@ -330,7 +332,7 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
   try {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: `${stockConfig.sheetName}!A:N`,
+      range: `${stockConfig.sheetName}!A:Z`,
     });
     const rows = res.data.values || [];
     if (rows.length < 2) return null;
