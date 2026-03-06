@@ -5,7 +5,7 @@ const { sendText } = require('../engine/sender');
 const llm = require('../engine/llm');
 const { extractName } = require('../utils/name-extractor');
 const { getClientByPhone } = require('../integrations/supabase');
-const { allocateProfile } = require('../integrations/google-sheets');
+const { allocateProfile, getStockCountsForPrompt, hasStockForPendingSale } = require('../integrations/google-sheets');
 const botSettings = require('../../config/bot_settings.json');
 
 /**
@@ -85,10 +85,15 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
               await sendText(senderNum, `⚠️ O cliente ${target} não tem venda pendente (${metaTag}). Verifique a conversa.`, evolutionConfig);
               return;
             }
+            const stillHasStock = await hasStockForPendingSale(config.stock, pendingSale);
+            if (!stillHasStock) {
+              await sendText(senderNum, `❌ Erro Crítico: Stock esgotou no último segundo. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfig);
+              return;
+            }
             const customerName = targetSession.name || 'Cliente';
             const credentials = await allocateProfile(config.stock, pendingSale, customerName, target);
             if (!credentials || (!credentials.email && !credentials.senha)) {
-              await sendText(senderNum, `❌ Não foi possível alocar perfil na planilha (stock ou formato). pendingSale: ${pendingSale}`, evolutionConfig);
+              await sendText(senderNum, `❌ Erro Crítico: Stock esgotou no último segundo. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfig);
               return;
             }
             const accessMsg = `Pagamento aprovado! 🎉 Aqui estão os seus dados de acesso:\n*Email:* ${credentials.email || 'Aguardando Dados'}\n*Senha:* ${credentials.senha || 'Aguardando Dados'}${credentials.pin ? `\n*PIN:* ${credentials.pin}` : ''}\n\nMuito obrigado pela preferência!`;
@@ -157,8 +162,9 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       // Pipeline LLM-First: A → B → C → D
       // ═══════════════════════════════════════════════════════════════
 
-      // Passo A: Inventário atualizado (Google Sheets — leitura exata de Plataforma + Plano + Valor)
+      // Passo A: Inventário atualizado + contagens de stock para verificação pré-pagamento (CPA)
       const inventoryString = await getInventoryFn();
+      const stockCountsResult = await getStockCountsForPrompt(config.stock);
 
       // Passo A+: Reconhecimento de cliente via Supabase (tabela clientes, coluna telefone)
       let customerName = null;
@@ -173,8 +179,8 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       // Passo B: Últimas 5 mensagens (memória)
       const history = (session.history || []).slice(-5);
 
-      // Passo C: Dynamic Prompt (com contexto do cliente) e chamada ao Gemini
-      const systemInstruction = llm.buildDynamicPrompt(inventoryString, customerName, isReturningCustomer);
+      // Passo C: Dynamic Prompt (com contexto do cliente + stock em tempo real) e chamada ao Gemini
+      const systemInstruction = llm.buildDynamicPrompt(inventoryString, customerName, isReturningCustomer, stockCountsResult);
       const response = await llm.generate(systemInstruction, textMessage, history);
 
       // Passo D: Resposta da IA e captura do metadata_tag (ex: #RESUMO_VENDA) para fluxo de aprovação (#sim)

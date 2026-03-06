@@ -153,6 +153,115 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
 }
 
 /**
+ * Classifica o texto do plano em individual | partilha | familia (para contagens).
+ */
+function classifyPlanType(rawPlan) {
+  const s = (rawPlan || '').toString().trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+  if (/familia|completa|completo|5\s*perfil/.test(s)) return 'familia';
+  if (/partilha|partilhado/.test(s)) return 'partilha';
+  if (/individual|perfil\s*1|1\s*perfil/.test(s)) return 'individual';
+  return 'individual';
+}
+
+/**
+ * Devolve contagens de stock por plataforma e tipo de plano para o prompt (verificação pré-pagamento).
+ * Retorno: { netflix_individual, netflix_partilha, netflix_familia, prime_individual, prime_partilha, prime_familia } e erro: string | null.
+ */
+async function getStockCountsForPrompt(stockConfig) {
+  if (!sheets || !spreadsheetId) return { counts: null, erro: 'ERRO DE SINCRONIZAÇÃO' };
+
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${stockConfig.sheetName}!A:K`,
+    });
+    const rows = res.data.values || [];
+    if (rows.length < 2) return { counts: { netflix_individual: 0, netflix_partilha: 0, netflix_familia: 0, prime_individual: 0, prime_partilha: 0, prime_familia: 0 }, erro: null };
+
+    const normalize = (s) => (s || '').toString().trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+    const normalizePlatform = (raw) => {
+      const s = normalize(raw);
+      if (s.includes('netflix')) return 'Netflix';
+      if (s.includes('prime')) return 'Prime Video';
+      return (raw || '').toString().trim();
+    };
+
+    const counts = { netflix_individual: 0, netflix_partilha: 0, netflix_familia: 0, prime_individual: 0, prime_partilha: 0, prime_familia: 0 };
+    const header = (rows[0] || []).map(h => normalize(h));
+    const planKeywords = ['plano', 'perfil', 'tipo', 'categoria', 'plan', 'profile'];
+    const hasPlanCol = planKeywords.some(kw => header[3] && header[3].includes(kw));
+
+    const platformCol = 0;
+    const statusCol = 5;
+    const planCol = 3;
+
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const platform = normalizePlatform(row[platformCol]);
+      const statusStr = normalize(row[statusCol] ?? '');
+      const isAvailable = statusStr.includes('disponivel') && !statusStr.includes('indisponivel') && !statusStr.includes('vendido');
+      if (!isAvailable || !platform) continue;
+
+      const rawPlan = hasPlanCol ? (row[planCol] || '').toString().trim() : '';
+      const planType = classifyPlanType(rawPlan);
+      const key = platform === 'Netflix' ? `netflix_${planType}` : `prime_${planType}`;
+      if (counts[key] !== undefined) counts[key]++;
+    }
+
+    return { counts, erro: null };
+  } catch (err) {
+    console.error('[STOCK] getStockCountsForPrompt Error:', err.message);
+    return { counts: null, erro: 'ERRO DE SINCRONIZAÇÃO' };
+  }
+}
+
+/**
+ * Verifica se ainda existe pelo menos uma linha disponível para o pendingSale (re-check antes de #sim).
+ */
+async function hasStockForPendingSale(stockConfig, pendingSaleString) {
+  if (!sheets || !spreadsheetId) return false;
+  const normalize = (s) => (s || '').toString().trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+  const normalizePlatform = (raw) => {
+    const s = normalize(raw);
+    if (s.includes('netflix')) return 'Netflix';
+    if (s.includes('prime')) return 'Prime Video';
+    return (raw || '').toString().trim();
+  };
+  const text = normalize(pendingSaleString);
+  const platform = text.includes('netflix') ? 'Netflix' : text.includes('prime') ? 'Prime Video' : null;
+  if (!platform) return false;
+
+  const wantsIndividual = /individual|1\s*perfil|perfil\s*1|sozinho/i.test(pendingSaleString);
+  const wantsPartilha = /partilha|partilhado|2\s*perfil/i.test(pendingSaleString);
+  const wantsFamilia = /familia|completa|completo|5\s*perfil/i.test(pendingSaleString);
+
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${stockConfig.sheetName}!A:K`,
+    });
+    const rows = res.data.values || [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const rowPlatform = normalizePlatform(row[COLS.platform]);
+      const rowStatus = normalize(row[COLS.status] ?? '');
+      const isAvailable = rowStatus.includes('disponivel') && !rowStatus.includes('indisponivel') && !rowStatus.includes('vendido');
+      if (!isAvailable || rowPlatform !== platform) continue;
+      const rowPlan = (row[COLS.plan] || '').toString().trim().toLowerCase();
+      const matchPlan = (wantsFamilia && /familia|completa|completo|5/.test(rowPlan)) ||
+        (wantsPartilha && /partilha|partilhado/.test(rowPlan)) ||
+        (wantsIndividual && /individual|perfil\s*1|1\s*perfil/.test(rowPlan)) ||
+        (!wantsFamilia && !wantsPartilha && !wantsIndividual);
+      if (matchPlan) return true;
+    }
+    return false;
+  } catch (err) {
+    console.error('[STOCK] hasStockForPendingSale Error:', err.message);
+    return false;
+  }
+}
+
+/**
  * Mapeamento de colunas da planilha (0-based).
  * A=Plataforma, B=Email, C=Senha, D=Plano, E=PIN, F=Status, G=Cliente, H=Telefone, I=Data_Ver, J=Data_Exp, K=QNTD
  * Escrita segura: atualizamos APENAS F a I para não apagar Data_Exp (J) nem QNTD (K).
@@ -228,6 +337,22 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
       const sheetRow = i + 1;
       const dateStr = new Date().toISOString().slice(0, 10);
 
+      // Re-check atómico: confirmar que a linha continua disponível antes de escrever (evitar duplicidade)
+      try {
+        const recheck = await sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range: `${stockConfig.sheetName}!F${sheetRow}:F${sheetRow}`,
+        });
+        const recheckStatus = normalize((recheck.data.values || [])[0]?.[0] ?? '');
+        if (!recheckStatus.includes('disponivel') || recheckStatus.includes('vendido')) {
+          console.log('[STOCK] allocateProfile: linha já ocupada no último segundo, abortar');
+          return null;
+        }
+      } catch (e) {
+        console.error('[STOCK] allocateProfile re-check:', e.message);
+        return null;
+      }
+
       await sheets.spreadsheets.values.update({
         spreadsheetId,
         range: `${stockConfig.sheetName}!F${sheetRow}:I${sheetRow}`,
@@ -259,5 +384,7 @@ module.exports = {
   init,
   getStock,
   getInventoryForPrompt,
+  getStockCountsForPrompt,
+  hasStockForPendingSale,
   allocateProfile,
 };
