@@ -121,18 +121,32 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         await sendText(senderNum, 'Recebi a sua imagem! 📸 Se for um erro no seu ecrã (como o bloqueio da Netflix), o nosso suporte técnico já vai intervir para ajudar. 🛠️\n\n⚠️ Nota: Caso isto seja um comprovativo de pagamento, por favor, envie o ficheiro em formato PDF, pois o nosso sistema não processa fotografias.', evolutionConfig);
         session.paused = true;
         stateMachine.setState(senderNum, 'pausado');
+        const imgSaleInfo = session.pendingSale || `${session.platform || 'Aguardando Dados'} ${session.plan || ''}`.trim();
         for (const sup of supervisors) {
-          if (sup) await sendText(sup, `🔔 IMAGEM de ${senderNum} (${session.name})\nPlano: ${session.platform || 'N/A'} ${session.plan || 'N/A'}`, evolutionConfig);
+          if (sup) await sendText(sup, `🔔 IMAGEM de ${senderNum} (${session.name || 'Cliente'})\nPlano: ${imgSaleInfo}`, evolutionConfig);
         }
         return;
       }
 
       if (isDocument) {
+        // Validação restrita: aceitar APENAS ficheiros com extensão .pdf ou mimetype application/pdf
+        const docMsg = messageData.documentMessage || {};
+        const fileName = (docMsg.fileName || '').toLowerCase();
+        const mimetype = (docMsg.mimetype || '').toLowerCase();
+        const isPdf = fileName.endsWith('.pdf') || mimetype === 'application/pdf';
+
+        if (!isPdf) {
+          await sendText(senderNum, 'Peço imensas desculpas, mas o meu sistema apenas consegue processar documentos em formato PDF. Poderia converter o seu ficheiro e reenviar, por favor? ✨', evolutionConfig);
+          console.log(`[WEBHOOK] Documento rejeitado (não-PDF): fileName="${docMsg.fileName}" mimetype="${docMsg.mimetype}" de ${senderNum}`);
+          return;
+        }
+
         await sendText(senderNum, 'Recebi o seu ficheiro PDF! 📄 Vou encaminhar para o departamento financeiro validar o seu comprovativo. Assim que for aprovado, o supervisor libertará o seu acesso. Aguarde um momento, por favor. ⏳', evolutionConfig);
         session.paused = true;
         stateMachine.setState(senderNum, 'pausado');
+        const saleInfo = session.pendingSale || `${session.platform || 'Aguardando Dados'} ${session.plan || ''}`.trim();
         for (const sup of supervisors) {
-          if (sup) await sendText(sup, `🔔 COMPROVATIVO PDF de ${senderNum} (${session.name})\nPlano: ${session.platform || 'N/A'} ${session.plan || 'N/A'}`, evolutionConfig);
+          if (sup) await sendText(sup, `🔔 COMPROVATIVO PDF de ${senderNum} (${session.name || 'Cliente'})\nPlano: ${saleInfo}`, evolutionConfig);
         }
         return;
       }
