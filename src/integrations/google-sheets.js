@@ -153,19 +153,22 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
 }
 
 /**
- * Índices de colunas para escrita (ajustar conforme a planilha real).
- * Assumido: A=Plataforma, B=Email, C=Senha, D=Plano, E=PIN, F=Status, G=?, H=Preço, I=Cliente, J=Telefone, K=Data_Ver
+ * Mapeamento de colunas da planilha (0-based).
+ * A=Plataforma, B=Email, C=Senha, D=Plano, E=PIN, F=Status, G=Cliente, H=Telefone, I=Data_Ver, J=Data_Exp, K=QNTD
+ * Escrita segura: atualizamos APENAS F a I para não apagar Data_Exp (J) nem QNTD (K).
  */
 const COLS = {
-  platform: 0,
-  email: 1,
-  senha: 2,
-  plan: 3,
-  pin: 4,
-  status: 5,
-  cliente: 8,
-  telefone: 9,
-  dataVer: 10,
+  platform: 0,   // A
+  email: 1,       // B
+  senha: 2,       // C
+  plan: 3,        // D
+  pin: 4,         // E
+  status: 5,      // F - escrevemos "vendido"
+  cliente: 6,     // G - nome do cliente
+  telefone: 7,    // H - WhatsApp
+  dataVer: 8,     // I - data da aprovação
+  // J = Data_Exp (não escrever)
+  // K = QNTD (não escrever)
 };
 
 /**
@@ -208,10 +211,6 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
     const rows = res.data.values || [];
     if (rows.length < 2) return null;
 
-    const statusCol = 5;
-    const dataVerCol = 10;
-    const rowIndexOffset = 2;
-
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       const rowPlatform = normalizePlatform(row[COLS.platform]);
@@ -231,13 +230,11 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
 
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${stockConfig.sheetName}!F${sheetRow}:K${sheetRow}`,
+        range: `${stockConfig.sheetName}!F${sheetRow}:I${sheetRow}`,
         valueInputOption: 'USER_ENTERED',
         requestBody: {
           values: [[
             'vendido',
-            row[6] != null ? row[6] : '',
-            row[7] != null ? row[7] : '',
             customerName || 'Cliente',
             customerPhone || '',
             dateStr,
