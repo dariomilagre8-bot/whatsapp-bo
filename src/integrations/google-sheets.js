@@ -199,33 +199,16 @@ async function getStockCountsForPrompt(stockConfig) {
     const emptyCounts = { netflix_individual: 0, netflix_partilha: 0, netflix_familia: 0, netflix_familia_completa: 0, prime_individual: 0, prime_partilha: 0, prime_familia: 0, prime_familia_completa: 0 };
     if (rows.length < 2) return { counts: emptyCounts, erro: null };
 
-    const normalizePlatform = (raw) => {
-      const s = normalizeText(raw);
-      if (s.includes('netflix')) return 'Netflix';
-      if (s.includes('prime')) return 'Prime Video';
-      return null;
-    };
-    const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
-    const header = (rows[0] || []).map(h => normalizeText(h));
-    const planKeywords = ['plano', 'perfil', 'tipo', 'categoria', 'plan', 'profile'];
-    const hasPlanCol = planKeywords.some(kw => header[12] && header[12].includes(kw));
-    const platformCol = 0;
-    const statusCol = 5;
-    const planCol = 12;
-
     let totalNetflixIndividual = 0;
     let totalPrimeIndividual = 0;
 
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const statusCell = cell(row, statusCol);
-      if (normalizeText(statusCell) !== 'disponivel') continue;
-      const platform = normalizePlatform(cell(row, platformCol));
-      if (!platform) continue;
-      const rawPlan = hasPlanCol ? cell(row, planCol) : '';
-      if (!isRowIndividualPlan(rawPlan, hasPlanCol)) continue;
-      if (platform === 'Netflix') totalNetflixIndividual++;
-      else totalPrimeIndividual++;
+      const plataforma = normalizeText(row[0] ?? '');
+      const status = normalizeText(row[5] ?? '');
+      if (status !== 'disponivel') continue;
+      if (plataforma.includes('netflix')) totalNetflixIndividual++;
+      if (plataforma.includes('prime')) totalPrimeIndividual++;
     }
 
     const counts = {
@@ -262,9 +245,6 @@ async function hasStockForPendingSale(stockConfig, pendingSaleString) {
     return null;
   };
   const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
-  const header = (rows[0] || []).map(h => normalizeText(h));
-  const planKeywords = ['plano', 'perfil', 'tipo', 'categoria', 'plan', 'profile'];
-  const hasPlanCol = planKeywords.some(kw => header[12] && header[12].includes(kw));
 
   try {
     const res = await sheets.spreadsheets.values.get({
@@ -278,8 +258,6 @@ async function hasStockForPendingSale(stockConfig, pendingSaleString) {
       const rowPlatform = normalizePlatform(cell(row, COLS.platform));
       if (rowPlatform !== platform) continue;
       if (normalizeText(cell(row, COLS.status)) !== 'disponivel') continue;
-      const rawPlan = hasPlanCol ? cell(row, COLS.plan) : '';
-      if (!isRowIndividualPlan(rawPlan, hasPlanCol)) continue;
       count++;
       if (count >= required) return true;
     }
@@ -337,18 +315,12 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
     const rows = res.data.values || [];
     if (rows.length < 2) return null;
 
-    const header = (rows[0] || []).map(h => normalizeText(h));
-    const planKeywords = ['plano', 'perfil', 'tipo', 'categoria', 'plan', 'profile'];
-    const hasPlanCol = planKeywords.some(kw => header[12] && header[12].includes(kw));
-
     const candidateRows = [];
     for (let i = 1; i < rows.length && candidateRows.length < required; i++) {
       const row = rows[i];
       const rowPlatform = normalizePlatform(cell(row, COLS.platform));
       if (rowPlatform !== platform) continue;
       if (normalizeText(cell(row, COLS.status)) !== 'disponivel') continue;
-      const rawPlan = hasPlanCol ? cell(row, COLS.plan) : '';
-      if (!isRowIndividualPlan(rawPlan, hasPlanCol)) continue;
       candidateRows.push({ rowIndex: i, row });
     }
 
