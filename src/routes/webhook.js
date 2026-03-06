@@ -91,7 +91,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
               await sendText(senderNum, `❌ Não foi possível alocar perfil na planilha (stock ou formato). pendingSale: ${pendingSale}`, evolutionConfig);
               return;
             }
-            const accessMsg = `Pagamento aprovado! 🎉 Aqui estão os seus dados de acesso:\n*Email:* ${credentials.email || 'N/A'}\n*Senha:* ${credentials.senha || 'N/A'}${credentials.pin ? `\n*PIN:* ${credentials.pin}` : ''}\n\nMuito obrigado pela preferência!`;
+            const accessMsg = `Pagamento aprovado! 🎉 Aqui estão os seus dados de acesso:\n*Email:* ${credentials.email || 'Aguardando Dados'}\n*Senha:* ${credentials.senha || 'Aguardando Dados'}${credentials.pin ? `\n*PIN:* ${credentials.pin}` : ''}\n\nMuito obrigado pela preferência!`;
             await sendText(target, accessMsg, evolutionConfig);
             targetSession.paused = false;
             targetSession.pendingSale = null;
@@ -166,7 +166,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       // Passo D: Resposta da IA e captura do metadata_tag (ex: #RESUMO_VENDA) para fluxo de aprovação (#sim)
       let finalResponse = response || (config.systemMessages?.unknownInput ?? 'Não compreendi. Pode reformular?');
       const metaTag = (botSettings.metadata_tag || '#RESUMO_VENDA').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const resumoRegex = new RegExp(`${metaTag}\\s*:\\s*([^\\n#]+)`, 'i');
+      const resumoRegex = new RegExp(`${metaTag}\\s*:\\s*([^\\n]*)`, 'i');
       const resumoMatch = finalResponse.match(resumoRegex);
       if (resumoMatch) {
         session.pendingSale = resumoMatch[1].trim();
