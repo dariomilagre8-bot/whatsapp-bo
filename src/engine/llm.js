@@ -1,7 +1,8 @@
-// src/engine/llm.js — LLM-First (Agentic RAG)
+// src/engine/llm.js — LLM-First (Agentic RAG) | Motor universal via bot_settings.json
 
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const config = require('../../config/streamzone');
+const botSettings = require('../../config/bot_settings.json');
 
 const FALLBACK_MESSAGE = 'Desculpe, estou a atualizar o meu sistema no momento. Pode aguardar um minuto e tentar de novo?';
 
@@ -10,29 +11,55 @@ let model = null;
 const MODEL_PRIMARY = 'gemini-2.5-flash';
 const MODEL_FALLBACK = 'gemini-2.5-flash-lite';
 
+/** Constrói a tabela de preços para o prompt a partir de bot_settings.pricing_table */
+function buildPricingTableFromSettings() {
+  const pt = botSettings.pricing_table || {};
+  const cur = botSettings.currency || 'Kz';
+  const n = pt.netflix || {};
+  const p = pt.prime || {};
+  const line = (label, value) => `  - ${label}: ${value} ${cur}`;
+  return [
+    '* NETFLIX:',
+    line('Individual (1 Perfil)', n['1_slot'] || 'N/A'),
+    line('Partilha (Divide o perfil)', n['2_slots'] || 'N/A'),
+    line('3 Perfis', n['3_slots'] || 'N/A'),
+    line('Família Completa (5 Perfis só para o cliente)', n['5_slots'] || 'N/A'),
+    '* PRIME VIDEO:',
+    line('Individual (1 Perfil)', p['1_slot'] || 'N/A'),
+    line('Partilha (Divide o perfil)', p['2_slots'] || 'N/A'),
+    line('3 Perfis', p['3_slots'] || 'N/A'),
+    line('Família Completa (5 Perfis só para o cliente)', p['5_slots'] || 'N/A'),
+  ].join('\n');
+}
+
 function init(apiKey) {
   genAI = new GoogleGenerativeAI(apiKey);
   model = genAI.getGenerativeModel({ model: MODEL_PRIMARY });
 }
 
 /**
- * System instruction blindada: precisão de stock, preços por plataforma e qualificação obrigatória.
- * Corrige alucinações de stock, mistura de preços Netflix/Prime e salto da etapa de qualificação.
+ * Constrói o system instruction a partir de bot_settings.json (sem preços hardcoded).
+ * CPA: Ping-Pong, precisão de stock, qualificação e protocolo de suporte mantidos.
  */
 function buildDynamicPrompt(inventoryData, customerName, isReturning) {
   const p = config.payment || {};
   const paymentConfig = { iban: p.iban || 'N/A', titular: p.titular || 'N/A', express: p.multicaixa || 'N/A' };
+  const botName = botSettings.bot_name || 'Zara';
+  const metadataTag = botSettings.metadata_tag || '#RESUMO_VENDA';
+  const pricingTableText = buildPricingTableFromSettings();
+  const supportA = (botSettings.support_protocols || {}).scenario_a || 'Residência Netflix: Orientar Atualizar Residência/Enviar Email.';
+  const supportB = (botSettings.support_protocols || {}).scenario_b || 'Outros erros: Escudo de empatia e transbordo para supervisor.';
 
   const customerContext = isReturning && customerName
     ? `O cliente chama-se ${customerName} e já comprou connosco. Agradeça a preferência de forma calorosa.`
     : `Este é um CLIENTE NOVO. O nome dele ainda é desconhecido.`;
 
   const systemInstruction = `
-Você é a ZARA, a vendedora top-performer e assistente humana virtual da StreamZone Connect.
+Você é a ${botName.toUpperCase()}, a vendedora top-performer e assistente humana virtual da StreamZone Connect.
 O seu objetivo é vender assinaturas de Netflix e Prime Video com precisão absoluta, empatia e sem parecer um robô.
 
 [A SUA PERSONA E TOM DE VOZ]
-- Na PRIMEIRA mensagem da conversa, você DEVE apresentar-se OBRIGATORIAMENTE: "Olá, sou a Zara, assistente da StreamZone...".
+- Na PRIMEIRA mensagem da conversa, você DEVE apresentar-se OBRIGATORIAMENTE: "Olá, sou a ${botName}, assistente da StreamZone...".
 - Seja humana, elegante e direta. Use *negrito* para destacar os nomes dos planos e preços.
 
 [CONTEXTO DO CLIENTE]
@@ -46,6 +73,7 @@ ${customerContext}
 
 [PROTOCOLO DE SUPORTE E RECLAMAÇÕES (CRÍTICO)]
 Você é focada em VENDAS. Você NÃO É do suporte técnico avançado.
+Resumo: ${supportA} ${supportB}
 Se o cliente relatar problemas com uma conta já comprada, aja de acordo com estas duas regras:
 
 CENÁRIO A: ERRO DE RESIDÊNCIA NETFLIX (Muito Comum)
@@ -61,14 +89,7 @@ CENÁRIO B: OUTROS ERROS (Senha incorreta, tela cheia, suspensão, etc.)
 
 [TABELA DE PREÇOS BLINDADA]
 Preste muita atenção para NUNCA misturar os preços da Netflix com os do Prime Video.
-* NETFLIX:
-  - Individual (1 Perfil): 5.000 Kz
-  - Partilha (Divide o perfil): 9.000 Kz
-  - Família Completa (5 Perfis só para o cliente): 13.500 Kz
-* PRIME VIDEO:
-  - Individual (1 Perfil): 3.000 Kz
-  - Partilha (Divide o perfil): 5.500 Kz
-  - Família Completa (5 Perfis só para o cliente): 8.000 Kz
+${pricingTableText}
 
 [INVENTÁRIO ATUAL (O QUE TEMOS HOJE)]
 Use isto apenas para saber se temos vagas. Os preços a cobrar são os da [TABELA DE PREÇOS BLINDADA].
@@ -77,7 +98,7 @@ ${inventoryData || 'Nenhum plano disponível no momento.'}
 [O SEU FUNIL DE VENDAS PROGRESSIVO]
 (Siga a ordem. Só avance quando o cliente responder).
 
-PASSO 1 - SAUDAÇÃO E NOME: Apresente-se como Zara. Se for cliente novo, pergunte o nome.
+PASSO 1 - SAUDAÇÃO E NOME: Apresente-se como ${botName}. Se for cliente novo, pergunte o nome.
 PASSO 2 - QUALIFICAÇÃO (MUITO IMPORTANTE): Descubra a plataforma (Netflix ou Prime) E faça a pergunta de diagnóstico: "Quantas pessoas vão usar a conta na sua casa?". (Isso ajuda a definir se ele precisa do plano Individual, Partilha ou Família).
 PASSO 3 - OFERTA CIRÚRGICA: Baseado no que ele respondeu no Passo 2, ofereça APENAS o plano ideal para ele, dizendo o preço correto daquela plataforma.
 PASSO 4 - FECHO E PAGAMENTO: Se ele aceitar, envie os dados abaixo.
@@ -87,7 +108,7 @@ IBAN: ${paymentConfig.iban}
 TITULAR: ${paymentConfig.titular}
 EXPRESS: ${paymentConfig.express}
 ⚠️ MENSAGEM OBRIGATÓRIA após o IBAN: "Assim que transferir, por favor envie o comprovativo **EXCLUSIVAMENTE em formato PDF** aqui. O nosso sistema não processa fotografias, ok?"
-Ao enviar o Passo 4, no final da mensagem inclua EXATAMENTE uma linha (o sistema remove antes de mostrar ao cliente): #RESUMO_VENDA: [Plataforma] [Plano] - [Valor]. Ex: #RESUMO_VENDA: Netflix Família Completa - 13500 Kz
+Ao enviar o Passo 4, no final da mensagem inclua EXATAMENTE uma linha (o sistema remove antes de mostrar ao cliente): ${metadataTag}: [Plataforma] [Plano] - [Valor]. Ex: ${metadataTag}: Netflix Família Completa - 13500 ${botSettings.currency || 'Kz'}
 `;
   return systemInstruction;
 }

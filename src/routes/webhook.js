@@ -6,6 +6,7 @@ const llm = require('../engine/llm');
 const { extractName } = require('../utils/name-extractor');
 const { getClientByPhone } = require('../integrations/supabase');
 const { allocateProfile } = require('../integrations/google-sheets');
+const botSettings = require('../../config/bot_settings.json');
 
 /**
  * Cria o handler do webhook com pipeline estrito: A) Inventário B) Memória C) Prompt D) Resposta.
@@ -80,7 +81,8 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             const targetSession = stateMachine.getSession(target);
             const pendingSale = targetSession.pendingSale;
             if (!pendingSale) {
-              await sendText(senderNum, `⚠️ O cliente ${target} não tem venda pendente (#RESUMO_VENDA). Verifique a conversa.`, evolutionConfig);
+              const metaTag = botSettings.metadata_tag || '#RESUMO_VENDA';
+              await sendText(senderNum, `⚠️ O cliente ${target} não tem venda pendente (${metaTag}). Verifique a conversa.`, evolutionConfig);
               return;
             }
             const customerName = targetSession.name || 'Cliente';
@@ -161,12 +163,14 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const systemInstruction = llm.buildDynamicPrompt(inventoryString, customerName, isReturningCustomer);
       const response = await llm.generate(systemInstruction, textMessage, history);
 
-      // Passo D: Resposta da IA e captura de #RESUMO_VENDA (metadados para fluxo de aprovação)
+      // Passo D: Resposta da IA e captura do metadata_tag (ex: #RESUMO_VENDA) para fluxo de aprovação (#sim)
       let finalResponse = response || (config.systemMessages?.unknownInput ?? 'Não compreendi. Pode reformular?');
-      const resumoMatch = finalResponse.match(/#RESUMO_VENDA\s*:\s*([^\n#]+)/i);
+      const metaTag = (botSettings.metadata_tag || '#RESUMO_VENDA').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const resumoRegex = new RegExp(`${metaTag}\\s*:\\s*([^\\n#]+)`, 'i');
+      const resumoMatch = finalResponse.match(resumoRegex);
       if (resumoMatch) {
         session.pendingSale = resumoMatch[1].trim();
-        finalResponse = finalResponse.replace(/#RESUMO_VENDA\s*:[^\n]*/gi, '').trim().replace(/\n{2,}/g, '\n');
+        finalResponse = finalResponse.replace(new RegExp(`${metaTag}\\s*:[^\\n]*`, 'gi'), '').trim().replace(/\n{2,}/g, '\n');
         console.log(`[CPA] pendingSale guardado para ${senderNum}:`, session.pendingSale);
       }
 

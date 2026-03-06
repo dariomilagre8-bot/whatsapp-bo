@@ -1,0 +1,25 @@
+{
+  "bot_name": "Zara",
+  "business_niche": "Streaming",
+  "currency": "Kz",
+  "inventory_source": "google_sheets_v1",
+  "pricing_table": {
+    "netflix": {
+      "1_slot": "5.000",
+      "2_slots": "9.000",
+      "3_slots": "14.000",
+      "5_slots": "24.000"
+    },
+    "prime": {
+      "1_slot": "3.000",
+      "2_slots": "5.500",
+      "3_slots": "8.000",
+      "5_slots": "12.000"
+    }
+  },
+  "support_protocols": {
+    "scenario_a": "Residência Netflix: Orientar a clicar em Atualizar Residência/Enviar Email.",
+    "scenario_b": "Outros erros: Escudo de empatia e transbordo para supervisor."
+  },
+  "metadata_tag": "#RESUMO_VENDA"
+}
