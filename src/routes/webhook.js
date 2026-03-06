@@ -8,6 +8,9 @@ const { getClientByPhone } = require('../integrations/supabase');
 const { allocateProfile, getStockCountsForPrompt, hasStockForPendingSale } = require('../integrations/google-sheets');
 const botSettings = require('../../config/bot_settings.json');
 
+/** Mesma lógica de normalização: trim, lowercase, NFD, remove acentos. */
+const normalizeText = (text) => text ? text.toString().trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '') : '';
+
 /**
  * Cria o handler do webhook com pipeline estrito: A) Inventário B) Memória C) Prompt D) Resposta.
  * getInventoryFn: async () => string (dados do Google Sheets formatados para o prompt).
@@ -41,6 +44,15 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const supervisors = (process.env.SUPERVISOR_NUMBERS || process.env.SUPERVISOR_NUMBER || process.env.BOSS_NUMBER || '').split(',').map(s => s.trim());
 
       console.log(`\n📩 De: ${senderNum} (${pushName}) | Msg: "${textMessage.substring(0, 50)}" | Img: ${isImage} | Doc: ${isDocument} | Audio: ${isAudio}`);
+
+      // ── Interceptador global: #sim / #nao incompletos NUNCA chegam à Zara ──
+      const partsBody = (typeof textMessage === 'string' ? textMessage : '').trim().split(/\s+/).filter(Boolean);
+      const firstToken = partsBody[0] ? normalizeText(partsBody[0]) : '';
+      const hasTarget = !!partsBody[1];
+      if (supervisors.includes(senderNum) && (firstToken === '#sim' || firstToken === '#nao') && !hasTarget) {
+        await sendText(senderNum, 'Comando incompleto. Por favor, use: #sim [número_do_cliente] ou #nao [número_do_cliente]', evolutionConfig);
+        return;
+      }
 
       // ── Comandos de supervisor NO TOPO: ignoram estado de pausa e não passam pelo LLM ──
       // Se o remetente for supervisor e a mensagem começar por #, executar comando e return imediato.
