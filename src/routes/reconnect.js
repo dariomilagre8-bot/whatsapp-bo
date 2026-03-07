@@ -1,7 +1,4 @@
 // src/routes/reconnect.js — Rota de reconexão com QR Code (Evolution API)
-const express = require('express');
-const router = express.Router();
-
 const RECONNECT_PASSWORD = process.env.RECONNECT_PASSWORD || 'streamzone2026';
 const EVOLUTION_API_URL = (process.env.EVOLUTION_API_URL || '').replace(/\/$/, '');
 const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY || '';
@@ -53,7 +50,7 @@ function buildPage(data) {
 </html>`;
 }
 
-router.get('/:instanceId', async (req, res) => {
+async function reconnectHandler(req, res) {
   const pwd = req.query.pwd;
   if (pwd !== RECONNECT_PASSWORD) {
     return denyHtml(res);
@@ -99,6 +96,6 @@ router.get('/:instanceId', async (req, res) => {
       '<body style="font-family:sans-serif;padding:2rem;background:#0a0a0a;color:#fff;"><h1>Erro</h1><p>Não foi possível contactar a Evolution API.</p></body></html>'
     );
   }
-});
+}
 
-module.exports = router;
+module.exports = { reconnectHandler };
