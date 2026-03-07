@@ -205,8 +205,6 @@ async function reconnectHandler(req, res) {
     }
 
     const data = await response.json();
-    console.log('[RECONNECT] API response:', JSON.stringify(data, null, 2));
-
     const parsed = parseApiData(data);
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
