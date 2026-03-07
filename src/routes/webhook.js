@@ -159,7 +159,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             const perfisLine = (credentials.perfis && credentials.perfis.length > 1)
               ? `\n*Perfis:* ${credentials.perfis.map((p, i) => `Perfil ${i + 1}${p.pin ? ` (PIN ${p.pin})` : ''}`).join(', ')}`
               : (credentials.pin ? `\n*PIN:* ${credentials.pin}` : '');
-            const accessMsg = `Pagamento aprovado. Aqui estão os seus dados de acesso:\n*Email:* ${credentials.email || 'Aguardando Dados'}\n*Senha:* ${credentials.senha || 'Aguardando Dados'}${perfisLine}\n\nObrigado pela preferência.`;
+            const accessMsg = `O seu acesso foi activado com sucesso. Aqui estão os seus dados:\n\n*Email:* ${credentials.email || 'Aguardando Dados'}\n*Senha:* ${credentials.senha || 'Aguardando Dados'}${perfisLine}\n\nFoi um privilégio servi-lo(a). Qualquer dúvida, estou à disposição.`;
             const targetReplyJid = targetSession.replyJid || `${target}@s.whatsapp.net`;
             await sendText(targetReplyJid, accessMsg, evolutionConfig);
             targetSession.paused = false;
