@@ -8,15 +8,27 @@ const { getClientByPhone } = require('../integrations/supabase');
 const { allocateProfile, getStockCountsForPrompt, hasStockForPendingSale } = require('../integrations/google-sheets');
 const botSettings = require('../../config/bot_settings.json');
 
+const supervisorTestMode = new Set();
+
 /** Mesma lógica de normalização: trim, lowercase, NFD, remove acentos. */
 const normalizeText = (text) => text ? text.toString().trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '') : '';
 
 /** Verifica se o remetente é o supervisor oficial (blindagem: só dígitos). */
 const isSupervisor = (senderId) => {
   if (!senderId) return false;
-  const cleanSender = senderId.toString().replace(/[^0-9]/g, '');
-  const adminNumber = (process.env.SUPERVISOR_NUMBER || '244941713216').replace(/[^0-9]/g, '');
-  return cleanSender === adminNumber || cleanSender.includes(adminNumber);
+  const cleanSender = senderId.toString()
+    .replace(/[^0-9]/g, '');
+  const rawEnv = process.env.SUPERVISOR_NUMBERS
+    || process.env.SUPERVISOR_NUMBER
+    || '244941713216';
+  const adminNumbers = rawEnv.split(',')
+    .map(s => s.trim().replace(/[^0-9]/g, ''))
+    .filter(Boolean);
+  return adminNumbers.some(admin =>
+    cleanSender === admin ||
+    cleanSender.includes(admin) ||
+    admin.includes(cleanSender)
+  );
 };
 
 /**
@@ -34,7 +46,10 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const data = body?.data;
       if (!data || !data.key || data.key.fromMe) return;
 
-      const senderNum = data.key.remoteJid?.replace('@s.whatsapp.net', '');
+      const senderNum = (data.key.remoteJid || '')
+        .replace(/@s\.whatsapp\.net$/, '')
+        .replace(/@lid$/, '')
+        .replace(/@.*$/, '');
       if (!senderNum || senderNum.includes('@g.us')) return;
 
       const pushName = data.pushName || '';
@@ -64,6 +79,28 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       // ── Comandos de supervisor NO TOPO: ignoram estado de pausa e não passam pelo LLM ──
       if (isSupervisor(senderNum) && (typeof textMessage === 'string' && textMessage.trim().startsWith('#'))) {
+        const parts = textMessage.trim().split(/\s+/);
+        const firstWord = (parts[0] || '').toLowerCase();
+        if (firstWord === '#teste') {
+          const modo = (parts[1] || '').toLowerCase();
+          if (modo === 'on') {
+            supervisorTestMode.add(senderNum);
+            await sendText(senderNum,
+              '🧪 Modo teste ON. As tuas mensagens sem # ' +
+              'serão tratadas como cliente. ' +
+              'Envia "#teste off" para sair.',
+              evolutionConfig);
+          } else if (modo === 'off') {
+            supervisorTestMode.delete(senderNum);
+            await sendText(senderNum,
+              '✅ Modo teste OFF. Voltaste ao modo supervisor.',
+              evolutionConfig);
+          }
+          return;
+        }
+      }
+
+      if (isSupervisor(senderNum) && (typeof textMessage === 'string' && textMessage.trim().startsWith('#')) && !supervisorTestMode.has(senderNum)) {
         const parts = textMessage.trim().split(/\s+/);
         const firstWord = (parts[0] || '').toLowerCase();
         const cmd = config.supervisorCommands?.[firstWord];
@@ -215,7 +252,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       ];
       const isHumanRequest = humanPatterns.some(p => p.test(textMessage));
 
-      if (isHumanRequest && !session.paused) {
+      if (isHumanRequest && !session.paused && !isSupervisor(senderNum)) {
         session.paused = true;
         stateMachine.setState(senderNum, 'pausado');
         const clientName = session.name || 'Cliente';

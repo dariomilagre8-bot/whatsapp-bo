@@ -489,6 +489,7 @@ module.exports = {
     '#pausar': 'pause',
     '#status': 'status',
     '#reset': 'reset_session',
+    '#teste': 'test_mode',
     '#sim': 'approve_sale',
     '#nao': 'reject_sale',
     '#não': 'reject_sale',
