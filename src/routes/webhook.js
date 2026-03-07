@@ -160,7 +160,8 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
               ? `\n*Perfis:* ${credentials.perfis.map((p, i) => `Perfil ${i + 1}${p.pin ? ` (PIN ${p.pin})` : ''}`).join(', ')}`
               : (credentials.pin ? `\n*PIN:* ${credentials.pin}` : '');
             const accessMsg = `Pagamento aprovado. Aqui estão os seus dados de acesso:\n*Email:* ${credentials.email || 'Aguardando Dados'}\n*Senha:* ${credentials.senha || 'Aguardando Dados'}${perfisLine}\n\nObrigado pela preferência.`;
-            await sendText(target, accessMsg, evolutionConfig);
+            const targetReplyJid = targetSession.replyJid || `${target}@s.whatsapp.net`;
+            await sendText(targetReplyJid, accessMsg, evolutionConfig);
             targetSession.paused = false;
             targetSession.pendingSale = null;
             stateMachine.setState(target, 'menu');
@@ -169,7 +170,8 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           } else if (cmd === 'reject_sale' && target) {
             const targetSession = stateMachine.getSession(target);
             const rejectMsg = 'Informamos que o departamento financeiro não conseguiu validar o seu comprovativo de pagamento. A sua reserva encontra-se suspensa. Por favor, verifique os dados da transferência e reenvie um comprovativo válido em PDF, ou contacte-nos para esclarecimentos.';
-            await sendText(target, rejectMsg, evolutionConfig);
+            const targetReplyJid = targetSession.replyJid || `${target}@s.whatsapp.net`;
+            await sendText(targetReplyJid, rejectMsg, evolutionConfig);
             targetSession.paused = false;
             targetSession.pendingSale = null;
             stateMachine.setState(target, 'menu');
@@ -181,6 +183,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       }
 
       const session = stateMachine.getSession(senderNum);
+      session.replyJid = replyJid;
       if (!session.name) session.name = extractName(pushName);
 
       if (session.paused) {

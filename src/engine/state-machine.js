@@ -20,6 +20,7 @@ class StateMachine {
         history: [],
         paused: false,
         pendingSale: null, // #RESUMO_VENDA capturado para fluxo de aprovação (#sim)
+        replyJid: null, // JID para envio (ex.: 251...@s.whatsapp.net ou @lid)
         createdAt: Date.now(),
         lastActivity: Date.now(),
       });
