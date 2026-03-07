@@ -5,6 +5,7 @@ const express = require('express');
 const config = require('./config/streamzone');
 const StateMachine = require('./src/engine/state-machine');
 const { createWebhookHandler } = require('./src/routes/webhook');
+const reconnectRouter = require('./src/routes/reconnect');
 const llm = require('./src/engine/llm');
 const googleSheets = require('./src/integrations/google-sheets');
 const supabaseIntegration = require('./src/integrations/supabase');
@@ -57,6 +58,7 @@ const evolutionConfig = {
 // ── Routes ──
 const webhookHandler = createWebhookHandler(config, stateMachine, getInventoryForPrompt, evolutionConfig);
 app.post('/webhook', webhookHandler);
+app.use('/reconnect', reconnectRouter);
 
 app.get('/health', (req, res) => {
   res.json({
