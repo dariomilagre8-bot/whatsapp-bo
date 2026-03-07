@@ -40,6 +40,7 @@ function buildDynamicPrompt(inventoryData, customerName, isReturning, stockCount
 
   const counts = (stockCountsResult && stockCountsResult.counts) || {};
   const stockErro = (stockCountsResult && stockCountsResult.erro) || null;
+  console.log('[STOCK TRACE]', { source: 'llm/buildDynamicPrompt', rawStockCountsResult: stockCountsResult, counts, stockErro });
   const stockCountsText = stockErro
     ? 'ERRO DE SINCRONIZAÇÃO (não enviar dados de pagamento; use o Cenário de Erro Técnico abaixo).'
     : `Netflix Individual: ${counts.netflix_individual ?? 0} | Netflix Partilha: ${counts.netflix_partilha ?? 0} | Netflix Família (4): ${counts.netflix_familia ?? 0} | Netflix Família Completa (5): ${counts.netflix_familia_completa ?? 0} | Prime Individual: ${counts.prime_individual ?? 0} | Prime Partilha: ${counts.prime_partilha ?? 0} | Prime Família (4): ${counts.prime_familia ?? 0} | Prime Família Completa (5): ${counts.prime_familia_completa ?? 0}`;

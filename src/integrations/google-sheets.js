@@ -7,16 +7,22 @@ let spreadsheetId = null;
 /** Sanitização absoluta: trim, lowercase, NFD, remove acentos. Usar em TODAS as leituras de colunas antes de comparação. */
 const normalizeText = (text) => text ? text.toString().trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '') : '';
 
-/** Normaliza plataforma para comparação: inclui correção de ligadura Unicode (ﬂ → fl) em "Netflix". */
+/** Normaliza plataforma para comparação. CRÍTICO: substituir ligadura U+FB02 ANTES do normalize('NFD'); NFD decompõe a ligadura tornando o replace subsequente ineficaz. */
 const normalizePlatformForMatch = (raw) => {
-  const s = normalizeText(String(raw ?? ''));
-  return s.replace(/\uFB02/g, 'fl'); // Unicode LATIN SMALL LIGATURE FL (Netﬂix)
+  const s = String(raw ?? '').replace(/\uFB02/g, 'fl').trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  return s;
 };
 
-/** Devolve 'Netflix' | 'Prime Video' | null a partir do valor da célula (usa normalizePlatformForMatch). */
+/** True se o texto normalizado deve ser considerado Netflix (aceita netflix, netfix, net flix, etc.). */
+const isNetflixPlatform = (raw) => {
+  const s = normalizePlatformForMatch(raw);
+  return s.includes('netflix') || s.includes('netfix') || (s.includes('net') && s.includes('flix'));
+};
+
+/** Devolve 'Netflix' | 'Prime Video' | null a partir do valor da célula. */
 const platformFromCell = (raw) => {
   const s = normalizePlatformForMatch(raw);
-  if (s.includes('netflix')) return 'Netflix';
+  if (isNetflixPlatform(s)) return 'Netflix';
   if (s.includes('prime')) return 'Prime Video';
   return null;
 };
@@ -44,7 +50,8 @@ async function getStock(stockConfig) {
 
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const platform = platformFromCell(row[0]);
+      const platformRaw = (row[0] != null && String(row[0]).trim()) ? row[0] : row[1];
+      const platform = platformFromCell(platformRaw);
       const status = normalizeText(String(row[5] ?? ''));
       const isAvailable = status === 'disponivel';
       if (!isAvailable || !platform) continue;
@@ -102,7 +109,8 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
 
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const platform = platformFromCell(cell(row, platformCol));
+      const platformRaw = cell(row, platformCol) || cell(row, 1);
+      const platform = platformFromCell(platformRaw);
       const status = normalizeText(String(cell(row, statusCol)));
       const isAvailable = status === 'disponivel';
       if (!isAvailable || !platform) continue;
@@ -175,6 +183,7 @@ function isRowIndividualPlan(rawPlan, hasPlanCol) {
 }
 
 async function getStockCountsForPrompt(stockConfig) {
+  console.log('[STOCK TRACE]', { source: 'google-sheets/getStockCountsForPrompt-entry', sheetsReady: !!sheets, spreadsheetIdSet: !!spreadsheetId, sheetName: stockConfig?.sheetName });
   if (!sheets || !spreadsheetId) return { counts: null, erro: 'ERRO DE SINCRONIZAÇÃO' };
 
   const fetchPromise = sheets.spreadsheets.values.get({
@@ -189,18 +198,48 @@ async function getStockCountsForPrompt(stockConfig) {
     const res = await Promise.race([fetchPromise, timeoutPromise]);
     const rows = res.data.values || [];
     const emptyCounts = { netflix_individual: 0, netflix_partilha: 0, netflix_familia: 0, netflix_familia_completa: 0, prime_individual: 0, prime_partilha: 0, prime_familia: 0, prime_familia_completa: 0 };
-    if (rows.length < 2) return { counts: emptyCounts, erro: null };
+    if (rows.length < 1) return { counts: emptyCounts, erro: null };
+
+    const firstCell = normalizePlatformForMatch(rows[0][0] ?? rows[0][1]);
+    const looksLikeHeader = /plataforma|email|senha|status|plano|nome|telefone|valor/.test(firstCell);
+    const firstRowIsData = !looksLikeHeader && (isNetflixPlatform(firstCell) || firstCell.includes('prime'));
+    const startIndex = firstRowIsData ? 0 : 1;
+
+    console.log('[STOCK DEBUG]', {
+      sheetName: stockConfig.sheetName,
+      totalRows: rows.length,
+      firstRow: rows[0],
+      secondRow: rows[1],
+      startIndex: (() => {
+        const fc = normalizePlatformForMatch(rows[0]?.[0] ?? rows[0]?.[1]);
+        const looksLikeHeader = /plataforma|email|senha|status|plano|nome|telefone|valor/.test(fc);
+        const firstRowIsData = !looksLikeHeader && (isNetflixPlatform(fc) || fc.includes('prime'));
+        return firstRowIsData ? 0 : 1;
+      })()
+    });
 
     let totalNetflixIndividual = 0;
     let totalPrimeIndividual = 0;
 
-    for (let i = 1; i < rows.length; i++) {
+    for (let i = startIndex; i < rows.length; i++) {
       const row = rows[i];
-      const plataforma = normalizePlatformForMatch(row[0]);
+      const platformRaw = (row[0] != null && String(row[0]).trim()) ? row[0] : row[1];
+      const plataforma = normalizePlatformForMatch(platformRaw);
       const status = normalizeText(String(row[5] ?? ''));
       if (status !== 'disponivel') continue;
-      if (plataforma.includes('netflix')) totalNetflixIndividual++;
+      if (isNetflixPlatform(plataforma)) totalNetflixIndividual++;
       if (plataforma.includes('prime')) totalPrimeIndividual++;
+    }
+
+    if (totalNetflixIndividual === 0 && rows.length > startIndex) {
+      const sample = rows.slice(startIndex, startIndex + 3).map((r, j) => ({
+        sheetRow: startIndex + j + 1,
+        col0: r[0],
+        col5: r[5],
+        platformNorm: normalizePlatformForMatch(r[0] ?? r[1]),
+        statusNorm: normalizeText(String(r[5] ?? '')),
+      }));
+      console.warn('[STOCK] Netflix count 0 – amostra:', { sheetName: stockConfig.sheetName, startIndex, sample });
     }
 
     const counts = {
@@ -215,7 +254,7 @@ async function getStockCountsForPrompt(stockConfig) {
     };
     return { counts, erro: null };
   } catch (err) {
-    console.error('[STOCK] getStockCountsForPrompt Error:', err.message);
+    console.error('[STOCK TRACE]', { source: 'google-sheets/getStockCountsForPrompt-catch', error: err.message });
     return { counts: null, erro: 'ERRO DE SINCRONIZAÇÃO' };
   }
 }
@@ -241,7 +280,8 @@ async function hasStockForPendingSale(stockConfig, pendingSaleString) {
     let count = 0;
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const rowPlatform = platformFromCell(cell(row, COLS.platform));
+      const platformRaw = cell(row, COLS.platform) || cell(row, 1);
+      const rowPlatform = platformFromCell(platformRaw);
       if (rowPlatform !== platform) continue;
       if (normalizeText(cell(row, COLS.status)) !== 'disponivel') continue;
       count++;
@@ -297,7 +337,8 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
     const candidateRows = [];
     for (let i = 1; i < rows.length && candidateRows.length < required; i++) {
       const row = rows[i];
-      const rowPlatform = platformFromCell(cell(row, COLS.platform));
+      const platformRaw = cell(row, COLS.platform) || cell(row, 1);
+      const rowPlatform = platformFromCell(platformRaw);
       if (rowPlatform !== platform) continue;
       if (normalizeText(cell(row, COLS.status)) !== 'disponivel') continue;
       candidateRows.push({ rowIndex: i, row });

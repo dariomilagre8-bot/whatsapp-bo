@@ -205,7 +205,9 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       // Passo A: Inventário atualizado + contagens de stock para verificação pré-pagamento (CPA)
       const inventoryString = await getInventoryFn();
+      console.log('[STOCK TRACE]', { source: 'webhook/handleWebhook-before-getStock', configStock: config.stock });
       const stockCountsResult = await getStockCountsForPrompt(config.stock);
+      console.log('[STOCK TRACE]', { source: 'webhook/handleWebhook-after-getStock', stockData: stockCountsResult });
 
       // Passo A+: Reconhecimento de cliente via Supabase (tabela clientes, coluna whatsapp)
       let customerName = null;
@@ -221,6 +223,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const history = (session.history || []).slice(-5);
 
       // Passo C: Dynamic Prompt (com contexto do cliente + stock em tempo real + memória de quantidade) e chamada ao Gemini
+      console.log('[STOCK TRACE]', { source: 'webhook/handleWebhook-before-buildPrompt', stockData: stockCountsResult });
       const systemInstruction = llm.buildDynamicPrompt(inventoryString, customerName, isReturningCustomer, stockCountsResult, session);
       const response = await llm.generate(systemInstruction, textMessage, history);
 
