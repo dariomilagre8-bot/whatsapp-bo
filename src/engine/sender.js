@@ -2,7 +2,7 @@
 
 async function sendText(phone, text, evolutionConfig) {
   const { apiUrl, apiKey, instance } = evolutionConfig;
-  const target = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;
+  const jid = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;
 
   try {
     const res = await fetch(`${apiUrl}/message/sendText/${instance}`, {
@@ -12,7 +12,7 @@ async function sendText(phone, text, evolutionConfig) {
         'apikey': apiKey,
       },
       body: JSON.stringify({
-        number: target,
+        number: jid,
         text: text,
       }),
     });
