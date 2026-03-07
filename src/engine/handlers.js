@@ -50,9 +50,37 @@ function buildClosingMessage(config, platform, plan) {
 
 const handlers = {
 
-  // Saudação dinâmica com stock
-  greeting: (session, config, stock) => {
-    const name = session.name || config.identity.fallbackName;
+  // Saudação dinâmica com stock. context opcional: { customerName, isReturningCustomer, lastSale: { data_expiracao } }
+  greeting: (session, config, stock, context) => {
+    const name = (context && context.customerName) || session.name || config.identity.fallbackName;
+
+    if (context && context.isReturningCustomer && context.lastSale && context.lastSale.data_expiracao) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const expDate = new Date(context.lastSale.data_expiracao);
+      expDate.setHours(0, 0, 0, 0);
+      const diasRestantes = Math.ceil((expDate - today) / (24 * 60 * 60 * 1000));
+
+      if (diasRestantes > 7) {
+        return {
+          response: `Caríssimo(a) ${name}, bem-vindo(a) de volta à StreamZone. Em que posso ajudá-lo(a) hoje?`,
+          nextState: 'menu',
+        };
+      }
+      if (diasRestantes <= 7 && diasRestantes > 0) {
+        return {
+          response: `Caríssimo(a) ${name}, o seu acesso expira em ${diasRestantes} dia(s). Deseja renovar?`,
+          nextState: 'menu',
+        };
+      }
+      if (diasRestantes <= 0) {
+        return {
+          response: `Caríssimo(a) ${name}, o seu acesso expirou. Deseja renovar o seu plano?`,
+          nextState: 'menu',
+        };
+      }
+    }
+
     const greet = `Olá, Caríssimo(a) ${name}! 👋 ${config.identity.greeting}\n\n`;
     const table = buildPriceTable(config, stock);
     return { response: greet + table, nextState: 'menu' };
@@ -202,7 +230,6 @@ const handlers = {
 
   // Verificar renovação
   check_renewal: (session, config, stock) => {
-    // TODO: Verificar dias restantes no Supabase
     return { response: 'Para renovar, basta escolher o plano e fazer a transferência como da primeira vez! Quer ver os planos? 😊' };
   },
 };

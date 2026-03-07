@@ -30,8 +30,9 @@ function init(apiKey) {
 /**
  * System instruction refinada: Zara como concierge + verificação blindada de stock (CPA).
  * sessionOrContext opcional: { detectedQuantity } para memória anti-amnésia.
+ * diasRestantes opcional: número de dias até data_expiracao (null = não aplicável).
  */
-function buildDynamicPrompt(inventoryData, customerName, isReturning, stockCountsResult, sessionOrContext = {}) {
+function buildDynamicPrompt(inventoryData, customerName, isReturning, stockCountsResult, sessionOrContext = {}, diasRestantes = null) {
   const p = config.payment || {};
   const paymentConfig = { iban: p.iban || 'N/A', titular: p.titular || 'N/A', express: p.multicaixa || 'N/A' };
   const botName = botSettings.bot_name || 'Zara';
@@ -40,14 +41,26 @@ function buildDynamicPrompt(inventoryData, customerName, isReturning, stockCount
 
   const counts = (stockCountsResult && stockCountsResult.counts) || {};
   const stockErro = (stockCountsResult && stockCountsResult.erro) || null;
-  console.log('[STOCK TRACE]', { source: 'llm/buildDynamicPrompt', rawStockCountsResult: stockCountsResult, counts, stockErro });
   const stockCountsText = stockErro
     ? 'ERRO DE SINCRONIZAÇÃO (não enviar dados de pagamento; use o Cenário de Erro Técnico abaixo).'
     : `Netflix Individual: ${counts.netflix_individual ?? 0} | Netflix Partilha: ${counts.netflix_partilha ?? 0} | Netflix Família (4): ${counts.netflix_familia ?? 0} | Netflix Família Completa (5): ${counts.netflix_familia_completa ?? 0} | Prime Individual: ${counts.prime_individual ?? 0} | Prime Partilha: ${counts.prime_partilha ?? 0} | Prime Família (4): ${counts.prime_familia ?? 0} | Prime Família Completa (5): ${counts.prime_familia_completa ?? 0}`;
 
   const detectedQuantity = sessionOrContext.detectedQuantity;
-  const contextAmnesia = detectedQuantity
-    ? `\n[MEMÓRIA ATIVA]: O cliente já informou que deseja acesso para ${detectedQuantity} pessoa(s). É EXPRESSAMENTE PROIBIDO perguntar novamente a quantidade. Use este número para oferecer o plano correspondente (Individual, Partilha, Família, Família Completa) na plataforma que ele escolher.\n`
+  const memoriaLines = [];
+  if (detectedQuantity) {
+    memoriaLines.push(`O cliente já informou que deseja acesso para ${detectedQuantity} pessoa(s). É EXPRESSAMENTE PROIBIDO perguntar novamente a quantidade. Use este número para oferecer o plano correspondente (Individual, Partilha, Família, Família Completa) na plataforma que ele escolher.`);
+  }
+  if (diasRestantes !== null) {
+    if (diasRestantes > 7) {
+      memoriaLines.push(`[CLIENTE RETORNANTE] Plano activo (${diasRestantes} dias restantes). Saudar calorosamente. NÃO mencionar renovação.`);
+    } else if (diasRestantes >= 1) {
+      memoriaLines.push(`[CLIENTE RETORNANTE] Plano expira em ${diasRestantes} dia(s). Propor renovação com urgência suave.`);
+    } else {
+      memoriaLines.push(`[CLIENTE RETORNANTE] Plano expirado. Propor renovação imediatamente.`);
+    }
+  }
+  const contextAmnesia = memoriaLines.length > 0
+    ? `\n[MEMÓRIA ATIVA]: ${memoriaLines.join(' ')}\n`
     : '';
 
   const systemInstruction = `${contextAmnesia}

@@ -276,11 +276,14 @@ module.exports = {
     {
       id: 'disponibilidade_futura',
       patterns: [
-        /\b(qu[ae]ndo|qnd|qdo|previs[aã]o|data|prazo)\b.*(ter[aá]|volta|chega|tem|haver[aá]|netflix|prime|stock|dispon)/i,
-        /\b(tem|haver[aã])\s*(previs[aã]o|data|prazo)/i,
+        /quando (volta|reabre|repõe|repoe|tem stock)/i,
+        /quando (haverá|havera|vai ter)/i,
+        /stock (previsto|quando)/i,
+        /avisa.?(me|nos) quando/i,
+        /lista de espera/i,
       ],
-      response: 'Ainda não temos data prevista para reposição. Posso notificá-lo(a) assim que estiver disponível! 📢',
       action: 'reply',
+      response: 'Neste momento não temos vagas disponíveis para esse plano. Posso colocar o seu contacto em lista de espera e avisar assim que o supervisor repuser o stock. Deseja que eu faça isso?',
     },
 
     // ── PROBLEMAS TÉCNICOS ──

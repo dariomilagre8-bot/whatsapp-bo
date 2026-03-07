@@ -183,7 +183,6 @@ function isRowIndividualPlan(rawPlan, hasPlanCol) {
 }
 
 async function getStockCountsForPrompt(stockConfig) {
-  console.log('[STOCK TRACE]', { source: 'google-sheets/getStockCountsForPrompt-entry', sheetsReady: !!sheets, spreadsheetIdSet: !!spreadsheetId, sheetName: stockConfig?.sheetName });
   if (!sheets || !spreadsheetId) return { counts: null, erro: 'ERRO DE SINCRONIZAÇÃO' };
 
   const fetchPromise = sheets.spreadsheets.values.get({
@@ -204,19 +203,6 @@ async function getStockCountsForPrompt(stockConfig) {
     const looksLikeHeader = /plataforma|email|senha|status|plano|nome|telefone|valor/.test(firstCell);
     const firstRowIsData = !looksLikeHeader && (isNetflixPlatform(firstCell) || firstCell.includes('prime'));
     const startIndex = firstRowIsData ? 0 : 1;
-
-    console.log('[STOCK DEBUG]', {
-      sheetName: stockConfig.sheetName,
-      totalRows: rows.length,
-      firstRow: rows[0],
-      secondRow: rows[1],
-      startIndex: (() => {
-        const fc = normalizePlatformForMatch(rows[0]?.[0] ?? rows[0]?.[1]);
-        const looksLikeHeader = /plataforma|email|senha|status|plano|nome|telefone|valor/.test(fc);
-        const firstRowIsData = !looksLikeHeader && (isNetflixPlatform(fc) || fc.includes('prime'));
-        return firstRowIsData ? 0 : 1;
-      })()
-    });
 
     let totalNetflixIndividual = 0;
     let totalPrimeIndividual = 0;
@@ -254,7 +240,7 @@ async function getStockCountsForPrompt(stockConfig) {
     };
     return { counts, erro: null };
   } catch (err) {
-    console.error('[STOCK TRACE]', { source: 'google-sheets/getStockCountsForPrompt-catch', error: err.message });
+    console.error('[STOCK] getStockCountsForPrompt Error:', err.message);
     return { counts: null, erro: 'ERRO DE SINCRONIZAÇÃO' };
   }
 }

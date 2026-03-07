@@ -5,6 +5,7 @@ const StateMachine = require('../src/engine/state-machine');
 const { findMatch } = require('../src/engine/matcher');
 const { validate } = require('../src/engine/validator');
 const { handlers } = require('../src/engine/handlers');
+const llm = require('../src/engine/llm');
 const { extractName } = require('../src/utils/name-extractor');
 
 let passed = 0;
@@ -116,9 +117,9 @@ test('Pagamento', () => {
   assert(m && m.id === 'pagamento', `got ${m?.id}`);
 });
 
-test('Disponibilidade futura', () => {
-  const m = findMatch('quando terá Netflix', config.fixedResponses, 'menu');
-  assert(m && m.id === 'disponibilidade_futura', `got ${m?.id}`);
+test('"pode guardar" não dá resposta fixa (tratado pelo interceptor do webhook)', () => {
+  const m = findMatch('pode guardar', config.fixedResponses, 'menu');
+  assert(m === null || m.action !== 'fixed', '"pode guardar" não deve ter resposta fixa');
 });
 
 test('Senha errada', () => {
@@ -238,6 +239,66 @@ test('Greeting inclui nome e preços', () => {
     'should include Netflix price'
   );
   assert(result.nextState === 'menu', 'should transition to menu');
+});
+
+test('Greeting retornante sem data_expiracao: tabela de preços', () => {
+  const session = { name: 'Maria', state: 'inicio' };
+  const result = handlers.greeting(session, config, mockStockBoth, { customerName: 'Maria', isReturningCustomer: true, lastSale: null });
+  assert(result.response.includes('Maria'), 'should include name');
+  assert(result.response.includes('5.000') || result.response.includes('5000'), 'should include prices (treated as new)');
+});
+
+test('Greeting retornante diasRestantes > 7: bem-vindo sem renovação', () => {
+  const future = new Date();
+  future.setDate(future.getDate() + 10);
+  const session = { name: 'João', state: 'inicio' };
+  const result = handlers.greeting(session, config, mockStockBoth, {
+    customerName: 'João',
+    isReturningCustomer: true,
+    lastSale: { data_expiracao: future.toISOString().slice(0, 10), plataforma: 'Netflix', plano: 'Individual' },
+  });
+  assert(result.response.includes('bem-vindo(a) de volta'), 'should welcome back');
+  assert(!result.response.includes('expira') && !result.response.includes('renovar'), 'should not mention renewal');
+});
+
+test('Greeting retornante diasRestantes <= 7: propõe renovação', () => {
+  const future = new Date();
+  future.setDate(future.getDate() + 3);
+  const session = { name: 'Ana', state: 'inicio' };
+  const result = handlers.greeting(session, config, mockStockBoth, {
+    customerName: 'Ana',
+    isReturningCustomer: true,
+    lastSale: { data_expiracao: future.toISOString().slice(0, 10), plataforma: 'Prime Video', plano: 'Partilhado' },
+  });
+  assert(result.response.includes('Ana'), 'should include name');
+  assert(result.response.includes('expira') && result.response.includes('dia(s)') && result.response.includes('renovar'), 'should propose renewal');
+});
+
+test('Greeting retornante expirado: propõe renovar plano', () => {
+  const past = new Date();
+  past.setDate(past.getDate() - 2);
+  const session = { name: 'Carlos', state: 'inicio' };
+  const result = handlers.greeting(session, config, mockStockBoth, {
+    customerName: 'Carlos',
+    isReturningCustomer: true,
+    lastSale: { data_expiracao: past.toISOString().slice(0, 10), plataforma: 'Netflix', plano: 'Família' },
+  });
+  assert(result.response.includes('acesso expirou') && result.response.includes('renovar'), 'should say expired and offer renewal');
+});
+
+test('buildDynamicPrompt com diasRestantes > 7 inclui "NÃO mencionar renovação"', () => {
+  const prompt = llm.buildDynamicPrompt('', 'Ana', true, { counts: null, erro: null }, {}, 15);
+  assert(prompt.includes('NÃO mencionar renovação'), 'diasRestantes > 7 deve suprimir renovação');
+});
+
+test('buildDynamicPrompt com diasRestantes <= 7 inclui "Propor renovação"', () => {
+  const prompt2 = llm.buildDynamicPrompt('', 'Ana', true, { counts: null, erro: null }, {}, 5);
+  assert(prompt2.includes('Propor renovação'), 'diasRestantes <= 7 deve propor renovação');
+});
+
+test('buildDynamicPrompt com diasRestantes <= 0 inclui "imediatamente"', () => {
+  const prompt3 = llm.buildDynamicPrompt('', 'Ana', true, { counts: null, erro: null }, {}, -1);
+  assert(prompt3.includes('imediatamente'), 'diasRestantes <= 0 deve propor renovação imediata');
 });
 
 test('Cross-sell quando Netflix esgotada', () => {

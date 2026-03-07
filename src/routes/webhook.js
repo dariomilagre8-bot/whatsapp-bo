@@ -199,32 +199,77 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         if (num) session.detectedQuantity = num;
       }
 
+      // ── Interceptor: pedido de humano ou reserva ──
+      const humanPatterns = [
+        /guardar/i, /reservar/i, /\breserva\b/i,
+        /mais tarde/i, /amanhã pago/i, /amanha pago/i,
+        /pode guardar/i, /guarda para mim/i,
+        /pago depois/i, /pago amanhã/i,
+        /falar com humano/i,
+        /falar com o responsável/i,
+        /falar com o responsavel/i,
+        /quero falar com/i,
+        /atendimento humano/i,
+        /falar com pessoa/i,
+        /chamar supervisor/i
+      ];
+      const isHumanRequest = humanPatterns.some(p => p.test(textMessage));
+
+      if (isHumanRequest && !session.paused) {
+        session.paused = true;
+        stateMachine.setState(senderNum, 'pausado');
+        const clientName = session.name || 'Cliente';
+        const planoInfo = session.pendingSale ||
+          `${session.platform || ''} ${session.plan || ''}`.trim() || 'sem plano activo';
+        for (const sup of supervisors) {
+          if (sup) await sendText(sup,
+            `🙋 PEDIDO HUMANO\n\nCliente: ${clientName}\n` +
+            `Número: ${senderNum}\nContexto: ${planoInfo}\n\n` +
+            `💡 Para reactivar o bot: #retomar ${senderNum}`,
+            evolutionConfig);
+        }
+        await sendText(senderNum,
+          'Compreendo. Vou chamar o responsável para ' +
+          'o(a) ajudar directamente. Por favor, aguarde.',
+          evolutionConfig);
+        return;
+      }
+
       // ═══════════════════════════════════════════════════════════════
       // Pipeline LLM-First: A → B → C → D
       // ═══════════════════════════════════════════════════════════════
 
       // Passo A: Inventário atualizado + contagens de stock para verificação pré-pagamento (CPA)
       const inventoryString = await getInventoryFn();
-      console.log('[STOCK TRACE]', { source: 'webhook/handleWebhook-before-getStock', configStock: config.stock });
       const stockCountsResult = await getStockCountsForPrompt(config.stock);
-      console.log('[STOCK TRACE]', { source: 'webhook/handleWebhook-after-getStock', stockData: stockCountsResult });
 
       // Passo A+: Reconhecimento de cliente via Supabase (tabela clientes, coluna whatsapp)
       let customerName = null;
       let isReturningCustomer = false;
+      let lastSale = null;
       try {
-        ({ customerName, isReturningCustomer } = await getClientByPhone(senderNum));
+        ({ customerName, isReturningCustomer, lastSale } = await getClientByPhone(senderNum));
       } catch (sbErr) {
         console.error('[SUPABASE] Falha ao consultar cliente:', sbErr.message);
       }
       console.log(`[CRM] ${senderNum} → cliente: ${customerName || 'NOVO'} | retornante: ${isReturningCustomer}`);
 
+      let diasRestantes = null;
+      if (lastSale?.data_expiracao) {
+        const parts = lastSale.data_expiracao.split('/');
+        const exp = parts.length === 3
+          ? new Date(`${parts[2]}-${parts[1]}-${parts[0]}`)
+          : new Date(lastSale.data_expiracao);
+        if (!isNaN(exp)) {
+          diasRestantes = Math.ceil((exp - new Date()) / (1000 * 60 * 60 * 24));
+        }
+      }
+
       // Passo B: Últimas 5 mensagens (memória)
       const history = (session.history || []).slice(-5);
 
-      // Passo C: Dynamic Prompt (com contexto do cliente + stock em tempo real + memória de quantidade) e chamada ao Gemini
-      console.log('[STOCK TRACE]', { source: 'webhook/handleWebhook-before-buildPrompt', stockData: stockCountsResult });
-      const systemInstruction = llm.buildDynamicPrompt(inventoryString, customerName, isReturningCustomer, stockCountsResult, session);
+      // Passo C: Dynamic Prompt (com contexto do cliente + stock em tempo real + memória de quantidade + diasRestantes) e chamada ao Gemini
+      const systemInstruction = llm.buildDynamicPrompt(inventoryString, customerName, isReturningCustomer, stockCountsResult, session, diasRestantes);
       const response = await llm.generate(systemInstruction, textMessage, history);
 
       // Passo D: Resposta da IA e captura do metadata_tag (ex: #RESUMO_VENDA) para fluxo de aprovação (#sim)
