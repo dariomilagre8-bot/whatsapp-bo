@@ -46,11 +46,15 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const data = body?.data;
       if (!data || !data.key || data.key.fromMe) return;
 
-      const senderNum = (data.key.remoteJid || '')
+      const rawJid = data.key.remoteJid || '';
+      const senderNum = rawJid
         .replace(/@s\.whatsapp\.net$/, '')
         .replace(/@lid$/, '')
         .replace(/@.*$/, '');
-      if (!senderNum || senderNum.includes('@g.us')) return;
+      const replyJid = rawJid.includes('@')
+        ? rawJid
+        : `${rawJid}@s.whatsapp.net`;
+      if (!senderNum || rawJid.endsWith('@g.us')) return;
 
       const pushName = data.pushName || '';
       const messageData = data.message || {};
@@ -73,7 +77,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const firstToken = partsBody[0] ? normalizeText(partsBody[0]) : '';
       const hasTarget = !!partsBody[1];
       if (isSupervisor(senderNum) && (firstToken === '#sim' || firstToken === '#nao') && !hasTarget) {
-        await sendText(senderNum, 'Comando incompleto. Por favor, use: #sim [número_do_cliente] ou #nao [número_do_cliente]', evolutionConfig);
+        await sendText(replyJid, 'Comando incompleto. Por favor, use: #sim [número_do_cliente] ou #nao [número_do_cliente]', evolutionConfig);
         return;
       }
 
@@ -85,14 +89,14 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           const modo = (parts[1] || '').toLowerCase();
           if (modo === 'on') {
             supervisorTestMode.add(senderNum);
-            await sendText(senderNum,
+            await sendText(replyJid,
               '🧪 Modo teste ON. As tuas mensagens sem # ' +
               'serão tratadas como cliente. ' +
               'Envia "#teste off" para sair.',
               evolutionConfig);
           } else if (modo === 'off') {
             supervisorTestMode.delete(senderNum);
-            await sendText(senderNum,
+            await sendText(replyJid,
               '✅ Modo teste OFF. Voltaste ao modo supervisor.',
               evolutionConfig);
           }
@@ -111,7 +115,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             targetSession.paused = false;
             stateMachine.setState(target, 'menu');
             await sendText(target, config.systemMessages?.botUnpaused ?? 'O responsável já tratou do assunto. Em que mais posso ajudar?', evolutionConfig);
-            await sendText(senderNum, `✅ Bot retomado para ${target}`, evolutionConfig);
+            await sendText(replyJid, `✅ Bot retomado para ${target}`, evolutionConfig);
           } else if (cmd === 'reset_session') {
             let count = 0;
             if (target) {
@@ -120,36 +124,36 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
               stateMachine.setState(target, 'menu');
               await sendText(target, config.systemMessages?.botUnpaused ?? 'O responsável já tratou do assunto. Em que mais posso ajudar?', evolutionConfig);
               count = 1;
-              await sendText(senderNum, `✅ Reset/despausado: ${target} (1 número)`, evolutionConfig);
+              await sendText(replyJid, `✅ Reset/despausado: ${target} (1 número)`, evolutionConfig);
             } else {
               for (const [phone, s] of stateMachine.sessions) {
                 s.paused = false;
                 stateMachine.setState(phone, 'menu');
                 count++;
               }
-              await sendText(senderNum, `✅ DESPAUSAR TODOS: ${count} número(s) libertados. A IA volta a responder a todos.`, evolutionConfig);
+              await sendText(replyJid, `✅ DESPAUSAR TODOS: ${count} número(s) libertados. A IA volta a responder a todos.`, evolutionConfig);
             }
             console.log(`[SUPERVISOR] #reset by ${senderNum}: ${count} session(s) unpaused`);
           } else if (cmd === 'status') {
             const pausedCount = [...stateMachine.sessions.values()].filter(s => s.paused).length;
-            await sendText(senderNum, `📊 Sessões activas: ${stateMachine.sessions.size} | Pausadas: ${pausedCount}`, evolutionConfig);
+            await sendText(replyJid, `📊 Sessões activas: ${stateMachine.sessions.size} | Pausadas: ${pausedCount}`, evolutionConfig);
           } else if (cmd === 'approve_sale' && target) {
             const targetSession = stateMachine.getSession(target);
             const pendingSale = targetSession.pendingSale;
             if (!pendingSale) {
               const metaTag = botSettings.metadata_tag || '#RESUMO_VENDA';
-              await sendText(senderNum, `O cliente ${target} não tem venda pendente (${metaTag}). Verifique a conversa.`, evolutionConfig);
+              await sendText(replyJid, `O cliente ${target} não tem venda pendente (${metaTag}). Verifique a conversa.`, evolutionConfig);
               return;
             }
             const stillHasStock = await hasStockForPendingSale(config.stock, pendingSale);
             if (!stillHasStock) {
-              await sendText(senderNum, `Erro: Stock esgotou. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfig);
+              await sendText(replyJid, `Erro: Stock esgotou. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfig);
               return;
             }
             const customerName = targetSession.name || 'Cliente';
             const credentials = await allocateProfile(config.stock, pendingSale, customerName, target);
             if (!credentials || (!credentials.email && !credentials.senha)) {
-              await sendText(senderNum, `Erro: Stock esgotou. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfig);
+              await sendText(replyJid, `Erro: Stock esgotou. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfig);
               return;
             }
             const perfisLine = (credentials.perfis && credentials.perfis.length > 1)
@@ -160,7 +164,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             targetSession.paused = false;
             targetSession.pendingSale = null;
             stateMachine.setState(target, 'menu');
-            await sendText(senderNum, `Venda concluída e planilha atualizada. Dados enviados a ${target}.`, evolutionConfig);
+            await sendText(replyJid, `Venda concluída e planilha atualizada. Dados enviados a ${target}.`, evolutionConfig);
             console.log(`[SUPERVISOR] #sim: venda aprovada para ${target}, perfil alocado`);
           } else if (cmd === 'reject_sale' && target) {
             const targetSession = stateMachine.getSession(target);
@@ -169,7 +173,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             targetSession.paused = false;
             targetSession.pendingSale = null;
             stateMachine.setState(target, 'menu');
-            await sendText(senderNum, `Rejeição enviada ao cliente ${target}. Sessão desbloqueada.`, evolutionConfig);
+            await sendText(replyJid, `Rejeição enviada ao cliente ${target}. Sessão desbloqueada.`, evolutionConfig);
             console.log(`[SUPERVISOR] #nao: comprovativo rejeitado para ${target}`);
           }
           return;
@@ -186,12 +190,12 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       // ── Roteamento de media: NUNCA chama a IA ──
       if (isAudio) {
-        await sendText(senderNum, 'Desculpe, a Zara ainda não consegue ouvir mensagens de voz. 😅 Poderia escrever a sua dúvida, por favor? ✍️', evolutionConfig);
+        await sendText(replyJid, 'Desculpe, a Zara ainda não consegue ouvir mensagens de voz. 😅 Poderia escrever a sua dúvida, por favor? ✍️', evolutionConfig);
         return;
       }
 
       if (isImage) {
-        await sendText(senderNum, 'Recebi a sua imagem! 📸 Se for um erro no seu ecrã (como o bloqueio da Netflix), o nosso suporte técnico já vai intervir para ajudar. 🛠️\n\n⚠️ Nota: Caso isto seja um comprovativo de pagamento, por favor, envie o ficheiro em formato PDF, pois o nosso sistema não processa fotografias.', evolutionConfig);
+        await sendText(replyJid, 'Recebi a sua imagem! 📸 Se for um erro no seu ecrã (como o bloqueio da Netflix), o nosso suporte técnico já vai intervir para ajudar. 🛠️\n\n⚠️ Nota: Caso isto seja um comprovativo de pagamento, por favor, envie o ficheiro em formato PDF, pois o nosso sistema não processa fotografias.', evolutionConfig);
         session.paused = true;
         stateMachine.setState(senderNum, 'pausado');
         const imgSaleInfo = session.pendingSale || `${session.platform || 'Aguardando Dados'} ${session.plan || ''}`.trim();
@@ -209,12 +213,12 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         const isPdf = fileName.endsWith('.pdf') || mimetype === 'application/pdf';
 
         if (!isPdf) {
-          await sendText(senderNum, 'O sistema financeiro exige que o comprovativo seja enviado exclusivamente em formato PDF. Por favor, converta o seu ficheiro e reenvie o documento.', evolutionConfig);
+          await sendText(replyJid, 'O sistema financeiro exige que o comprovativo seja enviado exclusivamente em formato PDF. Por favor, converta o seu ficheiro e reenvie o documento.', evolutionConfig);
           console.log(`[WEBHOOK] Documento rejeitado (não-PDF): fileName="${docMsg.fileName}" mimetype="${docMsg.mimetype}" de ${senderNum}`);
           return;
         }
 
-            await sendText(senderNum, 'Recebi o seu ficheiro PDF! 📄 Vou encaminhar para o departamento financeiro validar o seu comprovativo. Assim que for aprovado, o supervisor libertará o seu acesso. Aguarde um momento, por favor. ⏳', evolutionConfig);
+            await sendText(replyJid, 'Recebi o seu ficheiro PDF! 📄 Vou encaminhar para o departamento financeiro validar o seu comprovativo. Assim que for aprovado, o supervisor libertará o seu acesso. Aguarde um momento, por favor. ⏳', evolutionConfig);
         session.paused = true;
         stateMachine.setState(senderNum, 'pausado');
         const customerName = session.name || 'Cliente';
@@ -265,7 +269,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             `💡 Para reactivar o bot: #retomar ${senderNum}`,
             evolutionConfig);
         }
-        await sendText(senderNum,
+        await sendText(replyJid,
           'Compreendo. Vou chamar o responsável para ' +
           'o(a) ajudar directamente. Por favor, aguarde.',
           evolutionConfig);
@@ -320,7 +324,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         console.log(`[CPA] pendingSale guardado para ${senderNum}:`, session.pendingSale);
       }
 
-      await sendText(senderNum, finalResponse, evolutionConfig);
+      await sendText(replyJid, finalResponse, evolutionConfig);
 
       stateMachine.addToHistory(senderNum, 'user', textMessage);
       stateMachine.addToHistory(senderNum, 'model', finalResponse);

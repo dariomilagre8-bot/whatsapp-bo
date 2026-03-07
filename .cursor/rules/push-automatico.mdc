@@ -1,0 +1,14 @@
+---
+description: Fazer push automático após alterações no repositório
+alwaysApply: true
+---
+
+# Push automático
+
+Após concluir alterações de código neste projeto (whatsapp-bot):
+
+1. Executar sempre: `git add .` → `git commit -m "..."` → `git push`
+2. Usar mensagem de commit descritiva e em português; incluir `[CPA]` quando relevante
+3. Não perguntar "quer que faça push?" — fazer o push automaticamente
+
+Exemplo: após implementar uma funcionalidade, fazer commit e push antes de dar o resumo final ao utilizador.
