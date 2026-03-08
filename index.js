@@ -9,6 +9,7 @@ const { reconnectHandler } = require('./src/routes/reconnect');
 const llm = require('./src/engine/llm');
 const googleSheets = require('./src/integrations/google-sheets');
 const supabaseIntegration = require('./src/integrations/supabase');
+const { initBilling, handlePaymentConfirmation } = require('./src/billing/reminder');
 const path = require('path');
 
 const app = express();
@@ -60,16 +61,60 @@ const webhookHandler = createWebhookHandler(config, stateMachine, getInventoryFo
 app.post('/webhook', webhookHandler);
 app.get('/reconnect/:instanceId', reconnectHandler);
 
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
+app.get('/health', async (req, res) => {
+  const services = { supabase: 'unknown', evolution: 'unknown' };
+  let allOk = true;
+
+  // Verificar Supabase
+  try {
+    const sb = supabaseIntegration.getClient();
+    if (sb) {
+      const { error } = await sb.from('clientes').select('id').limit(1);
+      services.supabase = error ? 'degraded' : 'ok';
+    } else {
+      services.supabase = 'not_configured';
+    }
+  } catch {
+    services.supabase = 'down';
+    allOk = false;
+  }
+
+  // Verificar Evolution API
+  try {
+    const evoUrl = process.env.EVOLUTION_API_URL;
+    const evoKey = process.env.EVOLUTION_API_KEY;
+    const evoInstance = process.env.EVOLUTION_INSTANCE || process.env.EVOLUTION_INSTANCE_NAME || 'default';
+    if (evoUrl) {
+      const evoRes = await fetch(`${evoUrl}/instance/connectionState/${evoInstance}`, {
+        headers: { 'apikey': evoKey },
+      });
+      services.evolution = evoRes.ok ? 'ok' : 'degraded';
+    } else {
+      services.evolution = 'not_configured';
+    }
+  } catch {
+    services.evolution = 'down';
+    allOk = false;
+  }
+
+  const statusCode = allOk ? 200 : 503;
+  res.status(statusCode).json({
+    status: allOk ? 'ok' : 'degraded',
     engine: 'Palanca Bot Engine (LLM-First)',
     bot: config.identity.botName,
     business: config.identity.businessName,
     sessions: stateMachine.sessions.size,
-    uptime: process.uptime(),
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+    services,
   });
 });
+
+// ── Billing (cron jobs) ──
+const sbClient = supabaseIntegration.getClient();
+if (sbClient) {
+  initBilling(sbClient);
+}
 
 // ── Start ──
 const PORT = process.env.PORT || 80;
@@ -78,5 +123,6 @@ app.listen(PORT, () => {
   console.log(`🤖 Bot: ${config.identity.botName} (${config.identity.businessName})`);
   console.log(`📡 Porta: ${PORT}`);
   console.log(`👑 Supervisores: ${process.env.SUPERVISOR_NUMBERS || process.env.SUPERVISOR_NUMBER || process.env.BOSS_NUMBER || '(não definido)'}`);
+  console.log(`💰 Billing: ${process.env.BILLING_ENABLED === 'true' ? 'activado' : 'desactivado'}`);
   console.log(`✅ Pronto!\n`);
 });

@@ -1,7 +1,60 @@
 // config/streamzone.js
 // Configuração completa do negócio StreamZone Connect (Bot: Zara)
 
+const fs = require('fs');
+const path = require('path');
+
+// ═══════ SERVICOS (catálogo dinâmico via .env) ═══════
+function loadServicos() {
+  if (process.env.SERVICOS_FILE) {
+    try {
+      const filePath = path.resolve(process.env.SERVICOS_FILE);
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      return JSON.parse(raw);
+    } catch (err) {
+      console.warn(`[CONFIG] Aviso: Não foi possível ler SERVICOS_FILE (${process.env.SERVICOS_FILE}): ${err.message}`);
+      return [];
+    }
+  }
+  if (process.env.SERVICOS) {
+    try {
+      return JSON.parse(process.env.SERVICOS);
+    } catch (err) {
+      console.warn(`[CONFIG] Aviso: JSON inválido em SERVICOS: ${err.message}`);
+      return [];
+    }
+  }
+  return [];
+}
+
+// ═══════ SYSTEM PROMPT LOADER (com placeholders) ═══════
+function loadSystemPrompt() {
+  const promptPath = process.env.SYSTEM_PROMPT_PATH || 'prompts/streamzone.txt';
+  try {
+    const fullPath = path.resolve(promptPath);
+    let prompt = fs.readFileSync(fullPath, 'utf-8');
+    const servicos = loadServicos();
+
+    prompt = prompt
+      .replace(/\[EMPRESA\]/g, process.env.BUSINESS_NAME || 'StreamZone Connect')
+      .replace(/\[BOT_NOME\]/g, process.env.BOT_NAME || 'Zara')
+      .replace(/\[BOT_NUMERO\]/g, process.env.BOT_NUMBER || '')
+      .replace(/\[CATALOGO\]/g, servicos.length > 0 ? JSON.stringify(servicos, null, 2) : 'Catálogo não configurado')
+      .replace(/\[HORARIO\]/g, process.env.HORARIO || 'Segunda a Sábado, 08:00 - 18:00')
+      .replace(/\[MOEDA\]/g, process.env.MOEDA || 'Kz')
+      .replace(/\[METODO_PAGAMENTO\]/g, process.env.METODO_PAGAMENTO || 'Multicaixa Express ou Transferência bancária')
+      .replace(/\[SUPERVISOR_NOME\]/g, process.env.SUPERVISOR_NOME || 'Responsável');
+
+    return prompt;
+  } catch (err) {
+    console.warn(`[CONFIG] Aviso: Não foi possível carregar prompt de ${promptPath}: ${err.message}`);
+    return null;
+  }
+}
+
 module.exports = {
+  servicos: loadServicos(),
+  loadSystemPrompt,
   // ═══════ IDENTIDADE ═══════
   identity: {
     botName: 'Zara',
