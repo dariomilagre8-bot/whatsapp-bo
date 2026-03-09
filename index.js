@@ -10,6 +10,9 @@ const llm = require('./src/engine/llm');
 const googleSheets = require('./src/integrations/google-sheets');
 const supabaseIntegration = require('./src/integrations/supabase');
 const { initBilling, handlePaymentConfirmation } = require('./src/billing/reminder');
+const { initStockNotifier } = require('./src/stock/stock-notifier');
+const { initFollowUp } = require('./src/crm/followup');
+const { marcarInactivos } = require('./src/crm/leads');
 const path = require('path');
 
 const app = express();
@@ -110,10 +113,18 @@ app.get('/health', async (req, res) => {
   });
 });
 
-// ── Billing (cron jobs) ──
+// ── Billing + Stock Notifier + CRM Follow-up (cron jobs) ──
 const sbClient = supabaseIntegration.getClient();
 if (sbClient) {
   initBilling(sbClient);
+  initStockNotifier(sbClient, config.stock);
+  initFollowUp(sbClient);
+
+  // Cron semanal: marcar leads inactivos (às 03:00 de segunda-feira)
+  const cron = require('node-cron');
+  cron.schedule('0 3 * * 1', async () => {
+    try { await marcarInactivos(sbClient); } catch (_) {}
+  }, { timezone: 'Africa/Luanda' });
 }
 
 // ── Start ──
@@ -124,5 +135,7 @@ app.listen(PORT, () => {
   console.log(`📡 Porta: ${PORT}`);
   console.log(`👑 Supervisores: ${process.env.SUPERVISOR_NUMBERS || process.env.SUPERVISOR_NUMBER || process.env.BOSS_NUMBER || '(não definido)'}`);
   console.log(`💰 Billing: ${process.env.BILLING_ENABLED === 'true' ? 'activado' : 'desactivado'}`);
+  console.log(`📦 Stock Notifier: ${process.env.STOCK_NOTIFICATIONS_ENABLED === 'true' ? 'activado' : 'desactivado'}`);
+  console.log(`📨 Follow-up CRM: ${process.env.FOLLOWUP_ENABLED === 'true' ? 'activado' : 'desactivado'}`);
   console.log(`✅ Pronto!\n`);
 });

@@ -7,6 +7,9 @@ const { extractName } = require('../utils/name-extractor');
 const { getClientByPhone } = require('../integrations/supabase');
 const { allocateProfile, getStockCountsForPrompt, hasStockForPendingSale } = require('../integrations/google-sheets');
 const botSettings = require('../../config/bot_settings.json');
+const { upsertLead, updateLeadStatus, registarCompra, addProdutoInteresse, getCrmResumo, getLeadDetalhe, marcarInactivos } = require('../crm/leads');
+const { addToWaitlist, getWaitlistResumo } = require('../stock/waitlist');
+const { triggerStockReposto } = require('../stock/stock-notifier');
 
 const supervisorTestMode = new Set();
 
@@ -107,6 +110,39 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       if (isSupervisor(senderNum) && (typeof textMessage === 'string' && textMessage.trim().startsWith('#')) && !supervisorTestMode.has(senderNum)) {
         const parts = textMessage.trim().split(/\s+/);
         const firstWord = (parts[0] || '').toLowerCase();
+
+        // ── Comandos CRM ──
+        if (firstWord === '#leads') {
+          const sbClient = require('../integrations/supabase').getClient();
+          const resumo = await getCrmResumo(sbClient);
+          await sendText(replyJid, resumo, evolutionConfig);
+          return;
+        }
+        if (firstWord === '#lead' && parts[1]) {
+          const sbClient = require('../integrations/supabase').getClient();
+          const detalhe = await getLeadDetalhe(sbClient, parts[1]);
+          await sendText(replyJid, detalhe, evolutionConfig);
+          return;
+        }
+
+        // ── Comandos Waitlist ──
+        if (firstWord === '#waitlist') {
+          const sbClient = require('../integrations/supabase').getClient();
+          const resumo = await getWaitlistResumo(sbClient);
+          await sendText(replyJid, resumo, evolutionConfig);
+          return;
+        }
+
+        // ── Comando #stock [produto] — Opção B: trigger manual de notificação ──
+        if (firstWord === '#stock' && parts[1]) {
+          const sbClient = require('../integrations/supabase').getClient();
+          const produtoStr = parts.slice(1).join(' ');
+          await sendText(replyJid, `⏳ A notificar clientes em lista de espera para "${produtoStr}"...`, evolutionConfig);
+          const resultado = await triggerStockReposto(sbClient, config.stock, produtoStr);
+          await sendText(replyJid, resultado, evolutionConfig);
+          return;
+        }
+
         const cmd = config.supervisorCommands?.[firstWord];
         const target = parts[1] || null;
         if (cmd) {
@@ -167,6 +203,13 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             stateMachine.setState(target, 'menu');
             await sendText(replyJid, `Venda concluída e planilha atualizada. Dados enviados a ${target}.`, evolutionConfig);
             console.log(`[SUPERVISOR] #sim: venda aprovada para ${target}, perfil alocado`);
+            // CRM: registar compra
+            try {
+              const sbClient = require('../integrations/supabase').getClient();
+              const valorMatch = (pendingSale || '').match(/(\d[\d.]*)\s*Kz/i);
+              const valor = valorMatch ? parseInt(valorMatch[1].replace(/\./g, ''), 10) : 0;
+              await registarCompra(sbClient, target, valor);
+            } catch (_) {}
           } else if (cmd === 'reject_sale' && target) {
             const targetSession = stateMachine.getSession(target);
             const rejectMsg = 'Informamos que o departamento financeiro não conseguiu validar o seu comprovativo de pagamento. A sua reserva encontra-se suspensa. Por favor, verifique os dados da transferência e reenvie um comprovativo válido em PDF, ou contacte-nos para esclarecimentos.';
@@ -185,6 +228,12 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const session = stateMachine.getSession(senderNum);
       session.replyJid = replyJid;
       if (!session.name) session.name = extractName(pushName);
+
+      // CRM: registar/actualizar lead (non-blocking)
+      try {
+        const sbClient = require('../integrations/supabase').getClient();
+        await upsertLead(sbClient, senderNum, session.name || pushName || null);
+      } catch (_) {}
 
       if (session.paused) {
         console.log(`[PAUSED] ${senderNum}: message ignored`);
@@ -325,6 +374,27 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         session.pendingSale = resumoMatch[1].trim();
         finalResponse = finalResponse.replace(new RegExp(`${metaTag}\\s*:[^\\n]*`, 'gi'), '').trim().replace(/\n{2,}/g, '\n');
         console.log(`[CPA] pendingSale guardado para ${senderNum}:`, session.pendingSale);
+        // CRM: marcar como interessado quando há pendingSale
+        try {
+          const sbClient = require('../integrations/supabase').getClient();
+          const produtoInteresse = session.platform || session.pendingSale?.split(' ')[0] || '';
+          if (produtoInteresse) await addProdutoInteresse(sbClient, senderNum, produtoInteresse);
+        } catch (_) {}
+      }
+
+      // Detectar tag #WAITLIST (cliente confirmou que quer ser notificado de stock esgotado)
+      const waitlistMatch = finalResponse.match(/#WAITLIST:\s*([^\n]+)/i);
+      if (waitlistMatch) {
+        const produtoWaitlist = waitlistMatch[1].trim();
+        finalResponse = finalResponse.replace(/#WAITLIST:\s*[^\n]*/gi, '').trim().replace(/\n{2,}/g, '\n');
+        console.log(`[WAITLIST] Adicionando ${senderNum} à fila para "${produtoWaitlist}"`);
+        try {
+          const sbClient = require('../integrations/supabase').getClient();
+          await addToWaitlist(sbClient, senderNum, session.name || null, produtoWaitlist);
+          await addProdutoInteresse(sbClient, senderNum, produtoWaitlist);
+        } catch (wErr) {
+          console.error('[WAITLIST] Erro ao adicionar à waitlist:', wErr.message);
+        }
       }
 
       await sendText(replyJid, finalResponse, evolutionConfig);

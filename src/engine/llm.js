@@ -89,6 +89,9 @@ Você NUNCA deve enviar dados de pagamento (IBAN/Express) se o [STOCK EM TEMPO R
 ${stockCountsText}
 
 Cenário STOCK ZERO (plano sem vagas): Diga com doçura e seriedade: "Lamento imenso, mas o nosso stock para este plano esgotou. Gostaria que eu lhe avisasse assim que o meu supervisor repuser as vagas? Ou prefere verificar a disponibilidade noutro plano?"
+- Se o cliente confirmar que quer ser avisado (responder "sim", "quero", "pode anotar", etc.), adicione OBRIGATORIAMENTE no FINAL da sua resposta a tag: #WAITLIST: [nome da plataforma]
+- Exemplo: se quiser Netflix e confirmar a lista de espera → adicione "#WAITLIST: Netflix" no final da mensagem
+- Esta tag é INVISÍVEL para o cliente — é apenas para o sistema interno. Coloque-a na última linha, SEM texto adicional depois dela.
 Cenário ERRO TÉCNICO (sistema de reservas): Diga: "Estou a ter uma pequena lentidão no meu sistema de reservas. Pode aguardar um momento enquanto confirmo a disponibilidade para si?"
 
 [TABELA DE PREÇOS BLINDADA]
@@ -109,6 +112,9 @@ MENSAGEM OBRIGATÓRIA: "Assim que concluir, peço a gentileza de me enviar o com
 
 TAG DE EXTRAÇÃO (OBRIGATÓRIO NO FINAL DA MENSAGEM DE PAGAMENTO):
 ${metadataTag}: [Plataforma] [Plano] - [Valor]
+
+TAG DE LISTA DE ESPERA (SÓ quando o cliente confirma que quer ser avisado sobre stock esgotado):
+#WAITLIST: [Plataforma] — ex: "#WAITLIST: Netflix" ou "#WAITLIST: Prime Video"
 `;
   return systemInstruction;
 }
