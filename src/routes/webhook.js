@@ -5,7 +5,16 @@ const { sendText } = require('../engine/sender');
 const llm = require('../engine/llm');
 const { extractName } = require('../utils/name-extractor');
 const { getClientByPhone } = require('../integrations/supabase');
-const { allocateProfile, getStockCountsForPrompt, hasStockForPendingSale } = require('../integrations/google-sheets');
+const {
+  allocateProfile,
+  getStockCountsForPrompt,
+  hasStockForPendingSale,
+  getClienteByTelefone,
+  getPerfisExpirados,
+  findLinhaPorEmailPerfil,
+  libertarPerfil,
+  renovarClientePorTelefone,
+} = require('../integrations/google-sheets');
 const botSettings = require('../../config/bot_settings.json');
 const { upsertLead, updateLeadStatus, registarCompra, addProdutoInteresse, getCrmResumo, getLeadDetalhe, marcarInactivos } = require('../crm/leads');
 const { addToWaitlist, getWaitlistResumo } = require('../stock/waitlist');
@@ -140,6 +149,45 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           await sendText(replyJid, `⏳ A notificar clientes em lista de espera para "${produtoStr}"...`, evolutionConfig);
           const resultado = await triggerStockReposto(sbClient, config.stock, produtoStr);
           await sendText(replyJid, resultado, evolutionConfig);
+          return;
+        }
+
+        // ── Comando #expirados — lista perfis expirados ainda não renovados ──
+        if (firstWord === '#expirados') {
+          const expirados = await getPerfisExpirados(config.stock);
+          if (expirados.length === 0) {
+            await sendText(replyJid, '✅ Nenhum perfil expirado pendente.', evolutionConfig);
+          } else {
+            let msg = `📋 *Perfis expirados* (${expirados.length}):\n\n`;
+            for (const e of expirados.slice(0, 15)) {
+              const dataStr = e.dataExpiracaoRaw || 'N/D';
+              msg += `• ${e.cliente || e.telefone} | ${e.platform} | ${e.email} | Exp: ${dataStr} | Status: ${e.status}\n`;
+            }
+            if (expirados.length > 15) msg += `\n... e mais ${expirados.length - 15}`;
+            await sendText(replyJid, msg, evolutionConfig);
+          }
+          return;
+        }
+
+        // ── Comando #renovar [telefone] — marca renovação manual ──
+        if (firstWord === '#renovar' && parts[1]) {
+          const tel = parts[1].replace(/\D/g, '');
+          const n = await renovarClientePorTelefone(config.stock, tel);
+          await sendText(replyJid, n > 0 ? `✅ Renovação registada para ${tel} (${n} perfil(is)).` : `❌ Nenhum perfil activo encontrado para ${tel}.`, evolutionConfig);
+          return;
+        }
+
+        // ── Comando #libertar [email] [perfil] — liberta perfil manualmente ──
+        if (firstWord === '#libertar' && parts[1]) {
+          const email = parts[1];
+          const perfil = parts[2] || null;
+          const lin = await findLinhaPorEmailPerfil(config.stock, email, perfil);
+          if (!lin) {
+            await sendText(replyJid, `❌ Perfil não encontrado para email "${email}"${perfil ? ` e perfil "${perfil}"` : ''}.`, evolutionConfig);
+          } else {
+            await libertarPerfil(config.stock, lin.sheetRow);
+            await sendText(replyJid, `✅ Perfil libertado: ${lin.email} (linha ${lin.sheetRow}). Disponível para venda.`, evolutionConfig);
+          }
           return;
         }
 
@@ -282,6 +330,65 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       }
 
       if (!textMessage.trim()) return;
+
+      // ── Sistema 2: Detecção de cliente existente (planilha Telefone) — antes do LLM ──
+      try {
+        const perfisCliente = await getClienteByTelefone(config.stock, senderNum);
+        if (perfisCliente.length > 0) {
+          const nomeCliente = session.name || perfisCliente[0].cliente || 'Cliente';
+          const aVerificar = perfisCliente.find((p) => p.status === 'a_verificar');
+          if (aVerificar) {
+            await sendText(
+              replyJid,
+              `Olá ${nomeCliente}! Vi que tem uma renovação pendente. Quer continuar com a conta *${aVerificar.platform}*?`,
+              evolutionConfig
+            );
+            return;
+          }
+          const activos = perfisCliente.filter((p) => p.status === 'indisponivel' || p.status === 'vendido');
+          if (activos.length > 0) {
+            const hoje = new Date();
+            hoje.setHours(0, 0, 0, 0);
+            const em7 = new Date(hoje);
+            em7.setDate(em7.getDate() + 7);
+            const primeiro = activos[0];
+            const dataExp = primeiro.dataExpiracao;
+            const dataStr = primeiro.dataExpiracaoRaw || (dataExp ? dataExp.toLocaleDateString('pt-PT') : 'N/D');
+            if (dataExp && dataExp >= em7) {
+              await sendText(
+                replyJid,
+                `Olá ${nomeCliente}! Vi que já tem uma conta *${primeiro.platform}* activa até *${dataStr}*. Em que posso ajudá-lo(a)?`,
+                evolutionConfig
+              );
+              return;
+            }
+            if (dataExp && dataExp >= hoje && dataExp < em7) {
+              await sendText(
+                replyJid,
+                `Olá ${nomeCliente}! A sua conta *${primeiro.platform}* expira em breve (*${dataStr}*). Quer renovar?`,
+                evolutionConfig
+              );
+              return;
+            }
+            if (dataExp && dataExp < hoje) {
+              await sendText(
+                replyJid,
+                `Olá ${nomeCliente}! A sua conta *${primeiro.platform}* expirou no dia *${dataStr}*. Quer renovar?`,
+                evolutionConfig
+              );
+              return;
+            }
+            await sendText(
+              replyJid,
+              `Olá ${nomeCliente}! Vi que já tem conta(s) connosco. Em que posso ajudá-lo(a)?`,
+              evolutionConfig
+            );
+            return;
+          }
+        }
+      } catch (err) {
+        console.error('[WEBHOOK] getClienteByTelefone:', err.message);
+      }
 
       // ── Memória anti-amnésia: extrair quantidade (1, 2, 4, 5 ou uma, duas, etc.) e guardar na sessão ──
       const quantityMatch = (typeof textMessage === 'string' ? textMessage : '').match(/\b(1|2|4|5)\s*(pessoa|perfil|slot)?s?\b/i)

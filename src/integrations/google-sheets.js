@@ -282,19 +282,22 @@ async function hasStockForPendingSale(stockConfig, pendingSaleString) {
 
 /**
  * Mapeamento de colunas da planilha (0-based), alinhado à planilha real.
- * A=Plataforma, B=Email, C=Senha, F=Status, G=Cliente, H=Telefone, I=Data_Ver, M=Plano, N=Valor
- * Escrita segura: atualizamos APENAS F a I (Status, Cliente, Telefone, Data_Ver).
+ * A=Plataforma, B=Email, C=Senha, D=NomePerfil, E=PIN, F=Status, G=Cliente, H=Telefone, I=Data_Venda, J=Data_Expiracao, M=Plano, N=Valor
+ * Status: disponivel | indisponivel | a_verificar | uso_interno (e "vendido" quando alocamos).
  */
 const COLS = {
-  platform: 0,   // A
-  email: 1,       // B
-  senha: 2,       // C
-  status: 5,      // F - escrevemos "vendido"
-  cliente: 6,     // G
-  telefone: 7,    // H - WhatsApp
-  dataVer: 8,     // I - data da aprovação
-  plan: 12,       // M
-  pin: 4,         // E (se existir na planilha)
+  platform: 0,       // A
+  email: 1,          // B
+  senha: 2,          // C
+  nomePerfil: 3,     // D
+  pin: 4,            // E
+  status: 5,         // F
+  cliente: 6,        // G
+  telefone: 7,       // H
+  dataVenda: 8,      // I - Data_Venda
+  dataExpiracao: 9,  // J - Data_Expiracao
+  plan: 12,          // M
+  valor: 13,         // N (ou 14 conforme estrutura)
 };
 
 /**
@@ -332,7 +335,11 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
 
     if (candidateRows.length < required) return null;
 
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10);
+    const expira = new Date(now);
+    expira.setDate(expira.getDate() + 30);
+    const dataExpiracaoStr = expira.toISOString().slice(0, 10);
     const toUpdate = candidateRows.slice(0, required);
 
     for (const { rowIndex, row } of toUpdate) {
@@ -354,14 +361,15 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
 
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${stockConfig.sheetName}!F${sheetRow}:I${sheetRow}`,
+        range: `${stockConfig.sheetName}!F${sheetRow}:J${sheetRow}`,
         valueInputOption: 'USER_ENTERED',
         requestBody: {
           values: [[
-            'vendido',
+            'indisponivel',
             customerName || 'Cliente',
             customerPhone || '',
             dateStr,
+            dataExpiracaoStr,
           ]],
         },
       });
@@ -380,6 +388,267 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
   }
 }
 
+/** Normaliza telefone para comparação (apenas dígitos). */
+function normalizePhone(phone) {
+  return (phone || '').replace(/\D/g, '').trim();
+}
+
+/** Parse Data_Expiracao: aceita DD/MM/YYYY ou YYYY-MM-DD. Retorna Date ou null. */
+function parseDataExpiracao(str) {
+  if (!str || !String(str).trim()) return null;
+  const s = String(str).trim();
+  const dash = s.split('-');
+  const slash = s.split('/');
+  if (dash.length === 3) {
+    const y = parseInt(dash[0], 10);
+    const m = parseInt(dash[1], 10) - 1;
+    const d = parseInt(dash[2], 10);
+    if (!isNaN(y) && !isNaN(m) && !isNaN(d)) return new Date(y, m, d);
+  }
+  if (slash.length === 3) {
+    const d = parseInt(slash[0], 10);
+    const m = parseInt(slash[1], 10) - 1;
+    const y = parseInt(slash[2], 10);
+    if (!isNaN(y) && !isNaN(m) && !isNaN(d)) return new Date(y, m, d);
+  }
+  return null;
+}
+
+/**
+ * Busca todos os perfis (linhas) associados a um telefone na planilha.
+ * Status activo = "indisponivel" ou "vendido". Retorna [] se não encontrar.
+ */
+async function getClienteByTelefone(stockConfig, telefone) {
+  if (!sheets || !spreadsheetId) return [];
+  const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
+  const want = normalizePhone(telefone);
+  if (!want) return [];
+
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${stockConfig.sheetName}!A:O`,
+    });
+    const rows = res.data.values || [];
+    const out = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const tel = normalizePhone(cell(row, COLS.telefone));
+      const match = tel === want || (want.startsWith('244') && tel === want.slice(3)) || (tel.startsWith('244') && want === tel.slice(3));
+      if (!match) continue;
+      const status = normalizeText(cell(row, COLS.status));
+      const platform = platformFromCell(cell(row, COLS.platform));
+      const dataExp = parseDataExpiracao(cell(row, COLS.dataExpiracao));
+      out.push({
+        sheetRow: i + 1,
+        platform: platform || 'N/D',
+        status,
+        dataExpiracao: dataExp,
+        dataExpiracaoRaw: cell(row, COLS.dataExpiracao),
+        cliente: cell(row, COLS.cliente),
+        plano: cell(row, COLS.plan),
+        valor: cell(row, COLS.valor) || cell(row, 14) || '',
+        email: cell(row, COLS.email),
+        nomePerfil: cell(row, COLS.nomePerfil),
+      });
+    }
+    return out;
+  } catch (err) {
+    console.error('[STOCK] getClienteByTelefone Error:', err.message);
+    return [];
+  }
+}
+
+/**
+ * Retorna linhas para o cron de renovação.
+ * tipo: '3dias' | 'hoje' | '1dia' | '3dias_libertar'
+ */
+async function getLinhasRenovacao(stockConfig, tipo) {
+  if (!sheets || !spreadsheetId) return [];
+  const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const in3 = new Date(today);
+  in3.setDate(in3.getDate() + 3);
+  const ontem = new Date(today);
+  ontem.setDate(ontem.getDate() - 1);
+  const ha3 = new Date(today);
+  ha3.setDate(ha3.getDate() - 3);
+
+  const statusActivo = (s) => ['indisponivel', 'vendido'].includes(normalizeText(s));
+
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${stockConfig.sheetName}!A:O`,
+    });
+    const rows = res.data.values || [];
+    const out = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const status = normalizeText(cell(row, COLS.status));
+      const dataExp = parseDataExpiracao(cell(row, COLS.dataExpiracao));
+      if (!dataExp) continue;
+      const expDate = new Date(dataExp);
+      expDate.setHours(0, 0, 0, 0);
+
+      if (tipo === '3dias' && statusActivo(status) && expDate.getTime() === in3.getTime()) {
+        out.push(buildLinhaRenovacao(row, i));
+      } else if (tipo === 'hoje' && statusActivo(status) && expDate.getTime() === today.getTime()) {
+        out.push(buildLinhaRenovacao(row, i));
+      } else if (tipo === '1dia' && statusActivo(status) && expDate.getTime() === ontem.getTime()) {
+        out.push(buildLinhaRenovacao(row, i));
+      } else if (tipo === '3dias_libertar' && (status === 'a_verificar' || statusActivo(status)) && expDate.getTime() <= ha3.getTime()) {
+        out.push(buildLinhaRenovacao(row, i));
+      }
+    }
+    return out;
+  } catch (err) {
+    console.error('[STOCK] getLinhasRenovacao Error:', err.message);
+    return [];
+  }
+}
+
+function buildLinhaRenovacao(row, rowIndex) {
+  const cell = (r, idx) => (r[idx] != null ? String(r[idx]).trim() : '');
+  const platform = platformFromCell(cell(row, COLS.platform));
+  const dataExp = parseDataExpiracao(cell(row, COLS.dataExpiracao));
+  return {
+    sheetRow: rowIndex + 1,
+    platform: platform || 'N/D',
+    status: normalizeText(cell(row, COLS.status)),
+    dataExpiracao: dataExp,
+    dataExpiracaoRaw: cell(row, COLS.dataExpiracao),
+    cliente: cell(row, COLS.cliente),
+    telefone: cell(row, COLS.telefone),
+    plano: cell(row, COLS.plan),
+    valor: cell(row, COLS.valor) || cell(row, 14) || '',
+    email: cell(row, COLS.email),
+    nomePerfil: cell(row, COLS.nomePerfil),
+  };
+}
+
+/** Marca uma linha como a_verificar (1 dia após expiração). */
+async function marcarComoAVerificar(stockConfig, sheetRow) {
+  if (!sheets || !spreadsheetId) return false;
+  try {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${stockConfig.sheetName}!F${sheetRow}:F${sheetRow}`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [['a_verificar']] },
+    });
+    return true;
+  } catch (err) {
+    console.error('[STOCK] marcarComoAVerificar Error:', err.message);
+    return false;
+  }
+}
+
+/** Liberta perfil: Status=disponivel, limpa Cliente, Telefone, Data_Venda, Data_Expiracao. */
+async function libertarPerfil(stockConfig, sheetRow) {
+  if (!sheets || !spreadsheetId) return false;
+  try {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${stockConfig.sheetName}!F${sheetRow}:J${sheetRow}`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: {
+        values: [['disponivel', '', '', '', '']],
+      },
+    });
+    return true;
+  } catch (err) {
+    console.error('[STOCK] libertarPerfil Error:', err.message);
+    return false;
+  }
+}
+
+/** Lista perfis expirados (Data_Expiracao < hoje) ainda não renovados (status indisponivel ou a_verificar). Para #expirados. */
+async function getPerfisExpirados(stockConfig) {
+  if (!sheets || !spreadsheetId) return [];
+  const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${stockConfig.sheetName}!A:O`,
+    });
+    const rows = res.data.values || [];
+    const out = [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      const status = normalizeText(cell(row, COLS.status));
+      if (status !== 'indisponivel' && status !== 'vendido' && status !== 'a_verificar') continue;
+      const dataExp = parseDataExpiracao(cell(row, COLS.dataExpiracao));
+      if (!dataExp || dataExp >= today) continue;
+      out.push(buildLinhaRenovacao(row, i));
+    }
+    out.sort((a, b) => (a.dataExpiracao && b.dataExpiracao ? a.dataExpiracao - b.dataExpiracao : 0));
+    return out;
+  } catch (err) {
+    console.error('[STOCK] getPerfisExpirados Error:', err.message);
+    return [];
+  }
+}
+
+/** Encontra linha por email e opcionalmente nome do perfil. Para #libertar [email] [perfil]. */
+async function findLinhaPorEmailPerfil(stockConfig, email, nomePerfil) {
+  if (!sheets || !spreadsheetId) return null;
+  const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
+  const emailNorm = (email || '').trim().toLowerCase();
+
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${stockConfig.sheetName}!A:O`,
+    });
+    const rows = res.data.values || [];
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (cell(row, COLS.email).toLowerCase() !== emailNorm) continue;
+      if (nomePerfil && cell(row, COLS.nomePerfil).toLowerCase() !== String(nomePerfil).trim().toLowerCase()) continue;
+      return { sheetRow: i + 1, ...buildLinhaRenovacao(row, i) };
+    }
+    return null;
+  } catch (err) {
+    console.error('[STOCK] findLinhaPorEmailPerfil Error:', err.message);
+    return null;
+  }
+}
+
+/** Renovação manual: actualiza Data_Venda e Data_Expiracao (+30 dias) para todas as linhas do telefone. */
+async function renovarClientePorTelefone(stockConfig, telefone) {
+  if (!sheets || !spreadsheetId) return 0;
+  const perfis = await getClienteByTelefone(stockConfig, telefone);
+  const now = new Date();
+  const dateStr = now.toISOString().slice(0, 10);
+  const expira = new Date(now);
+  expira.setDate(expira.getDate() + 30);
+  const dataExpiracaoStr = expira.toISOString().slice(0, 10);
+  let count = 0;
+  for (const lin of perfis) {
+    if (lin.status !== 'indisponivel' && lin.status !== 'vendido' && lin.status !== 'a_verificar') continue;
+    try {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `${stockConfig.sheetName}!F${lin.sheetRow}:J${lin.sheetRow}`,
+        valueInputOption: 'USER_ENTERED',
+        requestBody: {
+          values: [['indisponivel', lin.cliente || '', telefone, dateStr, dataExpiracaoStr]],
+        },
+      });
+      count++;
+    } catch (err) {
+      console.error('[STOCK] renovarClientePorTelefone linha:', lin.sheetRow, err.message);
+    }
+  }
+  return count;
+}
+
 module.exports = {
   init,
   getStock,
@@ -387,4 +656,13 @@ module.exports = {
   getStockCountsForPrompt,
   hasStockForPendingSale,
   allocateProfile,
+  getClienteByTelefone,
+  getLinhasRenovacao,
+  marcarComoAVerificar,
+  libertarPerfil,
+  getPerfisExpirados,
+  findLinhaPorEmailPerfil,
+  renovarClientePorTelefone,
+  parseDataExpiracao,
+  normalizePhone,
 };

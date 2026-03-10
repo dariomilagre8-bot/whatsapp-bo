@@ -13,6 +13,7 @@ const { initBilling, handlePaymentConfirmation } = require('./src/billing/remind
 const { initStockNotifier } = require('./src/stock/stock-notifier');
 const { initFollowUp } = require('./src/crm/followup');
 const { marcarInactivos } = require('./src/crm/leads');
+const { initRenewal } = require('./src/renewal/renewal-cron');
 const path = require('path');
 
 const app = express();
@@ -119,6 +120,7 @@ if (sbClient) {
   initBilling(sbClient);
   initStockNotifier(sbClient, config.stock);
   initFollowUp(sbClient);
+  initRenewal(config.stock, config.payment, sbClient);
 
   // Cron semanal: marcar leads inactivos (às 03:00 de segunda-feira)
   const cron = require('node-cron');
@@ -137,5 +139,6 @@ app.listen(PORT, () => {
   console.log(`💰 Billing: ${process.env.BILLING_ENABLED === 'true' ? 'activado' : 'desactivado'}`);
   console.log(`📦 Stock Notifier: ${process.env.STOCK_NOTIFICATIONS_ENABLED === 'true' ? 'activado' : 'desactivado'}`);
   console.log(`📨 Follow-up CRM: ${process.env.FOLLOWUP_ENABLED === 'true' ? 'activado' : 'desactivado'}`);
+  console.log(`🔄 Renovação automática: ${process.env.RENEWAL_ENABLED === 'true' ? 'activado' : 'desactivado'}`);
   console.log(`✅ Pronto!\n`);
 });
