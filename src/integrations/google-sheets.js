@@ -305,7 +305,7 @@ const COLS = {
  * marca todas como vendido e devolve email/senha + lista de perfis (PINs).
  * @returns {Promise<{ email: string, senha: string, pin: string, perfis: Array<{ pin: string }> }|null>}
  */
-async function allocateProfile(stockConfig, pendingSaleString, customerName, customerPhone) {
+async function allocateProfile(stockConfig, pendingSaleString, customerName, customerPhone, meses = 1) {
   if (!sheets || !spreadsheetId) return null;
 
   const text = normalizeText(pendingSaleString);
@@ -338,7 +338,8 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
     const now = new Date();
     const dateStr = now.toISOString().slice(0, 10);
     const expira = new Date(now);
-    expira.setDate(expira.getDate() + 30);
+    const mesesValidos = Math.max(1, Math.min(12, parseInt(meses, 10) || 1));
+    expira.setDate(expira.getDate() + mesesValidos * 30);
     const dataExpiracaoStr = expira.toISOString().slice(0, 10);
     const toUpdate = candidateRows.slice(0, required);
 

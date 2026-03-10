@@ -19,6 +19,7 @@ const botSettings = require('../../config/bot_settings.json');
 const { upsertLead, updateLeadStatus, registarCompra, addProdutoInteresse, getCrmResumo, getLeadDetalhe, marcarInactivos } = require('../crm/leads');
 const { addToWaitlist, getWaitlistResumo } = require('../stock/waitlist');
 const { triggerStockReposto } = require('../stock/stock-notifier');
+const { detectarReclamacao, formatarNotificacaoReclamacao } = require('../crm/complaints');
 
 const supervisorTestMode = new Set();
 
@@ -235,7 +236,8 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
               return;
             }
             const customerName = targetSession.name || 'Cliente';
-            const credentials = await allocateProfile(config.stock, pendingSale, customerName, target);
+            const mesesPagamento = targetSession.mesesPagamento || 1;
+            const credentials = await allocateProfile(config.stock, pendingSale, customerName, target, mesesPagamento);
             if (!credentials || (!credentials.email && !credentials.senha)) {
               await sendText(replyJid, `Erro: Stock esgotou. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfig);
               return;
@@ -248,9 +250,11 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             await sendText(targetReplyJid, accessMsg, evolutionConfig);
             targetSession.paused = false;
             targetSession.pendingSale = null;
+            targetSession.mesesPagamento = null;
             stateMachine.setState(target, 'menu');
-            await sendText(replyJid, `Venda concluída e planilha atualizada. Dados enviados a ${target}.`, evolutionConfig);
-            console.log(`[SUPERVISOR] #sim: venda aprovada para ${target}, perfil alocado`);
+            const mesesInfo = mesesPagamento > 1 ? ` (${mesesPagamento} meses)` : '';
+            await sendText(replyJid, `Venda concluída${mesesInfo} e planilha atualizada. Dados enviados a ${target}.`, evolutionConfig);
+            console.log(`[SUPERVISOR] #sim: venda aprovada para ${target}, perfil alocado (${mesesPagamento} mês/meses)`);
             // CRM: registar compra
             try {
               const sbClient = require('../integrations/supabase').getClient();
@@ -435,6 +439,59 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         return;
       }
 
+      // ── Interceptor: Lacuna 4 — Reclamação técnica (ANTES do LLM) ──
+      if (detectarReclamacao(textMessage) && !session.paused && !isSupervisor(senderNum)) {
+        session.paused = true;
+        stateMachine.setState(senderNum, 'pausado');
+        const clientName = session.name || 'Cliente';
+        const plataformaSessao = session.platform || '';
+        await sendText(
+          replyJid,
+          `Lamento imenso o transtorno, ${clientName}. Já estou a encaminhar ao nosso responsável técnico para resolver com a máxima brevidade. Por favor, aguarde um momento. 🙏`,
+          evolutionConfig
+        );
+        for (const sup of supervisors) {
+          if (sup) {
+            await sendText(
+              sup,
+              formatarNotificacaoReclamacao(clientName, senderNum, plataformaSessao, textMessage),
+              evolutionConfig
+            );
+          }
+        }
+        console.log(`[RECLAMACAO] ${senderNum}: "${textMessage.substring(0, 80)}"`);
+        return;
+      }
+
+      // ── Interceptor: Lacuna 10 — Cancelamento (keywords fortes) ──
+      const cancelPatterns = [
+        /\b(quero\s*(cancelar|desistir|parar|encerrar)|n[aã]o\s*quero\s*mais|cancela\s*(a\s*minha|o\s*meu))\b/i,
+        /\b(cancelamento|encerrar\s*(a\s*minha|o\s*meu|a\s*conta))\b/i,
+      ];
+      const isCancelRequest = cancelPatterns.some((p) => p.test(textMessage));
+      if (isCancelRequest && !session.paused && !isSupervisor(senderNum)) {
+        const clientName = session.name || 'Cliente';
+        const plataformaSessao = session.platform || session.pendingSale?.split(' ')[0] || 'serviço';
+        session.paused = true;
+        stateMachine.setState(senderNum, 'pausado');
+        await sendText(
+          replyJid,
+          `Lamento ouvir isso, ${clientName}. 😔 Vou passar ao responsável para processar o seu pedido. Obrigado pela confiança que depositou em nós.`,
+          evolutionConfig
+        );
+        for (const sup of supervisors) {
+          if (sup) {
+            await sendText(
+              sup,
+              `🚫 *PEDIDO DE CANCELAMENTO*\n\n*Cliente:* ${clientName}\n*Número:* ${senderNum}\n*Serviço:* ${plataformaSessao}\n\n💡 Para reactivar o bot: #retomar ${senderNum}`,
+              evolutionConfig
+            );
+          }
+        }
+        console.log(`[CANCELAMENTO] ${senderNum}: "${textMessage.substring(0, 80)}"`);
+        return;
+      }
+
       // ═══════════════════════════════════════════════════════════════
       // Pipeline LLM-First: A → B → C → D
       // ═══════════════════════════════════════════════════════════════
@@ -502,6 +559,72 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         } catch (wErr) {
           console.error('[WAITLIST] Erro ao adicionar à waitlist:', wErr.message);
         }
+      }
+
+      // ── Lacuna 4 (backup LLM): tag #RECLAMACAO — pausa + notifica supervisor ──
+      const reclamacaoMatch = finalResponse.match(/#RECLAMACAO:\s*([^\n]+)/i);
+      if (reclamacaoMatch && !session.paused) {
+        const descricao = reclamacaoMatch[1].trim();
+        finalResponse = finalResponse.replace(/#RECLAMACAO:\s*[^\n]*/gi, '').trim().replace(/\n{2,}/g, '\n');
+        session.paused = true;
+        stateMachine.setState(senderNum, 'pausado');
+        for (const sup of supervisors) {
+          if (sup) {
+            await sendText(
+              sup,
+              formatarNotificacaoReclamacao(session.name || senderNum, senderNum, session.platform || '', descricao),
+              evolutionConfig
+            );
+          }
+        }
+        console.log(`[RECLAMACAO-LLM] ${senderNum}: "${descricao}"`);
+      }
+
+      // ── Lacuna 10 (backup LLM): tag #CANCELAMENTO — pausa + notifica supervisor ──
+      const cancelamentoMatch = finalResponse.match(/#CANCELAMENTO:\s*([^\n]*)/i);
+      if (cancelamentoMatch && !session.paused) {
+        const infoCancelamento = cancelamentoMatch[1].trim() || session.platform || 'serviço';
+        finalResponse = finalResponse.replace(/#CANCELAMENTO:\s*[^\n]*/gi, '').trim().replace(/\n{2,}/g, '\n');
+        session.paused = true;
+        stateMachine.setState(senderNum, 'pausado');
+        for (const sup of supervisors) {
+          if (sup) {
+            await sendText(
+              sup,
+              `🚫 *CANCELAMENTO (confirmado pelo cliente)*\n\n*Cliente:* ${session.name || senderNum}\n*Número:* ${senderNum}\n*Serviço:* ${infoCancelamento}\n\n💡 Para reactivar o bot: #retomar ${senderNum}`,
+              evolutionConfig
+            );
+          }
+        }
+        console.log(`[CANCELAMENTO-LLM] ${senderNum}: "${infoCancelamento}"`);
+      }
+
+      // ── Lacuna 6: tag #INDICACAO — registar referência ──
+      const indicacaoMatch = finalResponse.match(/#INDICACAO:\s*([^\n]+)/i);
+      if (indicacaoMatch) {
+        const raw = indicacaoMatch[1].trim();
+        finalResponse = finalResponse.replace(/#INDICACAO:\s*[^\n]*/gi, '').trim().replace(/\n{2,}/g, '\n');
+        const indicacaoParts = raw.split(/\s+/);
+        const numeroIndicado = (indicacaoParts.find((p) => /^\d{7,}$/.test(p.replace(/\D/g, ''))) || '').replace(/\D/g, '');
+        const nomeIndicado = indicacaoParts.filter((p) => !/^\d/.test(p)).join(' ') || 'desconhecido';
+        console.log(`[INDICACAO] ${senderNum} indicou: ${nomeIndicado} (${numeroIndicado})`);
+        for (const sup of supervisors) {
+          if (sup) {
+            await sendText(
+              sup,
+              `🤝 *NOVA INDICAÇÃO*\n\n*Indicador:* ${session.name || senderNum} (${senderNum})\n*Indicado:* ${nomeIndicado}\n*Número:* ${numeroIndicado || 'não fornecido'}\n\nConsidere contactar o indicado.`,
+              evolutionConfig
+            );
+          }
+        }
+      }
+
+      // ── Lacuna 3: tag #MESES — pagamento antecipado (guardar na sessão) ──
+      const mesesMatch = finalResponse.match(/#MESES:\s*(\d+)/i);
+      if (mesesMatch) {
+        session.mesesPagamento = parseInt(mesesMatch[1], 10) || 1;
+        finalResponse = finalResponse.replace(/#MESES:\s*\d+/gi, '').trim().replace(/\n{2,}/g, '\n');
+        console.log(`[PAGAMENTO-ANTECIPADO] ${senderNum}: ${session.mesesPagamento} meses`);
       }
 
       await sendText(replyJid, finalResponse, evolutionConfig);
