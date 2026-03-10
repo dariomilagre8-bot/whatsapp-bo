@@ -20,7 +20,7 @@ const botSettings = require('../../config/bot_settings.json');
 const { upsertLead, updateLeadStatus, registarCompra, addProdutoInteresse, getCrmResumo, getLeadDetalhe, marcarInactivos } = require('../crm/leads');
 const { addToWaitlist, getWaitlistResumo } = require('../stock/waitlist');
 const { triggerStockReposto } = require('../stock/stock-notifier');
-const { detectarReclamacao, formatarNotificacaoReclamacao } = require('../crm/complaints');
+const { detectarReclamacao, detectarLocalizacao, gerarRespostaLocalizacao, formatarNotificacaoReclamacao } = require('../crm/complaints');
 
 const supervisorTestMode = new Set();
 
@@ -452,7 +452,8 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         return /\b(cancelar|desistir|parar|encerrar|n[aã]o\s*quero\s*mais)\b/.test(t) ||
           /\b(renovar|renov|continuar|manter|prolongar|quero\s*renovar)\b/.test(t) ||
           /\b(reclam|erro|problema|n[aã]o\s*funciona|senha\s*errada|bloquead)\b/.test(t) ||
-          /\b(ajuda|humano|falar\s*com|respons[aá]vel|supervisor)\b/.test(t);
+          /\b(ajuda|humano|falar\s*com|respons[aá]vel|supervisor)\b/.test(t) ||
+          /\b(localiza[cç][aã]o|household|agregado|tv\s*n[aã]o\s*faz\s*parte)\b/.test(t);
       };
 
       try {
@@ -552,7 +553,43 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         return;
       }
 
-      // ── Interceptor: Lacuna 4 — Reclamação técnica (ANTES do LLM) ──
+      // ── Interceptor: Erro de localização/Household Netflix — auto-ajuda (NÃO escalar) ──
+      if (detectarLocalizacao(textMessage) && !session.paused && !isSupervisor(senderNum)) {
+        if (session.locationHelpSent) {
+          session.paused = true;
+          stateMachine.setState(senderNum, 'pausado');
+          const clientName = session.name || 'Cliente';
+          await sendText(
+            replyJid,
+            `Compreendo, ${clientName}. Como os passos anteriores não resolveram, vou chamar o responsável técnico para ajudar directamente. Por favor, aguarde.`,
+            evolutionConfig
+          );
+          for (const sup of supervisors) {
+            if (sup) {
+              await sendText(
+                sup,
+                formatarNotificacaoReclamacao(clientName, senderNum, session.platform || 'Netflix', `Erro de localização/Household PERSISTENTE (cliente já recebeu instruções): "${textMessage.substring(0, 200)}"`),
+                evolutionConfig
+              );
+            }
+          }
+          console.log(`[LOCALIZACAO-PERSISTENTE] ${senderNum}: escalado ao supervisor`);
+        } else {
+          const clientName = session.name || 'Cliente';
+          await sendText(replyJid, gerarRespostaLocalizacao(clientName), evolutionConfig);
+          session.locationHelpSent = true;
+          session.platform = session.platform || 'Netflix';
+          console.log(`[LOCALIZACAO] ${senderNum}: instruções de auto-ajuda enviadas`);
+          for (const sup of supervisors) {
+            if (sup) {
+              await sendText(sup, `📍 Erro localização/Household — ${clientName} (${senderNum}). Instruções de auto-ajuda enviadas.`, evolutionConfig);
+            }
+          }
+        }
+        return;
+      }
+
+      // ── Interceptor: Reclamação técnica grave (ANTES do LLM) — escalar ao supervisor ──
       if (detectarReclamacao(textMessage) && !session.paused && !isSupervisor(senderNum)) {
         session.paused = true;
         stateMachine.setState(senderNum, 'pausado');
@@ -560,7 +597,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         const plataformaSessao = session.platform || '';
         await sendText(
           replyJid,
-          `Lamento imenso o transtorno, ${clientName}. Já estou a encaminhar ao nosso responsável técnico para resolver com a máxima brevidade. Por favor, aguarde um momento. 🙏`,
+          `Lamento imenso o transtorno, ${clientName}. Já estou a encaminhar ao nosso responsável técnico para resolver com a máxima brevidade. Por favor, aguarde um momento.`,
           evolutionConfig
         );
         for (const sup of supervisors) {
