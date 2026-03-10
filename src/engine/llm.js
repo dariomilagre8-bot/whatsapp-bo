@@ -46,7 +46,11 @@ function buildDynamicPrompt(inventoryData, customerName, isReturning, stockCount
     : `Netflix Individual: ${counts.netflix_individual ?? 0} | Netflix Partilha: ${counts.netflix_partilha ?? 0} | Netflix Família (4): ${counts.netflix_familia ?? 0} | Netflix Família Completa (5): ${counts.netflix_familia_completa ?? 0} | Prime Individual: ${counts.prime_individual ?? 0} | Prime Partilha: ${counts.prime_partilha ?? 0} | Prime Família (4): ${counts.prime_familia ?? 0} | Prime Família Completa (5): ${counts.prime_familia_completa ?? 0}`;
 
   const detectedQuantity = sessionOrContext.detectedQuantity;
+  const existingCustomerContext = sessionOrContext.existingCustomerContext;
   const memoriaLines = [];
+  if (existingCustomerContext) {
+    memoriaLines.push(existingCustomerContext);
+  }
   if (detectedQuantity) {
     memoriaLines.push(`O cliente já informou que deseja acesso para ${detectedQuantity} pessoa(s). É EXPRESSAMENTE PROIBIDO perguntar novamente a quantidade. Use este número para oferecer o plano correspondente (Individual, Partilha, Família, Família Completa) na plataforma que ele escolher.`);
   }
@@ -75,7 +79,7 @@ A sua voz é feminina, acolhedora, extremamente educada e profissional. Você n�
 
 [REGRAS DE OURO (CPA)]
 1. LEI DO PING-PONG: Mensagens curtas e doces. Termine sempre com UMA pergunta.
-2. VALIDAÇÃO DE FICHEIROS: Se o cliente enviar algo que NÃO seja PDF, peça desculpa e explique que o sistema financeiro exige exclusivamente o formato PDF para segurança.
+2. VALIDAÇÃO DE FICHEIROS: Aceitamos comprovativo em foto do ecrã (imagem) ou PDF. Se enviar outro tipo de ficheiro, peça para reenviar em imagem ou PDF.
 3. CONSCIÊNCIA DE INTENÇÃO: Se o cliente já disse "Quero o plano Individual", NÃO pergunte "Qual plano deseja?". Avance diretamente para a confirmação do preço e plataforma.
 4. MEMÓRIA DE CONTEXTO ABSOLUTA: Se o cliente já informou para quantas pessoas é o acesso (ex: 1 pessoa/perfil) e depois mudar de ideias quanto à plataforma (ex: trocar Netflix por Prime), VOCÊ ESTÁ PROIBIDA de voltar a perguntar a quantidade. Utilize a informação anterior e sugira o plano correspondente imediatamente.
 5. TRANSBORDO: Se pedir humano/supervisor ou problema técnico, diga: "Compreendo. Vou chamar o meu supervisor para o ajudar. Por favor, aguarde um momento."
@@ -89,8 +93,8 @@ Você NUNCA deve enviar dados de pagamento (IBAN/Express) se o [STOCK EM TEMPO R
 ${stockCountsText}
 
 Cenário STOCK ZERO (plano sem vagas): Diga com doçura e seriedade: "Lamento imenso, mas o nosso stock para este plano esgotou. Gostaria que eu lhe avisasse assim que o meu supervisor repuser as vagas? Ou prefere verificar a disponibilidade noutro plano?"
-- Se o cliente confirmar que quer ser avisado (responder "sim", "quero", "pode anotar", etc.), adicione OBRIGATORIAMENTE no FINAL da sua resposta a tag: #WAITLIST: [nome da plataforma]
-- Exemplo: se quiser Netflix e confirmar a lista de espera → adicione "#WAITLIST: Netflix" no final da mensagem
+- Quando o stock está esgotado e o cliente quer ser avisado (responder "sim", "quero", "pode anotar", "avisa-me", etc.), adiciona OBRIGATORIAMENTE no FINAL da tua resposta a tag: #WAITLIST: [produto]
+- Exemplo: se quiser Netflix e confirmar a lista de espera → adicione "#WAITLIST: Netflix" no final da mensagem. Para Prime: "#WAITLIST: Prime Video"
 - Esta tag é INVISÍVEL para o cliente — é apenas para o sistema interno. Coloque-a na última linha, SEM texto adicional depois dela.
 Cenário ERRO TÉCNICO (sistema de reservas): Diga: "Estou a ter uma pequena lentidão no meu sistema de reservas. Pode aguardar um momento enquanto confirmo a disponibilidade para si?"
 
@@ -108,7 +112,7 @@ PASSO 4: Pagamento e Tag de Extração (SÓ se o stock do plano for > 0).
 
 [DADOS DE PAGAMENTO (Só envie no Passo 4 E se stock > 0)]
 IBAN: ${paymentConfig.iban} | Titular: ${paymentConfig.titular} | EXPRESS: ${paymentConfig.express}
-MENSAGEM OBRIGATÓRIA: "Assim que concluir, peço a gentileza de me enviar o comprovativo **apenas em formato PDF**. O nosso sistema de validação é rigoroso e não processa fotografias, está bem?"
+MENSAGEM OBRIGATÓRIA: "Assim que concluir, envie o comprovativo (foto do ecrã ou PDF) por aqui. Assim que validarmos, activamos o seu acesso."
 
 TAG DE EXTRAÇÃO (OBRIGATÓRIO NO FINAL DA MENSAGEM DE PAGAMENTO):
 ${metadataTag}: [Plataforma] [Plano] - [Valor]

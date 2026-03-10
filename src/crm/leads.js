@@ -1,6 +1,8 @@
 // src/crm/leads.js — CRM básico de tracking de leads
 // Non-blocking: todos os erros são capturados internamente, o bot continua a funcionar
 
+const { extractPhoneNumber } = require('../utils/phone');
+
 /**
  * Cria ou actualiza um lead quando uma nova mensagem chega.
  * @param {object} supabase
@@ -9,7 +11,7 @@
  */
 async function upsertLead(supabase, numero, nome) {
   if (!supabase || !numero) return;
-  const normalized = numero.replace('@s.whatsapp.net', '').trim();
+  const normalized = extractPhoneNumber(numero) || numero.replace('@s.whatsapp.net', '').trim();
   if (!normalized) return;
 
   try {
@@ -54,7 +56,7 @@ async function upsertLead(supabase, numero, nome) {
  */
 async function updateLeadStatus(supabase, numero, status, extra = {}) {
   if (!supabase || !numero) return;
-  const normalized = numero.replace('@s.whatsapp.net', '').trim();
+  const normalized = extractPhoneNumber(numero) || numero.replace('@s.whatsapp.net', '').trim();
 
   try {
     const { data: existing } = await supabase
@@ -91,7 +93,7 @@ async function updateLeadStatus(supabase, numero, status, extra = {}) {
  */
 async function registarCompra(supabase, numero, valor = 0) {
   if (!supabase || !numero) return;
-  const normalized = numero.replace('@s.whatsapp.net', '').trim();
+  const normalized = extractPhoneNumber(numero) || numero.replace('@s.whatsapp.net', '').trim();
 
   try {
     const { data: existing } = await supabase
@@ -129,7 +131,7 @@ async function registarCompra(supabase, numero, valor = 0) {
  */
 async function addProdutoInteresse(supabase, numero, produto) {
   if (!supabase || !numero || !produto) return;
-  const normalized = numero.replace('@s.whatsapp.net', '').trim();
+  const normalized = extractPhoneNumber(numero) || numero.replace('@s.whatsapp.net', '').trim();
 
   try {
     const { data: existing } = await supabase
@@ -205,7 +207,7 @@ async function getCrmResumo(supabase) {
  */
 async function getLeadDetalhe(supabase, numero) {
   if (!supabase || !numero) return '❌ Número inválido.';
-  const normalized = numero.replace(/[^0-9]/g, '');
+  const normalized = extractPhoneNumber(numero) || numero.replace(/[^0-9]/g, '');
 
   try {
     const { data, error } = await supabase

@@ -1,6 +1,7 @@
 // src/integrations/supabase.js
 
 const { createClient } = require('@supabase/supabase-js');
+const { extractPhoneNumber } = require('../utils/phone');
 let supabase = null;
 
 function init(url, key) {
@@ -17,7 +18,7 @@ function getClient() {
  */
 async function getClientByPhone(phone) {
   if (!supabase) return { customerName: null, isReturningCustomer: false, lastSale: null };
-  const normalized = (phone || '').replace('@s.whatsapp.net', '').trim();
+  const normalized = extractPhoneNumber(phone) || (phone || '').replace('@s.whatsapp.net', '').trim();
   if (!normalized) return { customerName: null, isReturningCustomer: false, lastSale: null };
 
   try {

@@ -4,6 +4,7 @@
 const { sendText } = require('../engine/sender');
 const llm = require('../engine/llm');
 const { extractName } = require('../utils/name-extractor');
+const { extractPhoneNumber } = require('../utils/phone');
 const { getClientByPhone } = require('../integrations/supabase');
 const {
   allocateProfile,
@@ -22,6 +23,26 @@ const { triggerStockReposto } = require('../stock/stock-notifier');
 const { detectarReclamacao, formatarNotificacaoReclamacao } = require('../crm/complaints');
 
 const supervisorTestMode = new Set();
+
+/** Rate limit: máx 2 respostas por 30 segundos por número */
+const rateLimitMap = new Map();
+const RATE_LIMIT_WINDOW_MS = 30000;
+const RATE_LIMIT_MAX = 2;
+function checkRateLimit(phone) {
+  const now = Date.now();
+  let entry = rateLimitMap.get(phone);
+  if (!entry) {
+    rateLimitMap.set(phone, { count: 1, firstTs: now });
+    return true;
+  }
+  if (now - entry.firstTs > RATE_LIMIT_WINDOW_MS) {
+    rateLimitMap.set(phone, { count: 1, firstTs: now });
+    return true;
+  }
+  entry.count++;
+  if (entry.count > RATE_LIMIT_MAX) return false;
+  return true;
+}
 
 /** Mesma lógica de normalização: trim, lowercase, NFD, remove acentos. */
 const normalizeText = (text) => text ? text.toString().trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '') : '';
@@ -60,14 +81,14 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       if (!data || !data.key || data.key.fromMe) return;
 
       const rawJid = data.key.remoteJid || '';
-      const senderNum = rawJid
-        .replace(/@s\.whatsapp\.net$/, '')
-        .replace(/@lid$/, '')
-        .replace(/@.*$/, '');
+      const senderNum = extractPhoneNumber(rawJid);
+      if (rawJid && rawJid !== senderNum) {
+        console.log(`[WEBHOOK] rawJid para debug: "${rawJid}" → senderNum: "${senderNum}"`);
+      }
       const replyJid = rawJid.includes('@')
         ? rawJid
-        : `${rawJid}@s.whatsapp.net`;
-      if (!senderNum || rawJid.endsWith('@g.us')) return;
+        : (senderNum ? `${senderNum}@s.whatsapp.net` : rawJid);
+      if (!senderNum || (rawJid && rawJid.endsWith('@g.us'))) return;
 
       const pushName = data.pushName || '';
       const messageData = data.message || {};
@@ -123,23 +144,39 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
         // ── Comandos CRM ──
         if (firstWord === '#leads') {
-          const sbClient = require('../integrations/supabase').getClient();
-          const resumo = await getCrmResumo(sbClient);
-          await sendText(replyJid, resumo, evolutionConfig);
+          try {
+            const sbClient = require('../integrations/supabase').getClient();
+            const resumo = await getCrmResumo(sbClient);
+            await sendText(replyJid, resumo, evolutionConfig);
+          } catch (e) {
+            console.error('[CRM] #leads error:', e.message);
+            await sendText(replyJid, '❌ Erro ao consultar leads. Execute o schema SQL do CRM no Supabase (docs/crm-schema.sql).', evolutionConfig);
+          }
           return;
         }
         if (firstWord === '#lead' && parts[1]) {
-          const sbClient = require('../integrations/supabase').getClient();
-          const detalhe = await getLeadDetalhe(sbClient, parts[1]);
-          await sendText(replyJid, detalhe, evolutionConfig);
+          try {
+            const sbClient = require('../integrations/supabase').getClient();
+            const numNorm = extractPhoneNumber(parts[1]);
+            const detalhe = await getLeadDetalhe(sbClient, numNorm || parts[1]);
+            await sendText(replyJid, detalhe, evolutionConfig);
+          } catch (e) {
+            console.error('[CRM] #lead error:', e.message);
+            await sendText(replyJid, '❌ Erro. Execute o schema SQL do CRM no Supabase.', evolutionConfig);
+          }
           return;
         }
 
         // ── Comandos Waitlist ──
         if (firstWord === '#waitlist') {
-          const sbClient = require('../integrations/supabase').getClient();
-          const resumo = await getWaitlistResumo(sbClient);
-          await sendText(replyJid, resumo, evolutionConfig);
+          try {
+            const sbClient = require('../integrations/supabase').getClient();
+            const resumo = await getWaitlistResumo(sbClient);
+            await sendText(replyJid, resumo, evolutionConfig);
+          } catch (e) {
+            console.error('[WAITLIST] #waitlist error:', e.message);
+            await sendText(replyJid, '❌ Erro ao consultar lista de espera. Execute o schema SQL (docs/stock-waitlist-schema.sql) no Supabase.', evolutionConfig);
+          }
           return;
         }
 
@@ -193,8 +230,16 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         }
 
         const cmd = config.supervisorCommands?.[firstWord];
-        const target = parts[1] || null;
+        const targetRaw = parts[1] || null;
+        const target = targetRaw ? extractPhoneNumber(targetRaw) : null;
         if (cmd) {
+          if (cmd === 'pause' && target) {
+            const targetSession = stateMachine.getSession(target);
+            targetSession.paused = true;
+            stateMachine.setState(target, 'pausado');
+            await sendText(replyJid, `✅ Bot pausado para ${target}. Use #retomar ${target} para reactivar.`, evolutionConfig);
+            return;
+          }
           if (cmd === 'unpause' && target) {
             const targetSession = stateMachine.getSession(target);
             targetSession.paused = false;
@@ -230,32 +275,50 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
               await sendText(replyJid, `O cliente ${target} não tem venda pendente (${metaTag}). Verifique a conversa.`, evolutionConfig);
               return;
             }
-            const stillHasStock = await hasStockForPendingSale(config.stock, pendingSale);
-            if (!stillHasStock) {
-              await sendText(replyJid, `Erro: Stock esgotou. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfig);
-              return;
+            const isRenovacao = /renova[cç][aã]o|renovar/i.test(pendingSale);
+            let credentials = null;
+
+            if (isRenovacao) {
+              const n = await renovarClientePorTelefone(config.stock, target);
+              if (n === 0) {
+                await sendText(replyJid, `Nenhum perfil activo encontrado para ${target}. Verifique o número.`, evolutionConfig);
+                return;
+              }
+              const perfisExistentes = await getClienteByTelefone(config.stock, target);
+              const primeiro = perfisExistentes[0];
+              credentials = primeiro ? { email: primeiro.email, senha: '', pin: '', perfis: [] } : null;
+            } else {
+              const stillHasStock = await hasStockForPendingSale(config.stock, pendingSale);
+              if (!stillHasStock) {
+                await sendText(replyJid, `Erro: Stock esgotou. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfig);
+                return;
+              }
+              const customerName = targetSession.name || 'Cliente';
+              const mesesPagamento = targetSession.mesesPagamento || 1;
+              credentials = await allocateProfile(config.stock, pendingSale, customerName, target, mesesPagamento);
             }
-            const customerName = targetSession.name || 'Cliente';
-            const mesesPagamento = targetSession.mesesPagamento || 1;
-            const credentials = await allocateProfile(config.stock, pendingSale, customerName, target, mesesPagamento);
+
             if (!credentials || (!credentials.email && !credentials.senha)) {
-              await sendText(replyJid, `Erro: Stock esgotou. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfig);
+              await sendText(replyJid, `Erro ao processar. Cliente: ${target}`, evolutionConfig);
               return;
             }
             const perfisLine = (credentials.perfis && credentials.perfis.length > 1)
               ? `\n*Perfis:* ${credentials.perfis.map((p, i) => `Perfil ${i + 1}${p.pin ? ` (PIN ${p.pin})` : ''}`).join(', ')}`
               : (credentials.pin ? `\n*PIN:* ${credentials.pin}` : '');
-            const accessMsg = `O seu acesso foi activado com sucesso. Aqui estão os seus dados:\n\n*Email:* ${credentials.email || 'Aguardando Dados'}\n*Senha:* ${credentials.senha || 'Aguardando Dados'}${perfisLine}\n\nFoi um privilégio servi-lo(a). Qualquer dúvida, estou à disposição.`;
+            const accessMsg = isRenovacao
+              ? 'A sua renovação foi confirmada. O seu acesso continua activo. Qualquer dúvida, estou à disposição.'
+              : `O seu acesso foi activado com sucesso. Aqui estão os seus dados:\n\n*Email:* ${credentials.email || 'Aguardando Dados'}\n*Senha:* ${credentials.senha || 'Aguardando Dados'}${perfisLine}\n\nFoi um privilégio servi-lo(a). Qualquer dúvida, estou à disposição.`;
             const targetReplyJid = targetSession.replyJid || `${target}@s.whatsapp.net`;
             await sendText(targetReplyJid, accessMsg, evolutionConfig);
+            const mesesPagamento = targetSession.mesesPagamento || 1;
             targetSession.paused = false;
             targetSession.pendingSale = null;
             targetSession.mesesPagamento = null;
+            targetSession.renovacaoAguardandoConfirmacao = false;
             stateMachine.setState(target, 'menu');
             const mesesInfo = mesesPagamento > 1 ? ` (${mesesPagamento} meses)` : '';
-            await sendText(replyJid, `Venda concluída${mesesInfo} e planilha atualizada. Dados enviados a ${target}.`, evolutionConfig);
-            console.log(`[SUPERVISOR] #sim: venda aprovada para ${target}, perfil alocado (${mesesPagamento} mês/meses)`);
-            // CRM: registar compra
+            await sendText(replyJid, isRenovacao ? `Renovação registada para ${target}.` : `Venda concluída${mesesInfo} e planilha atualizada. Dados enviados a ${target}.`, evolutionConfig);
+            console.log(`[SUPERVISOR] #sim: ${isRenovacao ? 'renovação' : 'venda'} para ${target}`);
             try {
               const sbClient = require('../integrations/supabase').getClient();
               const valorMatch = (pendingSale || '').match(/(\d[\d.]*)\s*Kz/i);
@@ -299,96 +362,146 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       }
 
       if (isImage) {
-        await sendText(replyJid, 'Recebi a sua imagem! 📸 Se for um erro no seu ecrã (como o bloqueio da Netflix), o nosso suporte técnico já vai intervir para ajudar. 🛠️\n\n⚠️ Nota: Caso isto seja um comprovativo de pagamento, por favor, envie o ficheiro em formato PDF, pois o nosso sistema não processa fotografias.', evolutionConfig);
-        session.paused = true;
-        stateMachine.setState(senderNum, 'pausado');
-        const imgSaleInfo = session.pendingSale || `${session.platform || 'Aguardando Dados'} ${session.plan || ''}`.trim();
-        for (const sup of supervisors) {
-          if (sup) await sendText(sup, `🔔 IMAGEM de ${senderNum} (${session.name || 'Cliente'})\nPlano: ${imgSaleInfo}`, evolutionConfig);
+        if (session.pendingSale) {
+          await sendText(replyJid, 'Recebi o seu comprovativo de pagamento! Vou encaminhar para o nosso supervisor validar. Assim que confirmarmos, activamos o seu perfil.', evolutionConfig);
+          session.paused = true;
+          stateMachine.setState(senderNum, 'pausado');
+          const customerName = session.name || 'Cliente';
+          const planInfo = session.pendingSale;
+          for (const sup of supervisors) {
+            if (sup) await sendText(sup, `COMPROVATIVO RECEBIDO (imagem)\n\nCliente: ${customerName}\nNúmero: ${senderNum}\nPlano: ${planInfo}\n\n💡 PARA ENTREGAR: #sim ${senderNum}\n🚫 PARA REJEITAR: #nao ${senderNum}`, evolutionConfig);
+          }
+        } else {
+          await sendText(replyJid, 'Recebi a sua imagem. Em que posso ajudá-lo(a)?', evolutionConfig);
+          for (const sup of supervisors) {
+            if (sup) await sendText(sup, `📎 Imagem recebida de ${senderNum} (${session.name || 'Cliente'}) — sem contexto de pagamento`, evolutionConfig);
+          }
         }
         return;
       }
 
       if (isDocument) {
-        // Validação restrita: aceitar APENAS ficheiros com extensão .pdf ou mimetype application/pdf
         const docMsg = messageData.documentMessage || {};
         const fileName = (docMsg.fileName || '').toLowerCase();
         const mimetype = (docMsg.mimetype || '').toLowerCase();
         const isPdf = fileName.endsWith('.pdf') || mimetype === 'application/pdf';
+        const isImageDoc = /\.(jpg|jpeg|png|gif|webp)$/.test(fileName) || (mimetype && mimetype.startsWith('image/'));
 
-        if (!isPdf) {
-          await sendText(replyJid, 'O sistema financeiro exige que o comprovativo seja enviado exclusivamente em formato PDF. Por favor, converta o seu ficheiro e reenvie o documento.', evolutionConfig);
-          console.log(`[WEBHOOK] Documento rejeitado (não-PDF): fileName="${docMsg.fileName}" mimetype="${docMsg.mimetype}" de ${senderNum}`);
+        if (!isPdf && !isImageDoc) {
+          await sendText(replyJid, 'Aceitamos comprovativos em imagem (foto do ecrã) ou PDF. Por favor, reenvie em um desses formatos.', evolutionConfig);
+          console.log(`[WEBHOOK] Documento rejeitado: fileName="${docMsg.fileName}" mimetype="${docMsg.mimetype}" de ${senderNum}`);
           return;
         }
 
-            await sendText(replyJid, 'Recebi o seu ficheiro PDF! 📄 Vou encaminhar para o departamento financeiro validar o seu comprovativo. Assim que for aprovado, o supervisor libertará o seu acesso. Aguarde um momento, por favor. ⏳', evolutionConfig);
+        await sendText(replyJid, 'Recebi o seu comprovativo! Vou encaminhar para o supervisor validar. Assim que for aprovado, activamos o seu acesso.', evolutionConfig);
         session.paused = true;
         stateMachine.setState(senderNum, 'pausado');
         const customerName = session.name || 'Cliente';
         const planInfo = session.pendingSale || 'Aguardando Extração';
         for (const sup of supervisors) {
-          if (sup) await sendText(sup, `COMPROVATIVO RECEBIDO\n\nCliente: ${customerName}\nPlano: ${planInfo}\n\n💡 PARA ENTREGAR: Responda com: #sim ${senderNum}\n🚫 PARA REJEITAR: Responda com: #nao ${senderNum}`, evolutionConfig);
+          if (sup) await sendText(sup, `COMPROVATIVO RECEBIDO\n\nCliente: ${customerName}\nPlano: ${planInfo}\n\n💡 PARA ENTREGAR: #sim ${senderNum}\n🚫 PARA REJEITAR: #nao ${senderNum}`, evolutionConfig);
         }
         return;
       }
 
       if (!textMessage.trim()) return;
 
-      // ── Sistema 2: Detecção de cliente existente (planilha Telefone) — antes do LLM ──
+      // ── Rate limit: máx 2 respostas por 30s por número ──
+      if (!checkRateLimit(senderNum)) {
+        console.log(`[RATE-LIMIT] ${senderNum}: ignorado (excedeu ${RATE_LIMIT_MAX} em ${RATE_LIMIT_WINDOW_MS / 1000}s)`);
+        return;
+      }
+
+      // ── Emoji sozinho: resposta curta sem LLM ──
+      const trimmedMsg = textMessage.trim();
+      if (/^[\s\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]+$/u.test(trimmedMsg) || trimmedMsg.length <= 2 && /[\u{1F300}-\u{1F9FF}]/u.test(trimmedMsg)) {
+        await sendText(replyJid, 'Olá! Em que posso ajudá-lo(a)?', evolutionConfig);
+        return;
+      }
+
+      // ── Renovação: "Sim" após pergunta "Quer renovar?" (só quando já estamos à espera) ──
+      if (session.renovacaoAguardandoConfirmacao && /^(sim|s|yes|claro|quero|pode ser|bora|vamos|ok|okay|certo)$/i.test(trimmedMsg)) {
+        try {
+          const perfisCliente = await getClienteByTelefone(config.stock, senderNum);
+          const expirado = perfisCliente.find((p) => p.dataExpiracao && p.dataExpiracao < new Date());
+          if (expirado) {
+            const p = config.payment || {};
+            const valorStr = (expirado.valor || '').toString().trim() || '5.000';
+            const planLabel = expirado.plano || 'Individual';
+            const paymentMsg = `Para renovar o seu *${expirado.platform}* *${planLabel}* — *${valorStr}* Kz.\n\n*Dados de pagamento:*\nMulticaixa Express: ${p.multicaixa || 'N/A'}\nIBAN: ${p.iban || 'N/A'}\nTitular: ${p.titular || 'N/A'}\n\nApós o pagamento, envie o comprovativo (foto do ecrã ou PDF).`;
+            await sendText(replyJid, paymentMsg, evolutionConfig);
+            session.pendingSale = `${expirado.platform} ${planLabel} - Renovação - ${valorStr} Kz`;
+            session.renovacaoAguardandoConfirmacao = false;
+            session.platform = expirado.platform;
+            session.plan = planLabel;
+            for (const sup of supervisors) {
+              if (sup) await sendText(sup, `🔄 RENOVAÇÃO: ${session.name || 'Cliente'} (${senderNum}) quer renovar ${expirado.platform} ${planLabel} — ${valorStr} Kz`, evolutionConfig);
+            }
+            console.log(`[RENOVACAO] ${senderNum}: confirmou renovação, dados enviados`);
+            return;
+          }
+        } catch (e) {
+          console.error('[WEBHOOK] renovação:', e.message);
+        }
+        session.renovacaoAguardandoConfirmacao = false;
+      }
+
+      // ── Cliente existente (planilha): APENAS na primeira mensagem da sessão; não interceptar se já tem sessão activa ou keywords de intenção ──
+      const hasIntentKeyword = (txt) => {
+        const t = normalizeText(txt || '');
+        return /\b(cancelar|desistir|parar|encerrar|n[aã]o\s*quero\s*mais)\b/.test(t) ||
+          /\b(renovar|renov|continuar|manter|prolongar|quero\s*renovar)\b/.test(t) ||
+          /\b(reclam|erro|problema|n[aã]o\s*funciona|senha\s*errada|bloquead)\b/.test(t) ||
+          /\b(ajuda|humano|falar\s*com|respons[aá]vel|supervisor)\b/.test(t);
+      };
+
       try {
         const perfisCliente = await getClienteByTelefone(config.stock, senderNum);
-        if (perfisCliente.length > 0) {
-          const nomeCliente = session.name || perfisCliente[0].cliente || 'Cliente';
-          const aVerificar = perfisCliente.find((p) => p.status === 'a_verificar');
-          if (aVerificar) {
-            await sendText(
-              replyJid,
-              `Olá ${nomeCliente}! Vi que tem uma renovação pendente. Quer continuar com a conta *${aVerificar.platform}*?`,
-              evolutionConfig
-            );
-            return;
+        const isFirstMessage = !session.existingCustomerGreeted && ( !session.history || session.history.length === 0 );
+        const inRenovationState = session.renovacaoAguardandoConfirmacao;
+
+        if (perfisCliente.length > 0 && !inRenovationState) {
+          if (hasIntentKeyword(textMessage)) {
+            // Não interceptar: deixar passar para handlers de cancelamento, renovação, reclamação ou humano
+          } else if (isFirstMessage) {
+            const nomeCliente = session.name || perfisCliente[0].cliente || 'Cliente';
+            const aVerificar = perfisCliente.find((p) => p.status === 'a_verificar');
+            if (aVerificar) {
+              await sendText(replyJid, `Olá ${nomeCliente}! Vi que tem uma renovação pendente. Quer continuar com a conta *${aVerificar.platform}*?`, evolutionConfig);
+              session.existingCustomerGreeted = true;
+              return;
+            }
+            const activos = perfisCliente.filter((p) => p.status === 'indisponivel' || p.status === 'vendido');
+            if (activos.length > 0) {
+              const hoje = new Date();
+              hoje.setHours(0, 0, 0, 0);
+              const em7 = new Date(hoje);
+              em7.setDate(em7.getDate() + 7);
+              const primeiro = activos[0];
+              const dataExp = primeiro.dataExpiracao;
+              const dataStr = primeiro.dataExpiracaoRaw || (dataExp ? dataExp.toLocaleDateString('pt-PT') : 'N/D');
+              if (dataExp && dataExp >= em7) {
+                await sendText(replyJid, `Olá ${nomeCliente}! Vi que já tem uma conta *${primeiro.platform}* activa até *${dataStr}*. Em que posso ajudá-lo(a)?`, evolutionConfig);
+                session.existingCustomerGreeted = true;
+                return;
+              }
+              if (dataExp && dataExp >= hoje && dataExp < em7) {
+                await sendText(replyJid, `Olá ${nomeCliente}! A sua conta *${primeiro.platform}* expira em breve (*${dataStr}*). Quer renovar?`, evolutionConfig);
+                session.existingCustomerGreeted = true;
+                return;
+              }
+              if (dataExp && dataExp < hoje) {
+                await sendText(replyJid, `Olá ${nomeCliente}! A sua conta *${primeiro.platform}* expirou no dia *${dataStr}*. Quer renovar?`, evolutionConfig);
+                session.existingCustomerGreeted = true;
+                session.renovacaoAguardandoConfirmacao = true;
+                return;
+              }
+              await sendText(replyJid, `Olá ${nomeCliente}! Vi que já tem conta(s) connosco. Em que posso ajudá-lo(a)?`, evolutionConfig);
+              session.existingCustomerGreeted = true;
+              return;
+            }
           }
-          const activos = perfisCliente.filter((p) => p.status === 'indisponivel' || p.status === 'vendido');
-          if (activos.length > 0) {
-            const hoje = new Date();
-            hoje.setHours(0, 0, 0, 0);
-            const em7 = new Date(hoje);
-            em7.setDate(em7.getDate() + 7);
-            const primeiro = activos[0];
-            const dataExp = primeiro.dataExpiracao;
-            const dataStr = primeiro.dataExpiracaoRaw || (dataExp ? dataExp.toLocaleDateString('pt-PT') : 'N/D');
-            if (dataExp && dataExp >= em7) {
-              await sendText(
-                replyJid,
-                `Olá ${nomeCliente}! Vi que já tem uma conta *${primeiro.platform}* activa até *${dataStr}*. Em que posso ajudá-lo(a)?`,
-                evolutionConfig
-              );
-              return;
-            }
-            if (dataExp && dataExp >= hoje && dataExp < em7) {
-              await sendText(
-                replyJid,
-                `Olá ${nomeCliente}! A sua conta *${primeiro.platform}* expira em breve (*${dataStr}*). Quer renovar?`,
-                evolutionConfig
-              );
-              return;
-            }
-            if (dataExp && dataExp < hoje) {
-              await sendText(
-                replyJid,
-                `Olá ${nomeCliente}! A sua conta *${primeiro.platform}* expirou no dia *${dataStr}*. Quer renovar?`,
-                evolutionConfig
-              );
-              return;
-            }
-            await sendText(
-              replyJid,
-              `Olá ${nomeCliente}! Vi que já tem conta(s) connosco. Em que posso ajudá-lo(a)?`,
-              evolutionConfig
-            );
-            return;
-          }
+          // Já cumprimentado ou não primeira mensagem: não interceptar, seguir para LLM
         }
       } catch (err) {
         console.error('[WEBHOOK] getClienteByTelefone:', err.message);
@@ -495,6 +608,20 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       // ═══════════════════════════════════════════════════════════════
       // Pipeline LLM-First: A → B → C → D
       // ═══════════════════════════════════════════════════════════════
+
+      // Contexto cliente existente (para LLM): quando já foi cumprimentado e vai para o LLM
+      try {
+        const perfisParaContexto = await getClienteByTelefone(config.stock, senderNum);
+        if (perfisParaContexto.length > 0 && session.existingCustomerGreeted) {
+          const p = perfisParaContexto[0];
+          const dataStr = p.dataExpiracaoRaw || (p.dataExpiracao ? p.dataExpiracao.toLocaleDateString('pt-PT') : 'N/D');
+          session.existingCustomerContext = `Este cliente já tem ${p.platform} ${p.plano || 'plano'} activo até ${dataStr}. A última mensagem dele foi: "${textMessage.substring(0, 200)}". Responde de acordo com a intenção dele (cancelar, renovar, dúvida, etc.), sem repetir a mensagem de reconhecimento.`;
+        } else {
+          session.existingCustomerContext = '';
+        }
+      } catch (_) {
+        session.existingCustomerContext = '';
+      }
 
       // Passo A: Inventário atualizado + contagens de stock para verificação pré-pagamento (CPA)
       const inventoryString = await getInventoryFn();

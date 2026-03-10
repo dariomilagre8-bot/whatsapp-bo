@@ -2,6 +2,21 @@
 
 ## Bugs Corrigidos
 
+### [2026-03-10] — QA 10 bugs: telefone, loop cliente, renovação, comprovativo, waitlist, QNTD, meses, pausar, CRM, rate limit
+- **Bug 1 — Número de telefone corrompido:** JID (ex.: @lid) gerava número errado na planilha e notificações. **Solução:** Função `extractPhoneNumber(jid)` em `src/utils/phone.js` (extrai antes do @, valida 12 dígitos Angola 244, regex 244\d{9}); uso em webhook (senderNum), allocateProfile (Telefone), notificações, CRM, waitlist, #pausar/#retomar target. Log do rawJid para debug.
+- **Bug 9 — Loop no detector de cliente existente:** Cliente existente recebia sempre a mesma mensagem ("Vi que já tem Netflix activa...") em todas as mensagens. **Solução:** Interceptor só na primeira mensagem da sessão (`!session.existingCustomerGreeted` e sem histórico); keywords (cancelar, renovar, reclamação, ajuda) não disparam mensagem genérica — passam aos handlers ou LLM; contexto do cliente existente injetado no prompt LLM (`existingCustomerContext`).
+- **Bug 5 — Renovação não completa:** "Sim" após "Quer renovar?" não avançava para pagamento. **Solução:** Estado `renovacaoAguardandoConfirmacao`; ao responder "Sim" envio de dados de pagamento, `pendingSale` tipo renovação, notificação supervisor "🔄 RENOVAÇÃO"; #sim para renovação chama `renovarClientePorTelefone` (actualiza Data_Venda/Data_Expiracao) em vez de alocar nova linha.
+- **Bug 10 — Comprovativo confundido com reclamação:** Imagem tratada como screenshot de erro e exigência de PDF. **Solução:** Imagem com `pendingSale` = comprovativo (mensagem de validação, notificação supervisor); imagem sem pendingSale = resposta neutra + "Imagem recebida sem contexto de pagamento"; documentos aceitam imagem (jpg/png) e PDF; removida exigência "apenas PDF".
+- **Bug 2 — Waitlist não criava registo:** **Solução:** Logs "[Waitlist] Tentando criar registo...", "Criado com sucesso: id=X" ou "ERRO"; uso de `extractPhoneNumber` no número; reforço no system prompt da tag #WAITLIST; try/catch em #waitlist com mensagem "Execute o schema SQL".
+- **Bug 3 — Coluna QNTD não preenchida:** **Solução:** Em `allocateProfile`, escrita na coluna K (COLS.qntd=10) com valor `required` (1/2/4/5 conforme plano).
+- **Bug 4 — Pagamento antecipado duplicava rows:** **Solução:** Renovação via #sim usa `renovarClientePorTelefone` (1 actualização por perfil existente); alocação nova mantém `required` por tipo de plano (meses só alteram Data_Expiracao).
+- **Bug 6 — #pausar não funcionava:** **Solução:** Comando #pausar implementado (pause + setState pausado); target normalizado com `extractPhoneNumber(parts[1])`.
+- **Bug 7 — #leads e #waitlist falhavam:** **Solução:** try/catch nos comandos; em erro responder "Execute o schema SQL" (docs/crm-schema.sql, docs/stock-waitlist-schema.sql).
+- **Bug 8 — Spam sem rate limit:** **Solução:** Rate limit 2 respostas por 30 segundos por número; em excesso ignorar silenciosamente; mensagem só emoji → resposta curta "Olá! Em que posso ajudá-lo(a)?" sem LLM.
+- **Ficheiros:** `src/utils/phone.js` (novo), `src/routes/webhook.js`, `src/integrations/google-sheets.js`, `src/engine/llm.js`, `src/stock/waitlist.js`, `src/integrations/supabase.js`, `src/crm/leads.js`
+
+---
+
 ### [2026-02-25] — Anti-alucinação: respostas fixas + anti-loop + prompt blindado
 - **Sintoma:** A IA inventava preços, confirmava pagamentos ou revelava termos internos; loops de qualificação/boas-vindas.
 - **Causa:** Prompt e pipeline sem barreiras contra alucinação; respostas dinâmicas sem validação; falta de respostas fixas prioritárias.

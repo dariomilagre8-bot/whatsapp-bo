@@ -1,6 +1,7 @@
 // src/integrations/google-sheets.js
 
 const { google } = require('googleapis');
+const { extractPhoneNumber } = require('../utils/phone');
 let sheets = null;
 let spreadsheetId = null;
 
@@ -296,6 +297,7 @@ const COLS = {
   telefone: 7,       // H
   dataVenda: 8,      // I - Data_Venda
   dataExpiracao: 9,  // J - Data_Expiracao
+  qntd: 10,          // K - QNTD (1 partilha/individual, 5 conta completa)
   plan: 12,          // M
   valor: 13,         // N (ou 14 conforme estrutura)
 };
@@ -313,6 +315,7 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
   if (!platform) return null;
 
   const required = getProfilesNeeded(pendingSaleString);
+  const cleanPhone = extractPhoneNumber(customerPhone || '');
   const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
 
   try {
@@ -360,17 +363,19 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
         return null;
       }
 
+      const qntd = required;
       await sheets.spreadsheets.values.update({
         spreadsheetId,
-        range: `${stockConfig.sheetName}!F${sheetRow}:J${sheetRow}`,
+        range: `${stockConfig.sheetName}!F${sheetRow}:K${sheetRow}`,
         valueInputOption: 'USER_ENTERED',
         requestBody: {
           values: [[
             'indisponivel',
             customerName || 'Cliente',
-            customerPhone || '',
+            cleanPhone || '',
             dateStr,
             dataExpiracaoStr,
+            qntd,
           ]],
         },
       });

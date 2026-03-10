@@ -1,5 +1,6 @@
 // src/stock/waitlist.js — Operações Supabase para lista de espera de reposição de stock
 
+const { extractPhoneNumber } = require('../utils/phone');
 const MAX_DAYS_WAITLIST = 30; // Não notificar leads com mais de 30 dias
 
 /**
@@ -8,8 +9,10 @@ const MAX_DAYS_WAITLIST = 30; // Não notificar leads com mais de 30 dias
  */
 async function addToWaitlist(supabase, numero, nome, produto) {
   if (!supabase || !numero || !produto) return null;
+  const normalized = extractPhoneNumber(numero) || String(numero).replace('@s.whatsapp.net', '').trim();
+  if (!normalized) return null;
   try {
-    const normalized = numero.replace('@s.whatsapp.net', '').trim();
+    console.log(`[WAITLIST] Tentando criar registo: numero=${normalized}, produto=${produto}`);
 
     // Verificar se já existe entrada activa (não notificada) para este cliente/produto
     const { data: existing } = await supabase
@@ -39,10 +42,10 @@ async function addToWaitlist(supabase, numero, nome, produto) {
       .single();
 
     if (error) throw error;
-    console.log(`[WAITLIST] ✅ ${normalized} adicionado à fila para "${produto}"`);
+    console.log(`[WAITLIST] Criado com sucesso: id=${data?.id || 'N/A'} | ${normalized} → "${produto}"`);
     return data;
   } catch (err) {
-    console.error('[WAITLIST] addToWaitlist error:', err.message);
+    console.error('[WAITLIST] ERRO:', err.message);
     return null;
   }
 }
