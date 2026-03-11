@@ -1,0 +1,23 @@
+# Palanca AI — Deploy simplificado (Easypanel / Docker Compose)
+# Uso: docker compose up -d
+
+services:
+  palanca-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: palanca-ai:latest
+    container_name: palanca-ai
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - NODE_ENV=production
+    volumes:
+      # Persistir sessão WhatsApp entre restarts
+      - palanca-wa-session:/app/.wwebjs_auth
+    # Easypanel expõe portas via UI; 3000 disponível para health check se necessário
+    # ports:
+    #   - "3000:3000"
+
+volumes:
+  palanca-wa-session:
