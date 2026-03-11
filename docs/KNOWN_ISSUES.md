@@ -2,6 +2,17 @@
 
 ## Bugs Corrigidos
 
+### [2026-03-11] — 6 bugs persistentes: allocateProfile rows, Premium, #sim, #leads, pós-venda, testes [CPA]
+- **Problema 1 — allocateProfile duplicava rows com Plano/Valor vazios:** Partilha preenchia 2 rows mas colunas M (Plano) e N (Valor) não eram escritas. **Solução:** Função `getPlanLabelAndValue()`; escrita em F:N (Status até Valor); Partilha = 2 rows cada com Plano=Partilha, Valor=4500; Familia_Completa = 1 row com QNTD=5, Plano=Familia_Completa, Valor=13500 (outras 4 rows só status=indisponivel).
+- **Problema 2 — Plano "Premium" inexistente no prompt:** Bot oferecia plano Premium. **Solução:** Prompt StreamZone com lista explícita: Netflix Individual (5000), Partilha (4500), Família Completa (13500), Prime Individual (3000); regra anti-alucinação e resposta fixa se cliente pedir "Premium".
+- **Problema 3 — #sim não respondia (supervisor pendurado):** **Solução:** Logs explícitos [#sim] no handler; fallback para encontrar sessão por número normalizado; mensagens claras ao supervisor (sem pendingSale, erro alocação); confirmação "✅ Venda aprovada para [CLIENTE]" e envio de credenciais ao cliente.
+- **Problema 4 — #leads "Erro ao consultar CRM":** **Solução:** Mensagem amigável "⚠️ CRM não configurado. Execute docs/crm-schema.sql no Supabase SQL Editor (Dashboard → SQL Editor...)".
+- **Problema 5 — Bot continuava conversa após venda concluída:** **Solução:** Após #sim + credenciais enviadas: limpar pendingSale, definir existingCustomerGreeted=true; próxima mensagem do cliente tratada como cliente existente ("Já tem [PLATAFORMA] activo até...").
+- **Problema 6 — Lista de testes incompleta:** **Solução:** Cenários manuais M–V adicionados ao tests/qa-checklist.js (Partilha 2 rows, Família QNTD=5, #sim/#nao, pós-venda, Premium, renovações, 3 meses, dois clientes).
+- **Ficheiros:** `src/integrations/google-sheets.js`, `prompts/streamzone.txt`, `src/routes/webhook.js`, `tests/qa-checklist.js`, `docs/KNOWN_ISSUES.md`
+
+---
+
 ### [2026-03-10] — QA 10 bugs: telefone, loop cliente, renovação, comprovativo, waitlist, QNTD, meses, pausar, CRM, rate limit
 - **Bug 1 — Número de telefone corrompido:** JID (ex.: @lid) gerava número errado na planilha e notificações. **Solução:** Função `extractPhoneNumber(jid)` em `src/utils/phone.js` (extrai antes do @, valida 12 dígitos Angola 244, regex 244\d{9}); uso em webhook (senderNum), allocateProfile (Telefone), notificações, CRM, waitlist, #pausar/#retomar target. Log do rawJid para debug.
 - **Bug 9 — Loop no detector de cliente existente:** Cliente existente recebia sempre a mesma mensagem ("Vi que já tem Netflix activa...") em todas as mensagens. **Solução:** Interceptor só na primeira mensagem da sessão (`!session.existingCustomerGreeted` e sem histórico); keywords (cancelar, renovar, reclamação, ajuda) não disparam mensagem genérica — passam aos handlers ou LLM; contexto do cliente existente injetado no prompt LLM (`existingCustomerContext`).

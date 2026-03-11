@@ -169,6 +169,31 @@ function getProfilesNeeded(pendingSaleString) {
 }
 
 /**
+ * Devolve etiqueta do plano e valor por row para escrita na planilha (Plano M, Valor N).
+ * Partilha: 2 rows, cada uma com Plano=Partilha, Valor=4500.
+ * Familia_Completa: 1 row com dados completos (QNTD=5), as outras 4 só status.
+ */
+function getPlanLabelAndValue(pendingSaleString, platform) {
+  const text = normalizeText(pendingSaleString || '');
+  const isNetflix = platform === 'Netflix';
+  if (/familia\s*completa|completa|5\s*perfil|5\s*pessoa/.test(text)) {
+    return { planLabel: 'Familia_Completa', valuePerRow: 13500, qntdPerRow: 5, onlyFirstRowHasClientData: true };
+  }
+  if (/familia|4\s*perfil|4\s*pessoa/.test(text)) {
+    return { planLabel: 'Familia', valuePerRow: isNetflix ? 9000 : 8000, qntdPerRow: 4, onlyFirstRowHasClientData: false };
+  }
+  if (/partilha|partilhado|2\s*perfil|2\s*pessoa|duas?\s*pessoa/.test(text)) {
+    return { planLabel: 'Partilha', valuePerRow: isNetflix ? 4500 : 5500, qntdPerRow: 1, onlyFirstRowHasClientData: false };
+  }
+  return {
+    planLabel: 'Individual',
+    valuePerRow: isNetflix ? 5000 : 3000,
+    qntdPerRow: 1,
+    onlyFirstRowHasClientData: false,
+  };
+}
+
+/**
  * Agrupamento dinâmico: conta APENAS linhas disponíveis cujo plano seja Individual (normalizeText).
  * Calcula Partilha/Família/Família Completa por matemática: floor(totalIndividual/2), /4, /5.
  * Retorno: { netflix_individual, netflix_partilha, netflix_familia, netflix_familia_completa, prime_* } e erro.
@@ -345,8 +370,11 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
     expira.setDate(expira.getDate() + mesesValidos * 30);
     const dataExpiracaoStr = expira.toISOString().slice(0, 10);
     const toUpdate = candidateRows.slice(0, required);
+    const { planLabel, valuePerRow, qntdPerRow, onlyFirstRowHasClientData } = getPlanLabelAndValue(pendingSaleString, platform);
+    const valorStr = String(valuePerRow);
 
-    for (const { rowIndex, row } of toUpdate) {
+    for (let idx = 0; idx < toUpdate.length; idx++) {
+      const { rowIndex, row } = toUpdate[idx];
       const sheetRow = rowIndex + 1;
       try {
         const recheck = await sheets.spreadsheets.values.get({
@@ -363,22 +391,37 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
         return null;
       }
 
-      const qntd = required;
-      await sheets.spreadsheets.values.update({
-        spreadsheetId,
-        range: `${stockConfig.sheetName}!F${sheetRow}:K${sheetRow}`,
-        valueInputOption: 'USER_ENTERED',
-        requestBody: {
-          values: [[
-            'indisponivel',
-            customerName || 'Cliente',
-            cleanPhone || '',
-            dateStr,
-            dataExpiracaoStr,
-            qntd,
-          ]],
-        },
-      });
+      const isFirstRow = idx === 0;
+      const fillClientData = isFirstRow || !onlyFirstRowHasClientData;
+      const qntd = onlyFirstRowHasClientData ? (isFirstRow ? qntdPerRow : 0) : qntdPerRow;
+
+      if (fillClientData) {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId,
+          range: `${stockConfig.sheetName}!F${sheetRow}:N${sheetRow}`,
+          valueInputOption: 'USER_ENTERED',
+          requestBody: {
+            values: [[
+              'indisponivel',
+              customerName || 'Cliente',
+              cleanPhone || '',
+              dateStr,
+              dataExpiracaoStr,
+              qntd,
+              '', // L
+              planLabel,
+              valorStr,
+            ]],
+          },
+        });
+      } else {
+        await sheets.spreadsheets.values.update({
+          spreadsheetId,
+          range: `${stockConfig.sheetName}!F${sheetRow}:F${sheetRow}`,
+          valueInputOption: 'USER_ENTERED',
+          requestBody: { values: [['indisponivel']] },
+        });
+      }
     }
 
     const first = toUpdate[0].row;

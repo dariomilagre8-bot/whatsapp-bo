@@ -288,6 +288,73 @@ console.log(`
 ║  L3. Planilha: Status=indisponivel, Telefone correcto,        ║
 ║      QNTD=1, Plano e Valor preenchidos                        ║
 ║                                                                ║
+║  CENÁRIO M: VENDA PARTILHA (2 perfis)                          ║
+║  ─────────────────────────────────────                         ║
+║  M1. Venda Netflix Partilha → comprovativo → #sim             ║
+║  M2. Planilha: 2 rows com Plano=Partilha e Valor=4500         ║
+║      em CADA row (nunca Plano/Valor vazios)                   ║
+║                                                                ║
+║  CENÁRIO N: VENDA FAMÍLIA COMPLETA                            ║
+║  ──────────────────────────────────────                        ║
+║  N1. Venda Netflix Família Completa → #sim                    ║
+║  N2. Planilha: 1 row com QNTD=5, Plano=Familia_Completa,      ║
+║      Valor=13500                                               ║
+║                                                                ║
+║  CENÁRIO O: #sim RESPONDE AO SUPERVISOR E AO CLIENTE           ║
+║  ────────────────────────────────────────────────              ║
+║  O1. Supervisor envia #sim [número] → recebe confirmação       ║
+║      "✅ Venda aprovada para [CLIENTE]"                        ║
+║  O2. Cliente recebe credenciais (email/senha) na mesma acção   ║
+║  O3. Se não houver pendingSale: supervisor recebe              ║
+║      "⚠️ Não há venda pendente para este número"              ║
+║                                                                ║
+║  CENÁRIO P: #nao NOTIFICA O CLIENTE                            ║
+║  ────────────────────────────────────                          ║
+║  P1. Supervisor envia #nao [número] → cliente recebe          ║
+║      mensagem de rejeição do comprovativo                     ║
+║  P2. Supervisor recebe "Rejeição enviada ao cliente"          ║
+║                                                                ║
+║  CENÁRIO Q: PÓS-VENDA — SESSÃO LIMPA E CLIENTE EXISTENTE       ║
+║  ────────────────────────────────────────────────────          ║
+║  Q1. Após #sim e credenciais enviadas, cliente manda nova     ║
+║      mensagem (ex: "olá")                                      ║
+║  Q2. Bot reconhece como cliente existente: "Olá [NOME]!       ║
+║      Já tem [PLATAFORMA] activo até [DATA]. Em que posso       ║
+║      ajudar?" (não repete fluxo de venda)                      ║
+║                                                                ║
+║  CENÁRIO R: PLANO "PREMIUM" → BOT RECUSA                       ║
+║  ────────────────────────────────────────                      ║
+║  R1. Cliente pede "quero plano Premium"                        ║
+║  R2. Bot responde que não tem Premium e lista planos reais:    ║
+║      Individual, Partilha, Família Completa (Netflix),         ║
+║      Individual (Prime Video) com preços correctos             ║
+║                                                                ║
+║  CENÁRIO S: RENOVAÇÃO CONTA EXPIRADA (fluxo completo)         ║
+║  ───────────────────────────────────────────────                ║
+║  S1. Cliente com conta já expirada manda "olá"                 ║
+║  S2. Bot oferece renovação → dados pagamento → comprovativo   ║
+║  S3. Supervisor recebe "🔄 RENOVAÇÃO" → #sim [número]         ║
+║  S4. Cliente recebe confirmação de renovação                  ║
+║                                                                ║
+║  CENÁRIO T: RENOVAÇÃO CONTA ACTIVA (antes de expirar)          ║
+║  ─────────────────────────────────────────────────             ║
+║  T1. Cliente com conta activa manda "quero renovar"             ║
+║  T2. Fluxo de renovação antecipada até #sim do supervisor      ║
+║  T3. Data_Expiracao actualizada na planilha                    ║
+║                                                                ║
+║  CENÁRIO U: PAGAMENTO ANTECIPADO 3 MESES                      ║
+║  ────────────────────────────────────────                      ║
+║  U1. Cliente paga 3 meses → comprovativo → #sim                ║
+║  U2. Planilha: 1 row (ou rows do plano), Data_Expiracao        ║
+║      = Data_Venda + 90 dias                                    ║
+║                                                                ║
+║  CENÁRIO V: DOIS CLIENTES SIMULTÂNEOS                          ║
+║  ────────────────────────────────────────                      ║
+║  V1. Cliente A e Cliente B em conversas paralelas              ║
+║  V2. Ambos fazem compra → #sim [A] e #sim [B]                  ║
+║  V3. Planilha e mensagens: dados de A só para A, de B só      ║
+║      para B (nunca misturar credenciais ou linhas)             ║
+║                                                                ║
 ╚════════════════════════════════════════════════════════════════╝
 `);
 

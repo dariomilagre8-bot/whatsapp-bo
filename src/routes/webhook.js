@@ -150,7 +150,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             await sendText(replyJid, resumo, evolutionConfig);
           } catch (e) {
             console.error('[CRM] #leads error:', e.message);
-            await sendText(replyJid, '❌ Erro ao consultar leads. Execute o schema SQL do CRM no Supabase (docs/crm-schema.sql).', evolutionConfig);
+            await sendText(replyJid, '⚠️ CRM não configurado. Execute docs/crm-schema.sql no Supabase SQL Editor (Dashboard → SQL Editor → colar o conteúdo do ficheiro).', evolutionConfig);
           }
           return;
         }
@@ -268,17 +268,30 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             const pausedCount = [...stateMachine.sessions.values()].filter(s => s.paused).length;
             await sendText(replyJid, `📊 Sessões activas: ${stateMachine.sessions.size} | Pausadas: ${pausedCount}`, evolutionConfig);
           } else if (cmd === 'approve_sale' && target) {
-            const targetSession = stateMachine.getSession(target);
+            console.log(`[#sim] Recebido para número: ${target}`);
+            let targetSession = stateMachine.getSession(target);
+            let sessionKey = target;
+            if (!targetSession.pendingSale) {
+              for (const [key, s] of stateMachine.sessions) {
+                if (extractPhoneNumber(key) === target && s.pendingSale) {
+                  targetSession = s;
+                  sessionKey = key;
+                  break;
+                }
+              }
+            }
             const pendingSale = targetSession.pendingSale;
+            console.log(`[#sim] Sessão encontrada: ${pendingSale ? 'sim' : 'não'}`);
+            if (pendingSale) console.log(`[#sim] PendingSale: tipo=${pendingSale.split(/\s/)[0]}, plano=${pendingSale}`);
             if (!pendingSale) {
-              const metaTag = botSettings.metadata_tag || '#RESUMO_VENDA';
-              await sendText(replyJid, `O cliente ${target} não tem venda pendente (${metaTag}). Verifique a conversa.`, evolutionConfig);
+              await sendText(replyJid, `⚠️ Não há venda pendente para este número (${target}). Verifique o número ou se o cliente já enviou o comprovativo.`, evolutionConfig);
               return;
             }
             const isRenovacao = /renova[cç][aã]o|renovar/i.test(pendingSale);
             let credentials = null;
 
             if (isRenovacao) {
+              console.log('[#sim] Alocando renovação...');
               const n = await renovarClientePorTelefone(config.stock, target);
               if (n === 0) {
                 await sendText(replyJid, `Nenhum perfil activo encontrado para ${target}. Verifique o número.`, evolutionConfig);
@@ -290,16 +303,18 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             } else {
               const stillHasStock = await hasStockForPendingSale(config.stock, pendingSale);
               if (!stillHasStock) {
-                await sendText(replyJid, `Erro: Stock esgotou. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfig);
+                await sendText(replyJid, `❌ Erro: Stock esgotou. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfig);
                 return;
               }
               const customerName = targetSession.name || 'Cliente';
               const mesesPagamento = targetSession.mesesPagamento || 1;
+              console.log('[#sim] Alocando perfil...');
               credentials = await allocateProfile(config.stock, pendingSale, customerName, target, mesesPagamento);
+              console.log(`[#sim] Perfil alocado: ${credentials ? 'sim' : 'não'}${!credentials ? ' (erro na planilha)' : ''}`);
             }
 
             if (!credentials || (!credentials.email && !credentials.senha)) {
-              await sendText(replyJid, `Erro ao processar. Cliente: ${target}`, evolutionConfig);
+              await sendText(replyJid, `❌ Erro ao alocar perfil: ${!credentials ? 'planilha ou stock indisponível.' : 'dados incompletos.'} Cliente: ${target}`, evolutionConfig);
               return;
             }
             const perfisLine = (credentials.perfis && credentials.perfis.length > 1)
@@ -310,14 +325,17 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
               : `O seu acesso foi activado com sucesso. Aqui estão os seus dados:\n\n*Email:* ${credentials.email || 'Aguardando Dados'}\n*Senha:* ${credentials.senha || 'Aguardando Dados'}${perfisLine}\n\nFoi um privilégio servi-lo(a). Qualquer dúvida, estou à disposição.`;
             const targetReplyJid = targetSession.replyJid || `${target}@s.whatsapp.net`;
             await sendText(targetReplyJid, accessMsg, evolutionConfig);
+            console.log('[#sim] Mensagem enviada ao cliente: sim');
             const mesesPagamento = targetSession.mesesPagamento || 1;
             targetSession.paused = false;
             targetSession.pendingSale = null;
             targetSession.mesesPagamento = null;
             targetSession.renovacaoAguardandoConfirmacao = false;
-            stateMachine.setState(target, 'menu');
+            targetSession.existingCustomerGreeted = true;
+            stateMachine.setState(sessionKey, 'menu');
             const mesesInfo = mesesPagamento > 1 ? ` (${mesesPagamento} meses)` : '';
-            await sendText(replyJid, isRenovacao ? `Renovação registada para ${target}.` : `Venda concluída${mesesInfo} e planilha atualizada. Dados enviados a ${target}.`, evolutionConfig);
+            const clienteNome = targetSession.name || target;
+            await sendText(replyJid, `✅ Venda aprovada para ${clienteNome} (${target}). Dados enviados ao cliente.`, evolutionConfig);
             console.log(`[SUPERVISOR] #sim: ${isRenovacao ? 'renovação' : 'venda'} para ${target}`);
             try {
               const sbClient = require('../integrations/supabase').getClient();
