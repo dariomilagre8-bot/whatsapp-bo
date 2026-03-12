@@ -1,109 +1,100 @@
 /**
  * Palanca AI — Entrypoint
- * Inicia o bot Telegram (comando /testar_bot) e o orquestrador de testes.
- * Os serviços concretos (Claude, WhatsApp, Telegram, Supabase, Notion) devem ser
- * injetados no TestOrchestrator; este ficheiro usa stubs até à implementação real.
+ * Inicia Telegram (/testar_bot), WhatsApp (QR no terminal), Claude, Supabase, Notion e Orquestrador.
+ * Servidor HTTP de health check para Easypanel/Docker (GET /health).
  */
 
 import 'dotenv/config';
+import http from 'node:http';
 import { TestOrchestrator } from './orchestrator/test.orchestrator.js';
 import type { OrchestratorDependencies } from './orchestrator/test.orchestrator.js';
 import { config } from './config/index.js';
-
-// Stubs: substituir por implementações reais na fase de serviços
-const stubClaude: OrchestratorDependencies['claude'] = {
-  async getNextMessage() {
-    return 'Olá, sou o testador Palanca. Início do teste.';
-  },
-  async evaluateSession() {
-    return {
-      status: 'REPROVADO',
-      metricas: {},
-      falhas: ['Serviço Claude ainda não implementado'],
-      relatorio_markdown: '# Stub\nNenhuma avaliação real.',
-    };
-  },
-};
-
-const stubTelegram: OrchestratorDependencies['telegram'] = {
-  async sendAlert(_chatId, message) {
-    console.log('[Telegram stub]', message);
-  },
-  onCommand(_command, _handler) {
-    // Registo do handler será feito pela implementação real
-  },
-};
-
-const stubWhatsApp: OrchestratorDependencies['whatsapp'] = {
-  async sendMessage(to, text) {
-    console.log('[WhatsApp stub] Enviar para', to, ':', text);
-  },
-  onMessage() {},
-  isConnected() {
-    return true;
-  },
-};
-
-const stubSupabase: OrchestratorDependencies['supabase'] = {
-  async saveAuditLog(log) {
-    console.log('[Supabase stub] saveAuditLog', (log as { sessionId?: string }).sessionId);
-  },
-};
-
-const stubNotion: OrchestratorDependencies['notion'] = {
-  async createReportPage(title, _markdown) {
-    console.log('[Notion stub] createReportPage', title);
-    return `stub-page-${Date.now()}`;
-  },
-};
-
-const deps: OrchestratorDependencies = {
-  claude: stubClaude,
-  telegram: stubTelegram,
-  whatsapp: stubWhatsApp,
-  supabase: stubSupabase,
-  notion: stubNotion,
-};
+import { ClaudeService } from './services/claude.service.js';
+import { TelegramService } from './services/telegram.service.js';
+import { WhatsAppService } from './services/whatsapp.service.js';
+import { SupabaseService } from './services/supabase.service.js';
+import { NotionService } from './services/notion.service.js';
 
 const adminChatIds = (process.env.TELEGRAM_ADMIN_CHAT_IDS ?? '')
   .split(',')
-  .map(s => s.trim())
+  .map((s) => s.trim())
   .filter(Boolean);
+
+const telegram = new TelegramService(adminChatIds.length > 0 ? adminChatIds : undefined);
+const whatsapp = new WhatsAppService(process.env.WA_SESSION_PATH);
+const claude = new ClaudeService();
+const supabase = new SupabaseService();
+const notion = new NotionService();
+
+const deps: OrchestratorDependencies = {
+  claude,
+  telegram,
+  whatsapp,
+  supabase,
+  notion,
+};
 
 const orchestrator = new TestOrchestrator(deps, adminChatIds);
 
-// Registo do comando /testar_bot (quando Telegram real estiver implementado, chamará isto)
-function registerTestCommand(telegram: OrchestratorDependencies['telegram']): void {
-  telegram.onCommand('testar_bot', async (_msg, args) => {
-    const [targetWhatsApp, tipoBot] = args;
-    if (!targetWhatsApp || !tipoBot) {
-      await telegram.sendAlert(
-        (adminChatIds[0] as string) ?? '',
-        'Uso: /testar_bot [numero_whatsapp_alvo] [tipo_de_bot]'
-      );
-      return;
+// --- Health Check Server (Easypanel / Docker) ---
+const PORT = Number(process.env.PORT) || 3000;
+const healthServer = http.createServer((req, res) => {
+  if (req.method === 'GET' && (req.url === '/health' || req.url === '/')) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        status: 'Palanca AI QA Automations is RUNNING',
+        timestamp: new Date().toISOString(),
+      })
+    );
+    return;
+  }
+  res.writeHead(404);
+  res.end();
+});
+healthServer.listen(PORT, () => {
+  console.log(`[Palanca AI] Health check server listening on port ${PORT}`);
+});
+
+telegram.onCommand('testar_bot', async (msg, args) => {
+  const [targetWhatsApp, tipoBot] = args;
+  if (!targetWhatsApp || !tipoBot) {
+    const chatId = msg.chat?.id;
+    if (chatId != null) {
+      await telegram.sendAlert(chatId, 'Uso: /testar_bot [numero_whatsapp_alvo] [tipo_de_bot]');
     }
-    try {
-      const session = await orchestrator.startTest(targetWhatsApp, tipoBot);
-      await telegram.sendAlert(
-        (adminChatIds[0] as string) ?? '',
-        `Teste iniciado: ${session.id}\nAlvo: ${session.targetWhatsApp}\nBot: ${session.botContext.tipoBot}`
-      );
-    } catch (err) {
-      await telegram.sendAlert(
-        (adminChatIds[0] as string) ?? '',
-        `Erro ao iniciar teste: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
+    return;
+  }
+  try {
+    const session = await orchestrator.startTest(targetWhatsApp, tipoBot);
+    await telegram.sendAdminAlert(
+      `Teste iniciado: ${session.id}\nAlvo: ${session.targetWhatsApp}\nBot: ${session.botContext.tipoBot}`
+    );
+  } catch (err) {
+    await telegram.sendAdminAlert(
+      `Erro ao iniciar teste: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+});
+
+whatsapp.onMessage((from, text) => {
+  orchestrator.onTargetMessage(from, text).catch((err) => {
+    console.error('[Palanca AI] Erro ao processar mensagem do alvo:', err);
   });
+});
+
+whatsapp.setDisconnectCallback(() => {
+  orchestrator.onWhatsAppDisconnected();
+});
+
+async function main(): Promise<void> {
+  await whatsapp.start();
+  console.log('Palanca AI em execução. Envia /testar_bot [numero] [tipo_de_bot] no Telegram.');
 }
 
-registerTestCommand(stubTelegram);
-
-// Quando o WhatsApp real estiver implementado:
-// - subscrever mensagens e chamar orchestrator.onTargetMessage(from, text)
-// - subscrever desconexão e chamar orchestrator.onWhatsAppDisconnected()
-
-console.log('Palanca AI iniciado (modo stub). Configure os serviços e envie /testar_bot no Telegram.');
+main().catch((err) => {
+  console.error('Falha ao iniciar Palanca AI:', err);
+  process.exit(1);
+});
 
 export { orchestrator, config };

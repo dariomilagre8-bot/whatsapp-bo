@@ -52,4 +52,5 @@ export interface TestAuditLog {
   result: TestResult;
   conversationLog: ConversationTurn[];
   finishedAt: string; // ISO
+  notion_url?: string | null;
 }

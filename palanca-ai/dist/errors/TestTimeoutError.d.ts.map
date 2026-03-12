@@ -1,0 +1,1 @@
+{"version":3,"file":"TestTimeoutError.d.ts","sourceRoot":"","sources":["../../src/errors/TestTimeoutError.ts"],"names":[],"mappings":"AAAA;;GAEG;AAEH,qBAAa,gBAAiB,SAAQ,KAAK;IACzC,QAAQ,CAAC,SAAS,EAAE,MAAM,CAAC;gBAEf,OAAO,EAAE,MAAM,EAAE,SAAS,EAAE,MAAM;CAM/C"}

@@ -179,6 +179,18 @@ export class TestOrchestrator {
 
     this.transition(sessionId, 'CONCLUIDO');
 
+    let notionUrl: string | null = null;
+    try {
+      const title = `QA Run: ${sessionId} - ${new Date().toISOString().slice(0, 10)}`;
+      notionUrl = await this.deps.notion.createReportPage(title, result.relatorio_markdown, {
+        sessionId,
+        targetWhatsApp: session.targetWhatsApp,
+        status: result.status,
+      });
+    } catch (e) {
+      await this.notifyAdmins(`Erro ao criar página Notion: ${String(e)}`);
+    }
+
     const auditLog: TestAuditLog = {
       sessionId,
       targetWhatsApp: session.targetWhatsApp,
@@ -187,23 +199,13 @@ export class TestOrchestrator {
       result,
       conversationLog: session.conversationLog,
       finishedAt: new Date().toISOString(),
+      notion_url: notionUrl,
     };
 
     try {
       await this.deps.supabase.saveAuditLog(auditLog);
     } catch (e) {
       await this.notifyAdmins(`Erro ao salvar no Supabase: ${String(e)}`);
-    }
-
-    try {
-      const title = `[Palanca QA] ${session.botContext.tipoBot} - ${result.status} - ${sessionId}`;
-      await this.deps.notion.createReportPage(title, result.relatorio_markdown, {
-        sessionId,
-        targetWhatsApp: session.targetWhatsApp,
-        status: result.status,
-      });
-    } catch (e) {
-      await this.notifyAdmins(`Erro ao criar página Notion: ${String(e)}`);
     }
 
     const summary = `Teste ${sessionId} concluído: ${result.status}\nFalhas: ${result.falhas.length}\nBot: ${session.botContext.tipoBot}`;
