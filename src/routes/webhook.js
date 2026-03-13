@@ -94,9 +94,21 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
     res.status(200).json({ ok: true });
 
     try {
-      const rawJid = (data.key && data.key.remoteJid) != null ? String(data.key.remoteJid) : '';
-      const senderNum = extractPhoneNumber(rawJid);
-      if (!senderNum || (rawJid && String(rawJid).endsWith('@g.us'))) return;
+      const rawJid =
+        data?.key?.senderPn ||
+        req.body?.sender ||
+        data?.key?.remoteJid ||
+        '';
+
+      const phoneNumber = extractPhoneNumber(rawJid);
+
+      if (!phoneNumber) {
+        console.log('[WEBHOOK] JID inválido, ignorado:', rawJid);
+        return res.status(200).json({ status: 'ignored', reason: 'invalid_jid' });
+      }
+
+      const senderNum = phoneNumber;
+      if (rawJid && String(rawJid).endsWith('@g.us')) return;
       if (rawJid && rawJid !== senderNum) {
         console.log(`[WEBHOOK] rawJid normalizado: "${rawJid}" → senderNum: "${senderNum}"`);
       }
