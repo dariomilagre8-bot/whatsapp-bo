@@ -742,7 +742,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       }
 
       // 2) Supabase (clientes + vendas) — enriquece com nome e data_expiracao mais recente
-      let customerName = null;
+      customerName = null;
       let lastSale = null;
       try {
         ({ customerName, isReturningCustomer, lastSale } = await getClientByPhone(senderNum));
