@@ -181,7 +181,9 @@ async function getCrmResumo(supabase) {
   try {
     const { data, error } = await supabase
       .from('leads')
-      .select('status, primeiro_contacto');
+      // Colunas seguras: numero, nome, status, created_at
+      // Usamos created_at como proxy de primeiro_contacto para evitar dependência de colunas opcionais.
+      .select('status, created_at');
 
     if (error) throw error;
     const rows = data || [];
@@ -189,9 +191,11 @@ async function getCrmResumo(supabase) {
     const agora = new Date();
     const sete = new Date(); sete.setDate(agora.getDate() - 7);
 
-    const novos7dias = rows.filter(r =>
-      r.status === 'novo' && new Date(r.primeiro_contacto) >= sete
-    ).length;
+    const novos7dias = rows.filter(r => {
+      if (r.status !== 'novo') return false;
+      const created = r.created_at ? new Date(r.created_at) : null;
+      return created && created >= sete;
+    }).length;
     const interessados = rows.filter(r => r.status === 'interessado').length;
     const compraram = rows.filter(r => r.status === 'comprou').length;
     const recorrentes = rows.filter(r => r.status === 'recorrente').length;
@@ -209,6 +213,20 @@ async function getCrmResumo(supabase) {
     );
   } catch (err) {
     console.error('[CRM] getCrmResumo error:', err.message);
+    return '❌ Erro ao consultar CRM.';
+  }
+}
+
+/**
+ * Handler de comando #leads para supervisor.
+ */
+async function handleLeads(supabase, senderNum) {
+  console.log('[CMD] #leads chamado por:', senderNum);
+  if (!supabase) return '❌ Supabase não configurado.';
+  try {
+    return await getCrmResumo(supabase);
+  } catch (err) {
+    console.error('[CRM] handleLeads error:', err.message);
     return '❌ Erro ao consultar CRM.';
   }
 }
@@ -288,4 +306,5 @@ module.exports = {
   getCrmResumo,
   getLeadDetalhe,
   marcarInactivos,
+   handleLeads,
 };

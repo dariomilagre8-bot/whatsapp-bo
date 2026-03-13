@@ -349,16 +349,21 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
     if (rows.length < 2) return null;
 
     let selected = null;
+    const platformNorm = (platform || '').toLowerCase().trim();
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
-      const platformRaw = cell(row, COLS.platform) || cell(row, 1);
-      if (!platformsMatch(platformRaw, platform)) continue;
+      const platformRaw = cell(row, COLS.platform) || cell(row, 1) || '';
+      const rowPlatformNorm = platformRaw.toLowerCase().trim();
+      if (rowPlatformNorm !== platformNorm) continue;
       if (normalizeText(cell(row, COLS.status)) !== 'disponivel') continue;
       selected = { rowIndex: i, row };
       break;
     }
 
-    if (!selected) return null;
+    if (!selected) {
+      console.log('[SHEETS] Nenhuma row disponível para:', platform);
+      return null;
+    }
 
     const { rowIndex, row } = selected;
     const sheetRow = rowIndex + 1;

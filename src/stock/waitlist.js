@@ -174,10 +174,25 @@ async function getWaitlistResumo(supabase) {
   }
 }
 
+/**
+ * Handler de comando #waitlist para supervisor.
+ */
+async function handleWaitlist(supabase, senderNum) {
+  console.log('[CMD] #waitlist chamado por:', senderNum);
+  if (!supabase) return '❌ Supabase não configurado.';
+  try {
+    return await getWaitlistResumo(supabase);
+  } catch (err) {
+    console.error('[WAITLIST] handleWaitlist error:', err.message);
+    return '❌ Erro ao consultar lista de espera.';
+  }
+}
+
 module.exports = {
   addToWaitlist,
   getClientesPorNotificar,
   getProdutosEmEspera,
   marcarNotificados,
   getWaitlistResumo,
+  handleWaitlist,
 };

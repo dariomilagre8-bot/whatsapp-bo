@@ -17,8 +17,8 @@ const {
   renovarClientePorTelefone,
 } = require('../integrations/google-sheets');
 const botSettings = require('../../config/bot_settings.json');
-const { upsertLead, updateLeadStatus, registarCompra, addProdutoInteresse, getCrmResumo, getLeadDetalhe, marcarInactivos } = require('../crm/leads');
-const { addToWaitlist, getWaitlistResumo } = require('../stock/waitlist');
+const { upsertLead, updateLeadStatus, registarCompra, addProdutoInteresse, getCrmResumo, getLeadDetalhe, marcarInactivos, handleLeads } = require('../crm/leads');
+const { addToWaitlist, getWaitlistResumo, handleWaitlist } = require('../stock/waitlist');
 const { triggerStockReposto } = require('../stock/stock-notifier');
 const { detectarReclamacao, detectarLocalizacao, gerarRespostaLocalizacao, formatarNotificacaoReclamacao } = require('../crm/complaints');
 
@@ -141,14 +141,17 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const targetRaw = (parts[0] === '#' && parts[2]) ? parts[2] : (parts[1] || null);
       const restParts = (parts[0] === '#') ? parts.slice(2) : parts.slice(1);
 
+      const isSup = supervisors.includes(senderNum);
+      const isCmd = cleanMsg.startsWith('#');
+
       // ── Interceptador global: #sim / #nao incompletos NUNCA chegam à Zara ──
-      if (isSupervisor(senderNum) && (firstWord === '#sim' || firstWord === '#nao') && !targetRaw) {
+      if (isSup && (firstWord === '#sim' || firstWord === '#nao') && !targetRaw) {
         await sendText(replyJid, 'Comando incompleto. Por favor, use: #sim [número_do_cliente] ou #nao [número_do_cliente]', evolutionConfig);
         return;
       }
 
       // ── Comandos de supervisor NO TOPO: ignoram estado de pausa e não passam pelo LLM ──
-      if (isSupervisor(senderNum) && cleanMsg.startsWith('#')) {
+      if (isSup && isCmd) {
         if (firstWord === '#teste') {
           const modo = (restParts[0] || '').toLowerCase();
           if (modo === 'on') {
@@ -168,12 +171,12 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         }
       }
 
-      if (isSupervisor(senderNum) && cleanMsg.startsWith('#') && !supervisorTestMode.has(senderNum)) {
+      if (isSup && isCmd && !supervisorTestMode.has(senderNum)) {
         // ── Comandos CRM ──
         if (firstWord === '#leads') {
           try {
             const sbClient = require('../integrations/supabase').getClient();
-            const resumo = await getCrmResumo(sbClient);
+            const resumo = await handleLeads(sbClient, senderNum);
             await sendText(replyJid, resumo, evolutionConfig);
           } catch (e) {
             console.error('[CRM] #leads error:', e.message);
@@ -198,7 +201,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         if (firstWord === '#waitlist') {
           try {
             const sbClient = require('../integrations/supabase').getClient();
-            const resumo = await getWaitlistResumo(sbClient);
+            const resumo = await handleWaitlist(sbClient, senderNum);
             await sendText(replyJid, resumo, evolutionConfig);
           } catch (e) {
             console.error('[WAITLIST] #waitlist error:', e.message);
