@@ -73,16 +73,30 @@ const isSupervisor = (senderId) => {
 function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionConfig) {
 
   return async function handleWebhook(req, res) {
+    try {
+      const bodySafe = req && req.body !== undefined ? (req.body || {}) : {};
+      console.log('=== WEBHOOK BATEU ===', JSON.stringify(bodySafe));
+    } catch (logErr) {
+      console.error('[WEBHOOK] log entrada', logErr && logErr.message);
+    }
+
+    const body = req && req.body;
+    const data = body && body.data;
+    if (!data || !data.key) {
+      res.status(200).send('OK');
+      return;
+    }
+    if (data.key.fromMe) {
+      res.status(200).json({ ok: true });
+      return;
+    }
+
     res.status(200).json({ ok: true });
 
     try {
-      const body = req.body;
-      const data = body?.data;
-      if (!data || !data.key || data.key.fromMe) return;
-
-      const rawJid = data.key.remoteJid || '';
+      const rawJid = (data.key && data.key.remoteJid) != null ? String(data.key.remoteJid) : '';
       const senderNum = extractPhoneNumber(rawJid);
-      if (!senderNum || (rawJid && rawJid.endsWith('@g.us'))) return;
+      if (!senderNum || (rawJid && String(rawJid).endsWith('@g.us'))) return;
       if (rawJid && rawJid !== senderNum) {
         console.log(`[WEBHOOK] rawJid normalizado: "${rawJid}" → senderNum: "${senderNum}"`);
       }
@@ -90,23 +104,23 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         ? rawJid
         : (senderNum ? `${senderNum}@s.whatsapp.net` : rawJid);
 
-      const pushName = data.pushName || '';
+      const pushName = (data.pushName != null ? String(data.pushName) : '') || '';
       const messageData = data.message || {};
-      const textMessage = messageData.conversation
-        || messageData.extendedTextMessage?.text
-        || messageData.imageMessage?.caption
-        || messageData.documentMessage?.caption
-        || '';
+      const rawText = messageData.conversation
+        || (messageData.extendedTextMessage && messageData.extendedTextMessage.text)
+        || (messageData.imageMessage && messageData.imageMessage.caption)
+        || (messageData.documentMessage && messageData.documentMessage.caption);
+      const textMessage = typeof rawText === 'string' ? rawText : '';
 
       const isImage = !!messageData.imageMessage;
       const isDocument = !!messageData.documentMessage;
       const isAudio = !!(messageData.audioMessage || messageData.pttMessage);
 
-      const supervisors = (process.env.SUPERVISOR_NUMBERS || process.env.SUPERVISOR_NUMBER || '244941713216').split(',').map(s => s.trim()).filter(Boolean);
+      const supervisors = (process.env.SUPERVISOR_NUMBERS || process.env.SUPERVISOR_NUMBER || '244941713216').split(',').map(s => (s && String(s).trim()) || '').filter(Boolean);
 
       console.log(`\n📩 De: ${senderNum} (${pushName}) | Msg: "${textMessage.substring(0, 50)}" | Img: ${isImage} | Doc: ${isDocument} | Audio: ${isAudio}`);
 
-      const cleanMsg = (typeof textMessage === 'string' ? textMessage : '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const cleanMsg = typeof textMessage === 'string' ? textMessage.trim().toLowerCase().replace(/\s+/g, ' ') : '';
       const parts = cleanMsg.split(/\s+/).filter(Boolean);
       const firstWord = (parts[0] === '#' && parts[1]) ? '#' + parts[1] : (parts[0] || '');
       const targetRaw = (parts[0] === '#' && parts[2]) ? parts[2] : (parts[1] || null);
@@ -812,7 +826,12 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       stateMachine.addToHistory(senderNum, 'model', finalResponse);
 
     } catch (err) {
-      console.error('[WEBHOOK] Fatal error:', err);
+      console.error('[WEBHOOK FATAL ERROR]', err);
+      try {
+        if (!res.headersSent) res.status(500).send('Erro interno');
+      } catch (sendErr) {
+        console.error('[WEBHOOK] send 500 fail', sendErr && sendErr.message);
+      }
     }
   };
 }
