@@ -82,13 +82,13 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       const rawJid = data.key.remoteJid || '';
       const senderNum = extractPhoneNumber(rawJid);
+      if (!senderNum || (rawJid && rawJid.endsWith('@g.us'))) return;
       if (rawJid && rawJid !== senderNum) {
-        console.log(`[WEBHOOK] rawJid para debug: "${rawJid}" → senderNum: "${senderNum}"`);
+        console.log(`[WEBHOOK] rawJid normalizado: "${rawJid}" → senderNum: "${senderNum}"`);
       }
       const replyJid = rawJid.includes('@')
         ? rawJid
         : (senderNum ? `${senderNum}@s.whatsapp.net` : rawJid);
-      if (!senderNum || (rawJid && rawJid.endsWith('@g.us'))) return;
 
       const pushName = data.pushName || '';
       const messageData = data.message || {};
@@ -106,21 +106,22 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       console.log(`\n📩 De: ${senderNum} (${pushName}) | Msg: "${textMessage.substring(0, 50)}" | Img: ${isImage} | Doc: ${isDocument} | Audio: ${isAudio}`);
 
+      const cleanMsg = (typeof textMessage === 'string' ? textMessage : '').trim().toLowerCase().replace(/\s+/g, ' ');
+      const parts = cleanMsg.split(/\s+/).filter(Boolean);
+      const firstWord = (parts[0] === '#' && parts[1]) ? '#' + parts[1] : (parts[0] || '');
+      const targetRaw = (parts[0] === '#' && parts[2]) ? parts[2] : (parts[1] || null);
+      const restParts = (parts[0] === '#') ? parts.slice(2) : parts.slice(1);
+
       // ── Interceptador global: #sim / #nao incompletos NUNCA chegam à Zara ──
-      const partsBody = (typeof textMessage === 'string' ? textMessage : '').trim().split(/\s+/).filter(Boolean);
-      const firstToken = partsBody[0] ? normalizeText(partsBody[0]) : '';
-      const hasTarget = !!partsBody[1];
-      if (isSupervisor(senderNum) && (firstToken === '#sim' || firstToken === '#nao') && !hasTarget) {
+      if (isSupervisor(senderNum) && (firstWord === '#sim' || firstWord === '#nao') && !targetRaw) {
         await sendText(replyJid, 'Comando incompleto. Por favor, use: #sim [número_do_cliente] ou #nao [número_do_cliente]', evolutionConfig);
         return;
       }
 
       // ── Comandos de supervisor NO TOPO: ignoram estado de pausa e não passam pelo LLM ──
-      if (isSupervisor(senderNum) && (typeof textMessage === 'string' && textMessage.trim().startsWith('#'))) {
-        const parts = textMessage.trim().split(/\s+/);
-        const firstWord = (parts[0] || '').toLowerCase();
+      if (isSupervisor(senderNum) && cleanMsg.startsWith('#')) {
         if (firstWord === '#teste') {
-          const modo = (parts[1] || '').toLowerCase();
+          const modo = (restParts[0] || '').toLowerCase();
           if (modo === 'on') {
             supervisorTestMode.add(senderNum);
             await sendText(replyJid,
@@ -138,10 +139,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         }
       }
 
-      if (isSupervisor(senderNum) && (typeof textMessage === 'string' && textMessage.trim().startsWith('#')) && !supervisorTestMode.has(senderNum)) {
-        const parts = textMessage.trim().split(/\s+/);
-        const firstWord = (parts[0] || '').toLowerCase();
-
+      if (isSupervisor(senderNum) && cleanMsg.startsWith('#') && !supervisorTestMode.has(senderNum)) {
         // ── Comandos CRM ──
         if (firstWord === '#leads') {
           try {
@@ -154,11 +152,11 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           }
           return;
         }
-        if (firstWord === '#lead' && parts[1]) {
+        if (firstWord === '#lead' && targetRaw) {
           try {
             const sbClient = require('../integrations/supabase').getClient();
-            const numNorm = extractPhoneNumber(parts[1]);
-            const detalhe = await getLeadDetalhe(sbClient, numNorm || parts[1]);
+            const numNorm = extractPhoneNumber(targetRaw);
+            const detalhe = await getLeadDetalhe(sbClient, numNorm || targetRaw);
             await sendText(replyJid, detalhe, evolutionConfig);
           } catch (e) {
             console.error('[CRM] #lead error:', e.message);
@@ -181,9 +179,9 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         }
 
         // ── Comando #stock [produto] — Opção B: trigger manual de notificação ──
-        if (firstWord === '#stock' && parts[1]) {
+        if (firstWord === '#stock' && restParts.length > 0) {
           const sbClient = require('../integrations/supabase').getClient();
-          const produtoStr = parts.slice(1).join(' ');
+          const produtoStr = restParts.join(' ');
           await sendText(replyJid, `⏳ A notificar clientes em lista de espera para "${produtoStr}"...`, evolutionConfig);
           const resultado = await triggerStockReposto(sbClient, config.stock, produtoStr);
           await sendText(replyJid, resultado, evolutionConfig);
@@ -208,17 +206,17 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         }
 
         // ── Comando #renovar [telefone] — marca renovação manual ──
-        if (firstWord === '#renovar' && parts[1]) {
-          const tel = parts[1].replace(/\D/g, '');
+        if (firstWord === '#renovar' && targetRaw) {
+          const tel = extractPhoneNumber(targetRaw) || targetRaw.replace(/\D/g, '');
           const n = await renovarClientePorTelefone(config.stock, tel);
           await sendText(replyJid, n > 0 ? `✅ Renovação registada para ${tel} (${n} perfil(is)).` : `❌ Nenhum perfil activo encontrado para ${tel}.`, evolutionConfig);
           return;
         }
 
         // ── Comando #libertar [email] [perfil] — liberta perfil manualmente ──
-        if (firstWord === '#libertar' && parts[1]) {
-          const email = parts[1];
-          const perfil = parts[2] || null;
+        if (firstWord === '#libertar' && targetRaw) {
+          const email = targetRaw;
+          const perfil = restParts[1] || null;
           const lin = await findLinhaPorEmailPerfil(config.stock, email, perfil);
           if (!lin) {
             await sendText(replyJid, `❌ Perfil não encontrado para email "${email}"${perfil ? ` e perfil "${perfil}"` : ''}.`, evolutionConfig);
@@ -230,7 +228,6 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         }
 
         const cmd = config.supervisorCommands?.[firstWord];
-        const targetRaw = parts[1] || null;
         const target = targetRaw ? extractPhoneNumber(targetRaw) : null;
         if (cmd) {
           if (cmd === 'pause' && target) {

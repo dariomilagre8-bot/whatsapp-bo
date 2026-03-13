@@ -4,14 +4,16 @@
 const { extractPhoneNumber } = require('../utils/phone');
 
 /**
- * Cria ou actualiza um lead quando uma nova mensagem chega.
+ * UPSERT lead: 1 linha única por número de telefone.
+ * Se o número já existir, atualiza apenas ultimo_contacto e total_mensagens (não altera primeiro_contacto).
+ * Se não existir, faz INSERT como novo lead.
  * @param {object} supabase
- * @param {string} numero - Número WhatsApp normalizado
+ * @param {string} numero - JID ou número (será normalizado; nunca gravar raw @lid)
  * @param {string|null} nome - Nome do cliente (pushName ou extraído)
  */
 async function upsertLead(supabase, numero, nome) {
   if (!supabase || !numero) return;
-  const normalized = extractPhoneNumber(numero) || numero.replace('@s.whatsapp.net', '').trim();
+  const normalized = extractPhoneNumber(numero);
   if (!normalized) return;
 
   try {
@@ -28,7 +30,6 @@ async function upsertLead(supabase, numero, nome) {
         updated_at: new Date().toISOString(),
       };
       if (nome && !existing.nome) updates.nome = nome;
-
       await supabase.from('leads').update(updates).eq('id', existing.id);
     } else {
       await supabase.from('leads').insert({
@@ -56,7 +57,8 @@ async function upsertLead(supabase, numero, nome) {
  */
 async function updateLeadStatus(supabase, numero, status, extra = {}) {
   if (!supabase || !numero) return;
-  const normalized = extractPhoneNumber(numero) || numero.replace('@s.whatsapp.net', '').trim();
+  const normalized = extractPhoneNumber(numero);
+  if (!normalized) return;
 
   try {
     const { data: existing } = await supabase
@@ -93,7 +95,8 @@ async function updateLeadStatus(supabase, numero, status, extra = {}) {
  */
 async function registarCompra(supabase, numero, valor = 0) {
   if (!supabase || !numero) return;
-  const normalized = extractPhoneNumber(numero) || numero.replace('@s.whatsapp.net', '').trim();
+  const normalized = extractPhoneNumber(numero);
+  if (!normalized) return;
 
   try {
     const { data: existing } = await supabase
@@ -131,7 +134,8 @@ async function registarCompra(supabase, numero, valor = 0) {
  */
 async function addProdutoInteresse(supabase, numero, produto) {
   if (!supabase || !numero || !produto) return;
-  const normalized = extractPhoneNumber(numero) || numero.replace('@s.whatsapp.net', '').trim();
+  const normalized = extractPhoneNumber(numero);
+  if (!normalized) return;
 
   try {
     const { data: existing } = await supabase
@@ -207,7 +211,8 @@ async function getCrmResumo(supabase) {
  */
 async function getLeadDetalhe(supabase, numero) {
   if (!supabase || !numero) return '❌ Número inválido.';
-  const normalized = extractPhoneNumber(numero) || numero.replace(/[^0-9]/g, '');
+  const normalized = extractPhoneNumber(numero);
+  if (!normalized) return '❌ Número inválido (use formato 244XXXXXXXXX).';
 
   try {
     const { data, error } = await supabase
