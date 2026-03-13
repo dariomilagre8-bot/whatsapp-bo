@@ -28,6 +28,13 @@ const platformFromCell = (raw) => {
   return null;
 };
 
+/** Comparação à prova de bala: normaliza ambos os lados (toLowerCase + trim) para match. */
+function platformsMatch(sheetValue, requestedPlatform) {
+  const a = platformFromCell(sheetValue);
+  const b = platformFromCell(String(requestedPlatform ?? '').trim().toLowerCase());
+  return a != null && b != null && a === b;
+}
+
 function init(credentialsPath, sheetId) {
   spreadsheetId = sheetId;
   const auth = new google.auth.GoogleAuth({
@@ -52,7 +59,7 @@ async function getStock(stockConfig) {
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       const platformRaw = (row[0] != null && String(row[0]).trim()) ? row[0] : row[1];
-      const platform = platformFromCell(platformRaw);
+      const platform = platformFromCell(String(platformRaw ?? '').toLowerCase().trim());
       const status = normalizeText(String(row[5] ?? ''));
       const isAvailable = status === 'disponivel';
       if (!isAvailable || !platform) continue;
@@ -83,7 +90,7 @@ function normalizePlanName(raw) {
  * Lê a planilha e agrupa por Plataforma + Plano + Valor, devolvendo CONTAGENS
  * em vez de listar todas as linhas (reduz tamanho do prompt e evita repetição).
  * Colunas: A=Plataforma, D=Plano (opcional), F=Status, H=Preço/Valor.
- * Saída: "Netflix - Individual (5000 Kz): 12 perfis" ou "Netflix - Familia_Completa (13500 Kz): 2 contas".
+ * Saída: "Netflix - Individual (5000 Kz): 12 perfis" ou "Netflix - Família Completa (24000 Kz): 2 contas".
  */
 async function getInventoryForPrompt(stockConfig, productsConfig) {
   if (!sheets) return 'Nenhum dado de inventário disponível no momento.';
@@ -111,7 +118,7 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       const platformRaw = cell(row, platformCol) || cell(row, 1);
-      const platform = platformFromCell(platformRaw);
+      const platform = platformFromCell(String(platformRaw ?? '').toLowerCase().trim());
       const status = normalizeText(String(cell(row, statusCol)));
       const isAvailable = status === 'disponivel';
       if (!isAvailable || !platform) continue;
@@ -169,28 +176,23 @@ function getProfilesNeeded(pendingSaleString) {
 }
 
 /**
- * Devolve etiqueta do plano e valor por row para escrita na planilha (Plano M, Valor N).
- * Partilha: 2 rows, cada uma com Plano=Partilha, Valor=4500.
- * Familia_Completa: 1 row com dados completos (QNTD=5), as outras 4 só status.
+ * Valores para 1 linha = 1 venda (QNTD, Valor, Plano) consoante a compra.
+ * Netflix Individual: QNTD=1, Valor=5000 | Partilha: QNTD=2, Valor=4500 | Família: QNTD=5, Valor=13500
+ * Prime Video: QNTD=1, Valor=3000
  */
-function getPlanLabelAndValue(pendingSaleString, platform) {
+function getSaleRowValues(pendingSaleString, platform) {
   const text = normalizeText(pendingSaleString || '');
   const isNetflix = platform === 'Netflix';
   if (/familia\s*completa|completa|5\s*perfil|5\s*pessoa/.test(text)) {
-    return { planLabel: 'Familia_Completa', valuePerRow: 13500, qntdPerRow: 5, onlyFirstRowHasClientData: true };
+    return { planLabel: 'Família Completa', valor: isNetflix ? 13500 : 3000, qntd: 5 };
   }
   if (/familia|4\s*perfil|4\s*pessoa/.test(text)) {
-    return { planLabel: 'Familia', valuePerRow: isNetflix ? 9000 : 8000, qntdPerRow: 4, onlyFirstRowHasClientData: false };
+    return { planLabel: 'Família', valor: isNetflix ? 13500 : 3000, qntd: 5 };
   }
   if (/partilha|partilhado|2\s*perfil|2\s*pessoa|duas?\s*pessoa/.test(text)) {
-    return { planLabel: 'Partilha', valuePerRow: isNetflix ? 4500 : 5500, qntdPerRow: 1, onlyFirstRowHasClientData: false };
+    return { planLabel: 'Partilha', valor: isNetflix ? 4500 : 3000, qntd: 2 };
   }
-  return {
-    planLabel: 'Individual',
-    valuePerRow: isNetflix ? 5000 : 3000,
-    qntdPerRow: 1,
-    onlyFirstRowHasClientData: false,
-  };
+  return { planLabel: 'Individual', valor: isNetflix ? 5000 : 3000, qntd: 1 };
 }
 
 /**
@@ -236,7 +238,7 @@ async function getStockCountsForPrompt(stockConfig) {
     for (let i = startIndex; i < rows.length; i++) {
       const row = rows[i];
       const platformRaw = (row[0] != null && String(row[0]).trim()) ? row[0] : row[1];
-      const plataforma = normalizePlatformForMatch(platformRaw);
+      const plataforma = normalizePlatformForMatch(String(platformRaw ?? '').toLowerCase().trim());
       const status = normalizeText(String(row[5] ?? ''));
       if (status !== 'disponivel') continue;
       if (isNetflixPlatform(plataforma)) totalNetflixIndividual++;
@@ -272,11 +274,10 @@ async function getStockCountsForPrompt(stockConfig) {
 }
 
 /**
- * Verifica se há linhas individuais disponíveis suficientes para o plano (N perfis = N linhas Individual).
+ * Verifica se há pelo menos 1 linha disponível para a plataforma (1 linha = 1 venda).
  */
 async function hasStockForPendingSale(stockConfig, pendingSaleString) {
   if (!sheets || !spreadsheetId) return false;
-  const required = getProfilesNeeded(pendingSaleString);
   const text = normalizeText(pendingSaleString);
   const platform = text.includes('netflix') ? 'Netflix' : text.includes('prime') ? 'Prime Video' : null;
   if (!platform) return false;
@@ -289,15 +290,12 @@ async function hasStockForPendingSale(stockConfig, pendingSaleString) {
       range: `${stockConfig.sheetName}!A:Z`,
     });
     const rows = res.data.values || [];
-    let count = 0;
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       const platformRaw = cell(row, COLS.platform) || cell(row, 1);
-      const rowPlatform = platformFromCell(platformRaw);
-      if (rowPlatform !== platform) continue;
+      if (!platformsMatch(platformRaw, platform)) continue;
       if (normalizeText(cell(row, COLS.status)) !== 'disponivel') continue;
-      count++;
-      if (count >= required) return true;
+      return true;
     }
     return false;
   } catch (err) {
@@ -328,8 +326,8 @@ const COLS = {
 };
 
 /**
- * Alocação múltipla: identifica N perfis (1/2/4/5), procura N linhas Individual disponíveis,
- * marca todas como vendido e devolve email/senha + lista de perfis (PINs).
+ * Alocação 1 linha = 1 venda: encontra 1 linha com Status === 'disponivel' para a plataforma,
+ * preenche Status, Cliente, Telefone, Data_Venda, Data_Expiracao, QNTD, Plano, Valor.
  * @returns {Promise<{ email: string, senha: string, pin: string, perfis: Array<{ pin: string }> }|null>}
  */
 async function allocateProfile(stockConfig, pendingSaleString, customerName, customerPhone, meses = 1) {
@@ -339,7 +337,6 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
   const platform = text.includes('netflix') ? 'Netflix' : text.includes('prime') ? 'Prime Video' : null;
   if (!platform) return null;
 
-  const required = getProfilesNeeded(pendingSaleString);
   const cleanPhone = extractPhoneNumber(customerPhone || '');
   const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
 
@@ -351,17 +348,30 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
     const rows = res.data.values || [];
     if (rows.length < 2) return null;
 
-    const candidateRows = [];
-    for (let i = 1; i < rows.length && candidateRows.length < required; i++) {
+    let selected = null;
+    for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       const platformRaw = cell(row, COLS.platform) || cell(row, 1);
-      const rowPlatform = platformFromCell(platformRaw);
-      if (rowPlatform !== platform) continue;
+      if (!platformsMatch(platformRaw, platform)) continue;
       if (normalizeText(cell(row, COLS.status)) !== 'disponivel') continue;
-      candidateRows.push({ rowIndex: i, row });
+      selected = { rowIndex: i, row };
+      break;
     }
 
-    if (candidateRows.length < required) return null;
+    if (!selected) return null;
+
+    const { rowIndex, row } = selected;
+    const sheetRow = rowIndex + 1;
+
+    const recheck = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${stockConfig.sheetName}!F${sheetRow}:F${sheetRow}`,
+    });
+    const recheckStatus = normalizeText((recheck.data.values || [])[0]?.[0] ?? '');
+    if (recheckStatus !== 'disponivel') {
+      console.log('[STOCK] allocateProfile: linha já ocupada no último segundo, abortar');
+      return null;
+    }
 
     const now = new Date();
     const dateStr = now.toISOString().slice(0, 10);
@@ -369,68 +379,32 @@ async function allocateProfile(stockConfig, pendingSaleString, customerName, cus
     const mesesValidos = Math.max(1, Math.min(12, parseInt(meses, 10) || 1));
     expira.setDate(expira.getDate() + mesesValidos * 30);
     const dataExpiracaoStr = expira.toISOString().slice(0, 10);
-    const toUpdate = candidateRows.slice(0, required);
-    const { planLabel, valuePerRow, qntdPerRow, onlyFirstRowHasClientData } = getPlanLabelAndValue(pendingSaleString, platform);
-    const valorStr = String(valuePerRow);
 
-    for (let idx = 0; idx < toUpdate.length; idx++) {
-      const { rowIndex, row } = toUpdate[idx];
-      const sheetRow = rowIndex + 1;
-      try {
-        const recheck = await sheets.spreadsheets.values.get({
-          spreadsheetId,
-          range: `${stockConfig.sheetName}!F${sheetRow}:F${sheetRow}`,
-        });
-        const recheckStatus = normalizeText((recheck.data.values || [])[0]?.[0] ?? '');
-        if (recheckStatus !== 'disponivel') {
-          console.log('[STOCK] allocateProfile: linha já ocupada no último segundo, abortar');
-          return null;
-        }
-      } catch (e) {
-        console.error('[STOCK] allocateProfile re-check:', e.message);
-        return null;
-      }
+    const { planLabel, valor, qntd } = getSaleRowValues(pendingSaleString, platform);
 
-      const isFirstRow = idx === 0;
-      const fillClientData = isFirstRow || !onlyFirstRowHasClientData;
-      const qntd = onlyFirstRowHasClientData ? (isFirstRow ? qntdPerRow : 0) : qntdPerRow;
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${stockConfig.sheetName}!F${sheetRow}:N${sheetRow}`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: {
+        values: [[
+          'indisponivel',
+          customerName || 'Cliente',
+          cleanPhone || '',
+          dateStr,
+          dataExpiracaoStr,
+          qntd,
+          '', // L (coluna 11)
+          planLabel,
+          String(valor),
+        ]],
+      },
+    });
 
-      if (fillClientData) {
-        await sheets.spreadsheets.values.update({
-          spreadsheetId,
-          range: `${stockConfig.sheetName}!F${sheetRow}:N${sheetRow}`,
-          valueInputOption: 'USER_ENTERED',
-          requestBody: {
-            values: [[
-              'indisponivel',
-              customerName || 'Cliente',
-              cleanPhone || '',
-              dateStr,
-              dataExpiracaoStr,
-              qntd,
-              '', // L
-              planLabel,
-              valorStr,
-            ]],
-          },
-        });
-      } else {
-        await sheets.spreadsheets.values.update({
-          spreadsheetId,
-          range: `${stockConfig.sheetName}!F${sheetRow}:F${sheetRow}`,
-          valueInputOption: 'USER_ENTERED',
-          requestBody: { values: [['indisponivel']] },
-        });
-      }
-    }
-
-    const first = toUpdate[0].row;
-    const email = cell(first, COLS.email);
-    const senha = cell(first, COLS.senha);
-    const perfis = toUpdate.map(({ row }, idx) => ({ pin: cell(row, COLS.pin) || '' }));
-    const pin = perfis[0]?.pin || '';
-
-    return { email, senha, pin, perfis };
+    const email = cell(row, COLS.email);
+    const senha = cell(row, COLS.senha);
+    const pin = cell(row, COLS.pin) || '';
+    return { email, senha, pin, perfis: [{ pin }] };
   } catch (err) {
     console.error('[STOCK] allocateProfile Error:', err.message);
     return null;
@@ -470,7 +444,7 @@ function parseDataExpiracao(str) {
 async function getClienteByTelefone(stockConfig, telefone) {
   if (!sheets || !spreadsheetId) return [];
   const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
-  const want = normalizePhone(telefone);
+  const want = extractPhoneNumber(telefone) || normalizePhone(telefone);
   if (!want) return [];
 
   try {
@@ -679,15 +653,16 @@ async function renovarClientePorTelefone(stockConfig, telefone) {
   expira.setDate(expira.getDate() + 30);
   const dataExpiracaoStr = expira.toISOString().slice(0, 10);
   let count = 0;
-  for (const lin of perfis) {
-    if (lin.status !== 'indisponivel' && lin.status !== 'vendido' && lin.status !== 'a_verificar') continue;
-    try {
+    const cleanPhone = extractPhoneNumber(telefone) || normalizePhone(telefone);
+    for (const lin of perfis) {
+      if (lin.status !== 'indisponivel' && lin.status !== 'vendido' && lin.status !== 'a_verificar') continue;
+      try {
       await sheets.spreadsheets.values.update({
         spreadsheetId,
         range: `${stockConfig.sheetName}!F${lin.sheetRow}:J${lin.sheetRow}`,
         valueInputOption: 'USER_ENTERED',
         requestBody: {
-          values: [['indisponivel', lin.cliente || '', telefone, dateStr, dataExpiracaoStr]],
+          values: [['indisponivel', lin.cliente || '', cleanPhone, dateStr, dataExpiracaoStr]],
         },
       });
       count++;
