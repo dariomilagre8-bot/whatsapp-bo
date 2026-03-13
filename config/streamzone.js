@@ -65,23 +65,41 @@ module.exports = {
     website: 'streamzone-frontend.vercel.app',
   },
 
-  // ═══════ PRODUTOS ═══════
+  // ═══════ PRODUTOS (8 planos: 4 Netflix + 4 Prime) ═══════
   products: {
     Netflix: {
       emoji: '🎬',
       plans: {
-        Individual:  { price: 5000,  devices: 1, profiles: 1 },
-        Partilhado:  { price: 9000,  devices: 2, profiles: 2 },
-        Família:     { price: 13500, devices: 3, profiles: 3 },
+        Individual:       { price: 5000,  devices: 1, profiles: 1 },
+        Partilhado:       { price: 9000,  devices: 2, profiles: 2 },
+        Família:          { price: 13500, devices: 3, profiles: 3 },
+        'Família Completa': { price: 24000, devices: 5, profiles: 5 },
       },
     },
     'Prime Video': {
       emoji: '📺',
       plans: {
-        Individual:  { price: 3000,  devices: 1, profiles: 1 },
-        Partilhado:  { price: 5500,  devices: 2, profiles: 2 },
-        Família:     { price: 8000,  devices: 3, profiles: 3 },
+        Individual:       { price: 3000,  devices: 1, profiles: 1 },
+        Partilhado:       { price: 5500,  devices: 2, profiles: 2 },
+        Família:          { price: 8000,  devices: 3, profiles: 3 },
+        'Família Completa': { price: 16000, devices: 5, profiles: 5 },
       },
+    },
+  },
+
+  // Fonte de verdade para preços (allocateProfile, validação, etc.)
+  pricing: {
+    netflix: {
+      individual: 5000,
+      partilha: 9000,
+      familia: 13500,
+      familia_completa: 24000,
+    },
+    prime_video: {
+      individual: 3000,
+      partilha: 5500,
+      familia: 8000,
+      familia_completa: 16000,
     },
   },
 
@@ -163,9 +181,18 @@ module.exports = {
       params: { platform: 'Netflix', plan: 'Partilhado' },
     },
     {
+      id: 'compra_netflix_familia_completa',
+      patterns: [
+        /\b(netflix)\b.*(fam[ií]lia\s*completa|conta\s*inteira|5\s*perfis?)/i,
+      ],
+      action: 'dynamic',
+      handler: 'direct_purchase',
+      params: { platform: 'Netflix', plan: 'Família Completa' },
+    },
+    {
       id: 'compra_netflix_familia',
       patterns: [
-        /\b(netflix)\b.*(fam[ií]lia|familiar|3\s*(dispositivo|perfil|pessoa)|completo)/i,
+        /\b(netflix)\b.*(fam[ií]lia|familiar|3\s*(dispositivo|perfil|pessoa))/i,
       ],
       action: 'dynamic',
       handler: 'direct_purchase',
@@ -190,9 +217,18 @@ module.exports = {
       params: { platform: 'Prime Video', plan: 'Partilhado' },
     },
     {
+      id: 'compra_prime_familia_completa',
+      patterns: [
+        /\b(prime)\b.*(fam[ií]lia\s*completa|conta\s*inteira|5\s*perfis?)/i,
+      ],
+      action: 'dynamic',
+      handler: 'direct_purchase',
+      params: { platform: 'Prime Video', plan: 'Família Completa' },
+    },
+    {
       id: 'compra_prime_familia',
       patterns: [
-        /\b(prime)\b.*(fam[ií]lia|familiar|3\s*(dispositivo|perfil|pessoa)|completo)/i,
+        /\b(prime)\b.*(fam[ií]lia|familiar|3\s*(dispositivo|perfil|pessoa))/i,
       ],
       action: 'dynamic',
       handler: 'direct_purchase',
@@ -253,9 +289,19 @@ module.exports = {
       requireState: 'escolha_plano',
     },
     {
+      id: 'selecao_familia_completa',
+      patterns: [
+        /^(fam[ií]lia\s*completa|completa|5\s*perfis?|conta\s*inteira)\s*[!?.]*$/i,
+      ],
+      action: 'dynamic',
+      handler: 'select_plan',
+      params: { plan: 'Família Completa' },
+      requireState: 'escolha_plano',
+    },
+    {
       id: 'selecao_familia',
       patterns: [
-        /^(fam[ií]lia|familiar|3|o\s*(terceiro|maior|melhor|completo)|premium)\s*[!?.]*$/i,
+        /^(fam[ií]lia|familiar|3|o\s*(terceiro|maior|melhor))\s*[!?.]*$/i,
       ],
       action: 'dynamic',
       handler: 'select_plan',
@@ -304,6 +350,14 @@ module.exports = {
       action: 'reply',
     },
 
+    // ── PLANO INEXISTENTE (Premium não existe) ──
+    {
+      id: 'plano_premium_nao_existe',
+      patterns: [/\bpremium\b/i],
+      response: 'Esse plano não está disponível. Temos: Individual, Partilha, Família e Família Completa (Netflix e Prime Video). Qual prefere?',
+      action: 'reply',
+    },
+
     // ── DISPOSITIVOS ──
     {
       id: 'dispositivos',
@@ -311,7 +365,7 @@ module.exports = {
         /\b(quantos\s*dispositivo|funciona\s*em|smart\s*tv|telem[oó]vel|computador|tablet|aparelho|quantos\s*(ecr[aã]|tela))\b/i,
         /\b(como\s*assim\s*\d\s*dispositivo)/i,
       ],
-      response: 'Funciona em qualquer dispositivo com a app — telemóvel, Smart TV, computador ou tablet! 📱📺💻\n\n• Individual — 1 dispositivo\n• Partilhado — 2 dispositivos\n• Família — 3 dispositivos',
+      response: 'Funciona em qualquer dispositivo com a app — telemóvel, Smart TV, computador ou tablet! 📱📺💻\n\n• Individual — 1 dispositivo\n• Partilhado — 2 dispositivos\n• Família — 3 dispositivos\n• Família Completa — 5 dispositivos',
       action: 'reply',
     },
 
@@ -506,7 +560,7 @@ module.exports = {
   // ═══════ ANTI-ALUCINAÇÃO ═══════
   validation: {
     // Preços oficiais (únicos valores permitidos em respostas com "Kz")
-    officialPrices: [3000, 5500, 8000, 5000, 9000, 13500],
+    officialPrices: [3000, 5500, 8000, 16000, 5000, 9000, 13500, 24000],
 
     // Bloqueios (regex que NUNCA podem aparecer numa resposta)
     blocks: [

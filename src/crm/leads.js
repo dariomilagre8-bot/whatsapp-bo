@@ -31,16 +31,23 @@ async function upsertLead(supabase, numero, nome) {
       };
       if (nome && !existing.nome) updates.nome = nome;
       await supabase.from('leads').update(updates).eq('id', existing.id);
+      console.log(`[CRM] ♻️ Lead actualizado: ${normalized}`);
     } else {
-      await supabase.from('leads').insert({
-        numero: normalized,
-        nome: nome || null,
-        status: 'novo',
-        primeiro_contacto: new Date().toISOString(),
-        ultimo_contacto: new Date().toISOString(),
-        total_mensagens: 1,
-        fonte: 'directo',
-      });
+      const { error } = await supabase
+        .from('leads')
+        .upsert(
+          {
+            numero: normalized,
+            nome: nome || null,
+            status: 'novo',
+            primeiro_contacto: new Date().toISOString(),
+            ultimo_contacto: new Date().toISOString(),
+            total_mensagens: 1,
+            fonte: 'directo',
+          },
+          { onConflict: 'numero' }
+        );
+      if (error) throw error;
       console.log(`[CRM] 🆕 Novo lead registado: ${normalized}`);
     }
   } catch (err) {

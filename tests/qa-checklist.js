@@ -291,14 +291,14 @@ console.log(`
 ║  CENÁRIO M: VENDA PARTILHA (2 perfis)                          ║
 ║  ─────────────────────────────────────                         ║
 ║  M1. Venda Netflix Partilha → comprovativo → #sim             ║
-║  M2. Planilha: 2 rows com Plano=Partilha e Valor=4500         ║
-║      em CADA row (nunca Plano/Valor vazios)                   ║
+║  M2. Planilha: 2 rows com Plano=Partilha e Valor=9000 (Netflix)║
+║      ou Valor=5500 (Prime) em CADA row (nunca vazios)          ║
 ║                                                                ║
 ║  CENÁRIO N: VENDA FAMÍLIA COMPLETA                            ║
 ║  ──────────────────────────────────────                        ║
 ║  N1. Venda Netflix Família Completa → #sim                    ║
-║  N2. Planilha: 1 row com QNTD=5, Plano=Familia_Completa,      ║
-║      Valor=13500                                               ║
+║  N2. Planilha: 1 row com QNTD=5, Plano=Família Completa,       ║
+║      Valor=24000 (Netflix) ou 16000 (Prime)                     ║
 ║                                                                ║
 ║  CENÁRIO O: #sim RESPONDE AO SUPERVISOR E AO CLIENTE           ║
 ║  ────────────────────────────────────────────────              ║
@@ -325,9 +325,14 @@ console.log(`
 ║  CENÁRIO R: PLANO "PREMIUM" → BOT RECUSA                       ║
 ║  ────────────────────────────────────────                      ║
 ║  R1. Cliente pede "quero plano Premium"                        ║
-║  R2. Bot responde que não tem Premium e lista planos reais:    ║
-║      Individual, Partilha, Família Completa (Netflix),         ║
-║      Individual (Prime Video) com preços correctos             ║
+║  R2. Bot responde "Esse plano não está disponível. Temos:       ║
+║      Individual, Partilha, Família e Família Completa."         ║
+║                                                                ║
+║  CENÁRIO R3: AMBIGUIDADE "FAMÍLIA"                            ║
+║  ────────────────────────────────────────                      ║
+║  R3. Cliente diz apenas "família" (sem especificar)            ║
+║      → Bot pergunta: Família (13.500 Kz) ou Família Completa   ║
+║        (24.000 Kz)? São planos diferentes.                     ║
 ║                                                                ║
 ║  CENÁRIO S: RENOVAÇÃO CONTA EXPIRADA (fluxo completo)         ║
 ║  ───────────────────────────────────────────────                ║
@@ -354,6 +359,17 @@ console.log(`
 ║  V2. Ambos fazem compra → #sim [A] e #sim [B]                  ║
 ║  V3. Planilha e mensagens: dados de A só para A, de B só      ║
 ║      para B (nunca misturar credenciais ou linhas)             ║
+║                                                                ║
+║  CENÁRIO W: OS 8 PLANOS — PREÇOS E PLANILHA                    ║
+║  ────────────────────────────────────────────                  ║
+║  W1. Netflix Individual → preço 5.000, 1 row, Plano/Valor OK  ║
+║  W2. Netflix Partilha → preço 9.000, 2 rows, Valor=9000 cada  ║
+║  W3. Netflix Família → preço 13.500, 1 row, Plano/Valor OK    ║
+║  W4. Netflix Família Completa → 24.000, 1 row QNTD=5          ║
+║  W5. Prime Individual → 3.000, 1 row                          ║
+║  W6. Prime Partilha → 5.500, 2 rows, Valor=5500 cada           ║
+║  W7. Prime Família → 8.000, 1 row                              ║
+║  W8. Prime Família Completa → 16.000, 1 row QNTD=5             ║
 ║                                                                ║
 ╚════════════════════════════════════════════════════════════════╝
 `);

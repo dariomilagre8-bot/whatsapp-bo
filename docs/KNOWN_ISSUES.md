@@ -2,9 +2,13 @@
 
 ## Bugs Corrigidos
 
+### [2026-03-11] — Preços e planos actualizados para 8 planos (4+4), Premium removido
+- **Fonte de verdade:** Netflix Individual 5.000, Partilha 9.000, Família 13.500, Família Completa 24.000 Kz; Prime Video Individual 3.000, Partilha 5.500, Família 8.000, Família Completa 16.000 Kz. Plano "Premium" removido; resposta fixa se cliente pedir Premium. allocateProfile: Partilha 2 rows com Valor 9000/5500; Família Completa 1 row QNTD=5, Valor 24000/16000.
+- **Ficheiros:** `config/streamzone.js` (products + pricing + officialPrices), `config/bot_settings.json` (pricing_table), `prompts/streamzone.txt`, `src/integrations/google-sheets.js` (getPlanLabelAndValue), `tests/qa-checklist.js`.
+
 ### [2026-03-11] — 6 bugs persistentes: allocateProfile rows, Premium, #sim, #leads, pós-venda, testes [CPA]
-- **Problema 1 — allocateProfile duplicava rows com Plano/Valor vazios:** Partilha preenchia 2 rows mas colunas M (Plano) e N (Valor) não eram escritas. **Solução:** Função `getPlanLabelAndValue()`; escrita em F:N (Status até Valor); Partilha = 2 rows cada com Plano=Partilha, Valor=4500; Familia_Completa = 1 row com QNTD=5, Plano=Familia_Completa, Valor=13500 (outras 4 rows só status=indisponivel).
-- **Problema 2 — Plano "Premium" inexistente no prompt:** Bot oferecia plano Premium. **Solução:** Prompt StreamZone com lista explícita: Netflix Individual (5000), Partilha (4500), Família Completa (13500), Prime Individual (3000); regra anti-alucinação e resposta fixa se cliente pedir "Premium".
+- **Problema 1 — allocateProfile duplicava rows com Plano/Valor vazios:** Partilha preenchia 2 rows mas colunas M (Plano) e N (Valor) não eram escritas. **Solução:** Função `getPlanLabelAndValue()`; escrita em F:N; Partilha = 2 rows cada com Plano=Partilha, Valor=9000 (Netflix) ou 5500 (Prime); Família Completa = 1 row QNTD=5, Valor=24000/16000.
+- **Problema 2 — Plano "Premium" inexistente:** **Solução:** Lista explícita dos 8 planos no prompt; resposta fixa e padrão "plano_premium_nao_existe" no config; "premium" removido do padrão de seleção de plano.
 - **Problema 3 — #sim não respondia (supervisor pendurado):** **Solução:** Logs explícitos [#sim] no handler; fallback para encontrar sessão por número normalizado; mensagens claras ao supervisor (sem pendingSale, erro alocação); confirmação "✅ Venda aprovada para [CLIENTE]" e envio de credenciais ao cliente.
 - **Problema 4 — #leads "Erro ao consultar CRM":** **Solução:** Mensagem amigável "⚠️ CRM não configurado. Execute docs/crm-schema.sql no Supabase SQL Editor (Dashboard → SQL Editor...)".
 - **Problema 5 — Bot continuava conversa após venda concluída:** **Solução:** Após #sim + credenciais enviadas: limpar pendingSale, definir existingCustomerGreeted=true; próxima mensagem do cliente tratada como cliente existente ("Já tem [PLATAFORMA] activo até...").

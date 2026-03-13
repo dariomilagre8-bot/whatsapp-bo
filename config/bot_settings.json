@@ -7,14 +7,14 @@
     "netflix": {
       "1_slot": "5.000",
       "2_slots": "9.000",
-      "3_slots": "14.000",
+      "3_slots": "13.500",
       "5_slots": "24.000"
     },
     "prime": {
       "1_slot": "3.000",
       "2_slots": "5.500",
       "3_slots": "8.000",
-      "5_slots": "12.000"
+      "5_slots": "16.000"
     }
   },
   "support_protocols": {
