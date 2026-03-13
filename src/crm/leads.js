@@ -2,6 +2,8 @@
 // Non-blocking: todos os erros são capturados internamente, o bot continua a funcionar
 
 const { extractPhoneNumber } = require('../utils/phone');
+const { getClienteByTelefone } = require('../integrations/google-sheets');
+const { getClient } = require('../integrations/supabase');
 
 /**
  * UPSERT lead: 1 linha única por número de telefone.
@@ -298,6 +300,67 @@ async function marcarInactivos(supabase) {
   }
 }
 
+/**
+ * Verifica se um número já é cliente existente com base na Google Sheets e, em fallback, na tabela leads (Supabase).
+ * 1. Primeiro consulta a planilha via getClienteByTelefone (stockConfig + telefone normalizado).
+ * 2. Se encontrar uma linha com status === 'indisponivel', devolve { existente: true, plano, dataExpiracao }.
+ * 3. Se não encontrar na Sheets, consulta Supabase (tabela leads) como fallback e devolve existente: true/false.
+ *
+ * @param {object} stockConfig - Configuração de stock usada pela integração Google Sheets (ex: config.stock).
+ * @param {string} numero - JID ou número de telefone do cliente.
+ * @returns {Promise<{ existente: boolean, plano: string|null, dataExpiracao: Date|null }>}
+ */
+async function checkClienteExistente(stockConfig, numero) {
+  const normalized = extractPhoneNumber(numero);
+  const baseResult = { existente: false, plano: null, dataExpiracao: null };
+
+  if (!normalized) return baseResult;
+
+  // 1) Google Sheets primeiro (fonte da verdade das vendas activas)
+  try {
+    if (stockConfig) {
+      const perfis = await getClienteByTelefone(stockConfig, normalized);
+      if (perfis && perfis.length > 0) {
+        // Cliente existente = pelo menos 1 perfil com status "indisponivel" (activo na prática)
+        const activo = perfis.find((p) => p.status === 'indisponivel');
+        if (activo) {
+          const plano = activo.plano || 'Plano';
+          const dataExpiracao = activo.dataExpiracao || null;
+          console.log(`[CRM] cliente existente detectado via Sheets: ${normalized} | plano: ${plano}`);
+          return { existente: true, plano, dataExpiracao };
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[CRM] checkClienteExistente (Sheets) error:', err.message);
+  }
+
+  // 2) Fallback: Supabase (tabela leads) — qualquer lead registado conta como cliente conhecido/retornante
+  try {
+    const supabase = getClient && getClient();
+    if (!supabase) return baseResult;
+
+    const { data, error } = await supabase
+      .from('leads')
+      .select('id, status, ultimo_contacto')
+      .eq('numero', normalized)
+      .maybeSingle();
+
+    if (error) {
+      console.error('[CRM] checkClienteExistente (Supabase) error:', error.message);
+      return baseResult;
+    }
+
+    if (data) {
+      return { existente: true, plano: null, dataExpiracao: null };
+    }
+  } catch (err) {
+    console.error('[CRM] checkClienteExistente (Supabase) fatal:', err.message);
+  }
+
+  return baseResult;
+}
+
 module.exports = {
   upsertLead,
   updateLeadStatus,
@@ -306,5 +369,6 @@ module.exports = {
   getCrmResumo,
   getLeadDetalhe,
   marcarInactivos,
-   handleLeads,
+  handleLeads,
+  checkClienteExistente,
 };

@@ -17,7 +17,17 @@ const {
   renovarClientePorTelefone,
 } = require('../integrations/google-sheets');
 const botSettings = require('../../config/bot_settings.json');
-const { upsertLead, updateLeadStatus, registarCompra, addProdutoInteresse, getCrmResumo, getLeadDetalhe, marcarInactivos, handleLeads } = require('../crm/leads');
+const {
+  upsertLead,
+  updateLeadStatus,
+  registarCompra,
+  addProdutoInteresse,
+  getCrmResumo,
+  getLeadDetalhe,
+  marcarInactivos,
+  handleLeads,
+  checkClienteExistente,
+} = require('../crm/leads');
 const { addToWaitlist, getWaitlistResumo, handleWaitlist } = require('../stock/waitlist');
 const { triggerStockReposto } = require('../stock/stock-notifier');
 const { detectarReclamacao, detectarLocalizacao, gerarRespostaLocalizacao, formatarNotificacaoReclamacao } = require('../crm/complaints');
@@ -711,18 +721,38 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const inventoryString = await getInventoryFn();
       const stockCountsResult = await getStockCountsForPrompt(config.stock);
 
-      // Passo A+: Reconhecimento de cliente via Supabase (tabela clientes, coluna whatsapp)
+      // Passo A+: Reconhecimento de cliente existente (Sheets primeiro, Supabase como fallback)
+      let diasRestantes = null;
       let customerName = null;
       let isReturningCustomer = false;
+
+      // 1) Sheets + leads (CRM) — usa checkClienteExistente
+      try {
+        const infoExistente = await checkClienteExistente(config.stock, senderNum);
+        if (infoExistente && infoExistente.existente) {
+          isReturningCustomer = true;
+          if (infoExistente.dataExpiracao instanceof Date && !isNaN(infoExistente.dataExpiracao)) {
+            diasRestantes = Math.ceil(
+              (infoExistente.dataExpiracao.getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+            );
+          }
+        }
+      } catch (crmErr) {
+        console.error('[CRM] checkClienteExistente error:', crmErr.message);
+      }
+
+      // 2) Supabase (clientes + vendas) — enriquece com nome e data_expiracao mais recente
+      let customerName = null;
       let lastSale = null;
       try {
         ({ customerName, isReturningCustomer, lastSale } = await getClientByPhone(senderNum));
       } catch (sbErr) {
         console.error('[SUPABASE] Falha ao consultar cliente:', sbErr.message);
       }
-      console.log(`[CRM] ${senderNum} → cliente: ${customerName || 'NOVO'} | retornante: ${isReturningCustomer}`);
+      console.log(
+        `[CRM] ${senderNum} → cliente: ${customerName || 'NOVO'} | retornante: ${isReturningCustomer}`
+      );
 
-      let diasRestantes = null;
       if (lastSale?.data_expiracao) {
         const parts = lastSale.data_expiracao.split('/');
         const exp = parts.length === 3
