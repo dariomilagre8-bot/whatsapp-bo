@@ -128,7 +128,10 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const isDocument = !!messageData.documentMessage;
       const isAudio = !!(messageData.audioMessage || messageData.pttMessage);
 
-      const supervisors = (process.env.SUPERVISOR_NUMBERS || process.env.SUPERVISOR_NUMBER || '244941713216').split(',').map(s => (s && String(s).trim()) || '').filter(Boolean);
+      const supervisors = (process.env.SUPERVISOR_NUMBERS || process.env.SUPERVISOR_NUMBER || '244941713216')
+        .split(',')
+        .map(s => (s && String(s).trim().replace(/\D/g, '')) || '')
+        .filter(num => num && num.length === 12);
 
       console.log(`\n📩 De: ${senderNum} (${pushName}) | Msg: "${textMessage.substring(0, 50)}" | Img: ${isImage} | Doc: ${isDocument} | Audio: ${isAudio}`);
 
@@ -741,6 +744,12 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const resumoMatch = finalResponse.match(resumoRegex);
       if (resumoMatch) {
         session.pendingSale = resumoMatch[1].trim();
+        let plataformaNorm = (session.platform || session.pendingSale || '').toLowerCase().trim();
+        if (plataformaNorm.includes('prime')) plataformaNorm = 'Prime Video';
+        if (plataformaNorm.includes('netflix')) plataformaNorm = 'Netflix';
+        if (plataformaNorm) {
+          session.platform = plataformaNorm;
+        }
         finalResponse = finalResponse.replace(new RegExp(`${metaTag}\\s*:[^\\n]*`, 'gi'), '').trim().replace(/\n{2,}/g, '\n');
         console.log(`[CPA] pendingSale guardado para ${senderNum}:`, session.pendingSale);
         // CRM: marcar como interessado quando há pendingSale
