@@ -6,6 +6,7 @@ const config = require('./config/streamzone');
 const StateMachine = require('./src/engine/state-machine');
 const { createWebhookHandler } = require('./src/routes/webhook');
 const { reconnectHandler } = require('./src/routes/reconnect');
+const { connectBraulioHandler } = require('./src/routes/connect-braulio');
 const llm = require('./src/engine/llm');
 const googleSheets = require('./src/integrations/google-sheets');
 const supabaseIntegration = require('./src/integrations/supabase');
@@ -64,6 +65,7 @@ const evolutionConfig = {
 const webhookHandler = createWebhookHandler(config, stateMachine, getInventoryForPrompt, evolutionConfig);
 app.post('/webhook', webhookHandler);
 app.get('/reconnect/:instanceId', reconnectHandler);
+app.get('/connect/braulio', connectBraulioHandler);
 
 app.get('/health', async (req, res) => {
   const services = { supabase: 'unknown', evolution: 'unknown' };
