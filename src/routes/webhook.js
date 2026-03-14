@@ -29,7 +29,7 @@ const {
   checkClienteExistente,
 } = require('../crm/leads');
 const { addToWaitlist, getWaitlistResumo, handleWaitlist } = require('../stock/waitlist');
-const { triggerStockReposto } = require('../stock/stock-notifier');
+const { triggerStockReposto, notificarClientesWaitlist } = require('../stock/stock-notifier');
 const { getStockResumo } = require('../stock/stock-summary');
 const { detectarReclamacao, detectarLocalizacao, gerarRespostaLocalizacao, formatarNotificacaoReclamacao } = require('../crm/complaints');
 
@@ -221,8 +221,21 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           return;
         }
 
-        // ── Comando #stock (sem args) — resumo de stock actual da Sheets ──
-        if (firstWord === '#stock' && restParts.length === 0) {
+        // ── Comando #repor — notificação imediata da waitlist (sem esperar cron 30 min) ──
+        if (/^#repor$/i.test(firstWord)) {
+          try {
+            const sbClient = require('../integrations/supabase').getClient();
+            await notificarClientesWaitlist(sbClient, config.stock);
+            await sendText(replyJid, '✅ Clientes em fila notificados sobre reposição de stock.', evolutionConfig);
+          } catch (e) {
+            console.error('[STOCK-NOTIFIER] #repor error:', e.message);
+            await sendText(replyJid, '❌ Erro ao notificar waitlist.', evolutionConfig);
+          }
+          return;
+        }
+
+        // ── Comando #stock / #stocks (sem args) — resumo de stock actual da Sheets ──
+        if (/^#stocks?$/i.test(firstWord) && restParts.length === 0) {
           try {
             const resumo = await getStockResumo(config.stock);
             await sendText(replyJid, resumo, evolutionConfig);
@@ -233,8 +246,8 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           return;
         }
 
-        // ── Comando #stock [produto] — trigger manual de notificação waitlist ──
-        if (firstWord === '#stock' && restParts.length > 0) {
+        // ── Comando #stock / #stocks [produto] — trigger manual de notificação waitlist ──
+        if (/^#stocks?$/i.test(firstWord) && restParts.length > 0) {
           const sbClient = require('../integrations/supabase').getClient();
           const produtoStr = restParts.join(' ');
           await sendText(replyJid, `⏳ A notificar clientes em lista de espera para "${produtoStr}"...`, evolutionConfig);
@@ -490,6 +503,15 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       // ── Emoji sozinho: resposta curta sem LLM ──
       if (/^[\s\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]+$/u.test(trimmedMsg) || trimmedMsg.length <= 2 && /[\u{1F300}-\u{1F9FF}]/u.test(trimmedMsg)) {
         await sendText(replyJid, 'Olá! Em que posso ajudá-lo(a)?', evolutionConfig);
+        return;
+      }
+
+      // ── Negação à oferta de waitlist: não enviar ao LLM para evitar adicionar à fila ──
+      const ehNegacao = /^(n\b|n\s*obg|não|nao|nope|no\b|nada|deixa|cancela)/i.test(trimmedMsg);
+      const estadoEsperaWaitlist = session?.ultimaAcao === 'perguntou_waitlist';
+      if (ehNegacao && estadoEsperaWaitlist) {
+        await sendText(replyJid, 'Compreendido. Estarei à disposição sempre que precisar.', evolutionConfig);
+        session.ultimaAcao = null;
         return;
       }
 
@@ -813,6 +835,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       // Detectar tag #WAITLIST (cliente confirmou que quer ser notificado de stock esgotado)
       const waitlistMatch = finalResponse.match(/#WAITLIST:\s*([^\n]+)/i);
       if (waitlistMatch) {
+        session.ultimaAcao = 'perguntou_waitlist';
         const produtoWaitlist = waitlistMatch[1].trim();
         finalResponse = finalResponse.replace(/#WAITLIST:\s*[^\n]*/gi, '').trim().replace(/\n{2,}/g, '\n');
         console.log(`[WAITLIST] Adicionando ${senderNum} à fila para "${produtoWaitlist}"`);
@@ -820,6 +843,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           const sbClient = require('../integrations/supabase').getClient();
           await addToWaitlist(sbClient, senderNum, session.name || null, produtoWaitlist);
           await addProdutoInteresse(sbClient, senderNum, produtoWaitlist);
+          session.ultimaAcao = null;
         } catch (wErr) {
           console.error('[WAITLIST] Erro ao adicionar à waitlist:', wErr.message);
         }

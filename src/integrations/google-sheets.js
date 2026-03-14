@@ -87,10 +87,9 @@ function normalizePlanName(raw) {
 }
 
 /**
- * Lê a planilha e agrupa por Plataforma + Plano + Valor, devolvendo CONTAGENS
- * em vez de listar todas as linhas (reduz tamanho do prompt e evita repetição).
- * Colunas: A=Plataforma, D=Plano (opcional), F=Status, H=Preço/Valor.
- * Saída: "Netflix - Individual (5000 Kz): 12 perfis" ou "Netflix - Família Completa (24000 Kz): 2 contas".
+ * Lê a planilha e agrupa por Plataforma + Plano (sem preço — preços correctos estão na [TABELA DE PREÇOS BLINDADA] do prompt).
+ * Colunas: A=Plataforma, D=Plano (opcional), F=Status.
+ * Saída: "Netflix - Partilha: 1 perfil disponível" / "Netflix - Família Completa: 2 contas disponíveis".
  */
 async function getInventoryForPrompt(stockConfig, productsConfig) {
   if (!sheets) return 'Nenhum dado de inventário disponível no momento.';
@@ -111,10 +110,9 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
     const platformCol = 0;
     const statusCol = 5;
     const planCol = 12;
-    const priceCol = 13;
 
     const counts = new Map();
-
+    // Agrupar por plataforma + plano apenas (sem preço da Sheet — preços correctos estão na [TABELA DE PREÇOS BLINDADA])
     for (let i = 1; i < rows.length; i++) {
       const row = rows[i];
       const platformRaw = cell(row, platformCol) || cell(row, 1);
@@ -124,12 +122,7 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
       if (!isAvailable || !platform) continue;
 
       const rawPlan = hasPlanCol ? cell(row, planCol) : '';
-      const rawPrice = cell(row, priceCol);
-      const value = (typeof rawPrice === 'number'
-        ? rawPrice
-        : parseInt(String(rawPrice || '0').replace(/\D/g, ''), 10)) || 0;
-
-      const key = rawPlan ? `${platform}|${rawPlan}|${value}` : `${platform}||${value}`;
+      const key = rawPlan ? `${platform}|${rawPlan}` : `${platform}|`;
       counts.set(key, (counts.get(key) || 0) + 1);
     }
 
@@ -138,11 +131,10 @@ async function getInventoryForPrompt(stockConfig, productsConfig) {
       const segs = key.split('|');
       const platform = segs[0] || '';
       const rawPlan = segs[1] || '';
-      const valueDisplay = segs[2] || segs[segs.length - 1] || '0';
       const planLabel = rawPlan || 'Plano';
       const isConta = /familia|completa|completo|5\s*perfil/i.test(planLabel);
       const unidade = isConta ? 'contas' : 'perfis';
-      parts.push(`${platform} - ${planLabel} (${valueDisplay} Kz): ${count} ${unidade}`);
+      parts.push(`${platform} - ${planLabel}: ${count} ${unidade} ${count === 1 ? 'disponível' : 'disponíveis'}`);
     }
     parts.sort();
 
