@@ -34,6 +34,7 @@ async function addToWaitlist(supabase, numero, nome, produto) {
         phone_number: normalized,
         nome_cliente: nome || null,
         produto_desejado: produto,
+        product_name: produto,
         data_pedido: new Date().toISOString(),
         notificado: false,
         vendido: false,

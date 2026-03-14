@@ -463,14 +463,18 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       if (!textMessage.trim()) return;
 
-      // ── Rate limit: máx 2 respostas por 30s por número ──
-      if (!checkRateLimit(senderNum)) {
+      const trimmedMsg = textMessage.trim();
+
+      // ── Rate limit: máx 2 respostas por 30s por número (excepção: "sim" / confirmação curta) ──
+      const isShortConfirmation = /^(sim|s|yes|claro|quero|pode ser|bora|vamos|ok|okay|certo)$/i.test(trimmedMsg);
+      if (!isShortConfirmation && !checkRateLimit(senderNum)) {
         console.log(`[RATE-LIMIT] ${senderNum}: ignorado (excedeu ${RATE_LIMIT_MAX} em ${RATE_LIMIT_WINDOW_MS / 1000}s)`);
+        await new Promise((r) => setTimeout(r, 2000));
+        await sendText(replyJid, 'Recebi a sua mensagem. Um momento, por favor.', evolutionConfig);
         return;
       }
 
       // ── Emoji sozinho: resposta curta sem LLM ──
-      const trimmedMsg = textMessage.trim();
       if (/^[\s\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]+$/u.test(trimmedMsg) || trimmedMsg.length <= 2 && /[\u{1F300}-\u{1F9FF}]/u.test(trimmedMsg)) {
         await sendText(replyJid, 'Olá! Em que posso ajudá-lo(a)?', evolutionConfig);
         return;
