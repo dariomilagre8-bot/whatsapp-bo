@@ -46,7 +46,7 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
  */
 function temStock(stockCounts, produto) {
   if (!stockCounts) return false;
-  const p = produto.toLowerCase();
+  const p = String(produto || '').toLowerCase();
   if (p.includes('netflix')) {
     return (stockCounts.netflix_individual || 0) > 0;
   }
@@ -88,18 +88,19 @@ async function notificarClientesWaitlist(supabase, stockConfig, produtoForcado =
   let totalEnviados = 0;
 
   for (const produto of produtos) {
-    if (!produtoForcado && !temStock(counts, produto)) {
-      console.log(`[STOCK-NOTIFIER] ${produto} ainda sem stock, a ignorar`);
+    const produtoStr = String(produto ?? '');
+    if (!produtoForcado && !temStock(counts, produtoStr)) {
+      console.log(`[STOCK-NOTIFIER] ${produtoStr || '(vazio)'} ainda sem stock, a ignorar`);
       continue;
     }
 
-    const clientes = await getClientesPorNotificar(supabase, produto);
+    const clientes = await getClientesPorNotificar(supabase, produtoStr);
     if (clientes.length === 0) {
-      console.log(`[STOCK-NOTIFIER] Nenhum cliente em espera para ${produto}`);
+      console.log(`[STOCK-NOTIFIER] Nenhum cliente em espera para ${produtoStr || '(vazio)'}`);
       continue;
     }
 
-    console.log(`[STOCK-NOTIFIER] ${clientes.length} cliente(s) a notificar para ${produto}`);
+    console.log(`[STOCK-NOTIFIER] ${clientes.length} cliente(s) a notificar para ${produtoStr || '(vazio)'}`);
     const idsNotificados = [];
 
     for (const cliente of clientes) {
@@ -108,12 +109,18 @@ async function notificarClientesWaitlist(supabase, stockConfig, produtoForcado =
         break;
       }
 
-      const nome = cliente.nome_cliente || 'Cliente';
+      const phone = cliente.phone_number ?? cliente.numero_cliente ?? '';
+      if (!phone) {
+        console.warn('[STOCK-NOTIFIER] Cliente sem número, a ignorar:', cliente.id);
+        continue;
+      }
+      const nome = cliente.nome_cliente ?? 'Cliente';
+      const produtoMsg = produtoStr || (cliente.produto_desejado ?? cliente.product_name ?? 'produto');
       const msg =
-        `Olá ${nome}! 🎉 Boas notícias — o *${produto}* que procurava já está disponível!\n\n` +
+        `Olá ${nome}! 🎉 Boas notícias — o *${produtoMsg}* que procurava já está disponível!\n\n` +
         `Quer que reserve um acesso para si? Responda com "Sim" e tratarei de tudo. 😊`;
 
-      const ok = await sendWhatsApp(cliente.numero_cliente, msg);
+      const ok = await sendWhatsApp(phone, msg);
       if (ok) {
         idsNotificados.push(cliente.id);
         totalEnviados++;

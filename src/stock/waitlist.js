@@ -99,7 +99,7 @@ async function getProdutosEmEspera(supabase) {
     // Extrair produtos únicos (normaliza para plataforma base: Netflix / Prime Video)
     const produtos = new Set();
     for (const row of (data || [])) {
-      const p = (row.produto_desejado || '').toLowerCase();
+      const p = String((row?.produto_desejado ?? row?.product_name) || '').toLowerCase();
       if (p.includes('netflix')) produtos.add('Netflix');
       if (p.includes('prime')) produtos.add('Prime Video');
     }

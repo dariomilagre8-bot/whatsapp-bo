@@ -514,6 +514,9 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         session.ultimaAcao = null;
         return;
       }
+      if (estadoEsperaWaitlist) {
+        session.ultimaAcao = null;
+      }
 
       // ── Renovação: "Sim" após pergunta "Quer renovar?" (só quando já estamos à espera) ──
       if (session.renovacaoAguardandoConfirmacao && /^(sim|s|yes|claro|quero|pode ser|bora|vamos|ok|okay|certo)$/i.test(trimmedMsg)) {
@@ -843,7 +846,6 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           const sbClient = require('../integrations/supabase').getClient();
           await addToWaitlist(sbClient, senderNum, session.name || null, produtoWaitlist);
           await addProdutoInteresse(sbClient, senderNum, produtoWaitlist);
-          session.ultimaAcao = null;
         } catch (wErr) {
           console.error('[WAITLIST] Erro ao adicionar à waitlist:', wErr.message);
         }
