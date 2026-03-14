@@ -506,16 +506,32 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         return;
       }
 
-      // ── Negação à oferta de waitlist: não enviar ao LLM para evitar adicionar à fila ──
-      const ehNegacao = /^(n\b|n\s*obg|não|nao|nope|no\b|nada|deixa|cancela)/i.test(trimmedMsg);
-      const estadoEsperaWaitlist = session?.ultimaAcao === 'perguntou_waitlist';
-      if (ehNegacao && estadoEsperaWaitlist) {
-        await sendText(replyJid, 'Compreendido. Estarei à disposição sempre que precisar.', evolutionConfig);
+      // ── Waitlist: confirmação ou negação à oferta (usa session.produtoWaitlist guardado na resposta com #WAITLIST:) ──
+      const confirmacoesWaitlist = /^(sim\b|s\b|ok\b|claro|pode|quero|avisa|yes\b)/i;
+      const negacoesWaitlist = /^(n\b|n\s*obg|não|nao|nope|no\b|nada|deixa|cancela)/i;
+      if (session?.ultimaAcao === 'perguntou_waitlist') {
+        if (confirmacoesWaitlist.test(trimmedMsg)) {
+          const produtoWaitlist = session.produtoWaitlist || session.platform || 'serviço';
+          try {
+            const sbClient = require('../integrations/supabase').getClient();
+            await addToWaitlist(sbClient, senderNum, session.name || null, produtoWaitlist);
+            await addProdutoInteresse(sbClient, senderNum, produtoWaitlist);
+          } catch (e) {
+            console.error('[WAITLIST] Erro ao adicionar na confirmação:', e.message);
+          }
+          await sendText(replyJid, 'Perfeito. Avisarei assim que houver vaga. Até breve.', evolutionConfig);
+          session.ultimaAcao = null;
+          session.produtoWaitlist = null;
+          return;
+        }
+        if (negacoesWaitlist.test(trimmedMsg)) {
+          await sendText(replyJid, 'Compreendido. Estarei à disposição sempre que precisar.', evolutionConfig);
+          session.ultimaAcao = null;
+          session.produtoWaitlist = null;
+          return;
+        }
         session.ultimaAcao = null;
-        return;
-      }
-      if (estadoEsperaWaitlist) {
-        session.ultimaAcao = null;
+        session.produtoWaitlist = null;
       }
 
       // ── Renovação: "Sim" após pergunta "Quer renovar?" (só quando já estamos à espera) ──
@@ -835,20 +851,14 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         } catch (_) {}
       }
 
-      // Detectar tag #WAITLIST (cliente confirmou que quer ser notificado de stock esgotado)
+      // Detectar tag #WAITLIST (LLM ofereceu lista de espera — guardar produto e estado; adição à fila só na confirmação do cliente)
       const waitlistMatch = finalResponse.match(/#WAITLIST:\s*([^\n]+)/i);
       if (waitlistMatch) {
-        session.ultimaAcao = 'perguntou_waitlist';
         const produtoWaitlist = waitlistMatch[1].trim();
+        session.ultimaAcao = 'perguntou_waitlist';
+        session.produtoWaitlist = produtoWaitlist;
         finalResponse = finalResponse.replace(/#WAITLIST:\s*[^\n]*/gi, '').trim().replace(/\n{2,}/g, '\n');
-        console.log(`[WAITLIST] Adicionando ${senderNum} à fila para "${produtoWaitlist}"`);
-        try {
-          const sbClient = require('../integrations/supabase').getClient();
-          await addToWaitlist(sbClient, senderNum, session.name || null, produtoWaitlist);
-          await addProdutoInteresse(sbClient, senderNum, produtoWaitlist);
-        } catch (wErr) {
-          console.error('[WAITLIST] Erro ao adicionar à waitlist:', wErr.message);
-        }
+        console.log(`[WAITLIST] Oferta registada para ${senderNum} — produto: "${produtoWaitlist}" (adição à fila na confirmação do cliente)`);
       }
 
       // ── Lacuna 4 (backup LLM): tag #RECLAMACAO — pausa + notifica supervisor ──
