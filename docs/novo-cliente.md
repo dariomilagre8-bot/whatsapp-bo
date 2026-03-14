@@ -110,19 +110,10 @@ Para testar o fluxo com a instância **Streamzone Braulio** (mesmas configs que 
 
 Pode usar o script com `--webhook-url "https://whatssiru.46.224.99.52.nip.io"` para registar o webhook automaticamente, desde que passe também `--evolution-url` e `--evolution-key`.
 
-**Registar webhook manualmente (Streamzone Braulio):**
+**Registar webhook (Streamzone Braulio):**
 
 ```bash
-curl -X POST "https://whatsapp-evolution-api.oxuzyt.easypanel.host/webhook/set/Streamzone%20Braulio" \
-  -H "Content-Type: application/json" \
-  -H "apikey: SUA_EVOLUTION_API_KEY" \
-  -d '{
-    "url": "https://whatssiru.46.224.99.52.nip.io/webhook",
-    "enabled": true,
-    "webhookByEvents": false,
-    "webhookBase64": false,
-    "events": ["MESSAGES_UPSERT", "MESSAGES_UPDATE", "CONNECTION_UPDATE", "QRCODE_UPDATED"]
-  }'
+node scripts/registar-webhook.js
 ```
 
-Substitua `SUA_EVOLUTION_API_KEY` pela chave real.
+Requer `.env` com `EVOLUTION_API_URL` e `EVOLUTION_API_KEY`. O script regista o webhook da instância Streamzone Braulio em `https://whatssiru.46.224.99.52.nip.io/webhook`.
