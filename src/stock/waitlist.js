@@ -18,8 +18,8 @@ async function addToWaitlist(supabase, numero, nome, produto) {
     const { data: existing } = await supabase
       .from('stock_waitlist')
       .select('id')
-      .eq('numero_cliente', normalized)
-      .ilike('produto_desejado', `%${produto.split(' ')[0]}%`)
+      .eq('phone_number', normalized)
+      .ilike('product_name', `%${produto.split(' ')[0]}%`)
       .eq('notificado', false)
       .limit(1);
 
@@ -31,9 +31,9 @@ async function addToWaitlist(supabase, numero, nome, produto) {
     const { data, error } = await supabase
       .from('stock_waitlist')
       .insert({
-        numero_cliente: normalized,
+        phone_number: normalized,
         nome_cliente: nome || null,
-        produto_desejado: produto,
+        product_name: produto,
         data_pedido: new Date().toISOString(),
         notificado: false,
         vendido: false,
@@ -62,8 +62,8 @@ async function getClientesPorNotificar(supabase, produto) {
 
     const { data, error } = await supabase
       .from('stock_waitlist')
-      .select('id, numero_cliente, nome_cliente, produto_desejado')
-      .ilike('produto_desejado', `%${produto}%`)
+      .select('id, phone_number, nome_cliente, product_name')
+      .ilike('product_name', `%${produto}%`)
       .eq('notificado', false)
       .eq('vendido', false)
       .gte('data_pedido', cutoff.toISOString())
@@ -88,7 +88,7 @@ async function getProdutosEmEspera(supabase) {
 
     const { data, error } = await supabase
       .from('stock_waitlist')
-      .select('produto_desejado')
+      .select('product_name')
       .eq('notificado', false)
       .eq('vendido', false)
       .gte('data_pedido', cutoff.toISOString());
@@ -98,7 +98,7 @@ async function getProdutosEmEspera(supabase) {
     // Extrair produtos únicos (normaliza para plataforma base: Netflix / Prime Video)
     const produtos = new Set();
     for (const row of (data || [])) {
-      const p = (row.produto_desejado || '').toLowerCase();
+      const p = (row.product_name || '').toLowerCase();
       if (p.includes('netflix')) produtos.add('Netflix');
       if (p.includes('prime')) produtos.add('Prime Video');
     }
@@ -141,7 +141,7 @@ async function getWaitlistResumo(supabase) {
 
     const { data, error } = await supabase
       .from('stock_waitlist')
-      .select('produto_desejado, notificado')
+      .select('product_name, notificado')
       .gte('data_pedido', cutoff.toISOString());
 
     if (error) throw error;
@@ -153,7 +153,7 @@ async function getWaitlistResumo(supabase) {
 
     const porProduto = {};
     for (const r of rows.filter(r => !r.notificado)) {
-      const p = (r.produto_desejado || '').toLowerCase().includes('prime') ? 'Prime Video' : 'Netflix';
+      const p = (r.product_name || '').toLowerCase().includes('prime') ? 'Prime Video' : 'Netflix';
       porProduto[p] = (porProduto[p] || 0) + 1;
     }
 
