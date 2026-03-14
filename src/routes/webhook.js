@@ -927,10 +927,24 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         console.log(`[PAGAMENTO-ANTECIPADO] ${senderNum}: ${session.mesesPagamento} meses`);
       }
 
-      await sendText(replyJid, finalResponse, evolutionConfig);
+      // Strip centralizado de tags internas — só envia se sobrar texto visível
+      const textoLimpo = finalResponse
+        .replace(new RegExp(`${metaTag}\\s*:[^\\n]*`, 'gi'), '')
+        .replace(/#WAITLIST:[^\n]*/gi, '')
+        .replace(/#RESUMO_VENDA:[^\n]*/gi, '')
+        .replace(/#RECLAMACAO:[^\n]*/gi, '')
+        .replace(/#CANCELAMENTO:[^\n]*/gi, '')
+        .replace(/#INDICACAO:[^\n]*/gi, '')
+        .replace(/#MESES:[^\n]*/gi, '')
+        .replace(/\n{2,}/g, '\n')
+        .trim();
+
+      if (textoLimpo) {
+        await sendText(replyJid, textoLimpo, evolutionConfig);
+      }
 
       stateMachine.addToHistory(senderNum, 'user', textMessage);
-      stateMachine.addToHistory(senderNum, 'model', finalResponse);
+      stateMachine.addToHistory(senderNum, 'model', textoLimpo || finalResponse);
 
     } catch (err) {
       console.error('[WEBHOOK FATAL ERROR]', err);
