@@ -9,6 +9,7 @@ const {
   libertarPerfil,
 } = require('../integrations/google-sheets');
 const { notificarClientesWaitlist } = require('../stock/stock-notifier');
+const clientesConfig = require('../../config/clientes');
 
 const MAX_RENEWAL_MESSAGES_PER_DAY = 10;
 const RATE_LIMIT_MS = 6000;
@@ -65,9 +66,10 @@ async function sendRenewalWhatsApp(phone, text) {
 }
 
 async function notifySupervisor(text) {
-  const raw = process.env.SUPERVISOR_NUMBERS || process.env.SUPERVISOR_NUMBER || '';
-  const list = raw.split(',').map(s => s.trim().replace(/[^0-9]/g, '')).filter(Boolean);
-  for (const num of list) {
+  const todosSupervisores = [...new Set(
+    Object.values(clientesConfig).flatMap(c => c.supervisores || [])
+  )];
+  for (const num of todosSupervisores) {
     if (num) await sendRenewalWhatsApp(num, text);
   }
 }

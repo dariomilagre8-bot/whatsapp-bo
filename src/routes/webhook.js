@@ -98,15 +98,10 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
     // Multi-instância: Evolution API envia instance no payload
     const instanceName = body?.instance || body?.instanceName || body?.provider?.instance || body?.data?.provider?.instance
       || process.env.EVOLUTION_INSTANCE || process.env.EVOLUTION_INSTANCE_NAME || 'Zara-Teste';
-    const clientConfig = clientesConfig[instanceName] || {
-      botName: process.env.BOT_NAME || 'Zara',
-      supervisores: (process.env.SUPERVISOR_NUMBERS || process.env.SUPERVISOR_NUMBER || '244941713216')
-        .split(',').map(s => (s && String(s).trim().replace(/\D/g, '')) || '').filter(n => n && n.length === 12),
-    };
-    const supervisors = Array.isArray(clientConfig.supervisores)
+    const clientConfig = clientesConfig[instanceName] || clientesConfig['Zara-Teste'];
+    const supervisors = Array.isArray(clientConfig?.supervisores)
       ? clientConfig.supervisores
-      : (process.env.SUPERVISOR_NUMBERS || process.env.SUPERVISOR_NUMBER || '244941713216')
-          .split(',').map(s => (s && String(s).trim().replace(/\D/g, '')) || '').filter(n => n && n.length === 12);
+      : ['244941713216'];
     const evolutionConfigForInstance = { ...evolutionConfig, instance: instanceName };
 
     res.status(200).json({ ok: true });
@@ -663,7 +658,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       ];
       const isHumanRequest = humanPatterns.some(p => p.test(textMessage));
 
-      if (isHumanRequest && !session.paused && !isSupervisor(senderNum)) {
+      if (isHumanRequest && !session.paused && !isSup) {
         session.paused = true;
         stateMachine.setState(senderNum, 'pausado');
         const clientName = session.name || 'Cliente';
@@ -684,7 +679,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       }
 
       // ── Interceptor: Erro de localização/Household Netflix — auto-ajuda (NÃO escalar) ──
-      if (detectarLocalizacao(textMessage) && !session.paused && !isSupervisor(senderNum)) {
+      if (detectarLocalizacao(textMessage) && !session.paused && !isSup) {
         if (session.locationHelpSent) {
           session.paused = true;
           stateMachine.setState(senderNum, 'pausado');
@@ -720,7 +715,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       }
 
       // ── Interceptor: Reclamação técnica grave (ANTES do LLM) — escalar ao supervisor ──
-      if (detectarReclamacao(textMessage) && !session.paused && !isSupervisor(senderNum)) {
+      if (detectarReclamacao(textMessage) && !session.paused && !isSup) {
         session.paused = true;
         stateMachine.setState(senderNum, 'pausado');
         const clientName = session.name || 'Cliente';
@@ -749,7 +744,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         /\b(cancelamento|encerrar\s*(a\s*minha|o\s*meu|a\s*conta))\b/i,
       ];
       const isCancelRequest = cancelPatterns.some((p) => p.test(textMessage));
-      if (isCancelRequest && !session.paused && !isSupervisor(senderNum)) {
+      if (isCancelRequest && !session.paused && !isSup) {
         const clientName = session.name || 'Cliente';
         const plataformaSessao = session.platform || session.pendingSale?.split(' ')[0] || 'serviço';
         session.paused = true;
