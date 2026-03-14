@@ -80,13 +80,27 @@ function formatData(d) {
   return x.toLocaleDateString('pt-PT', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
-async function runDailyRenewalJob(stockConfig, paymentConfig, supabase) {
+function diasRestantes(dataExpiracao) {
+  if (!dataExpiracao) return null;
+  const exp = new Date(dataExpiracao);
+  const now = new Date();
+  exp.setHours(0, 0, 0, 0);
+  now.setHours(0, 0, 0, 0);
+  return Math.ceil((exp - now) / (1000 * 60 * 60 * 24));
+}
+
+/**
+ * @param {object} options - { force: true } para ignorar horário (ex.: comando #renovacao)
+ */
+async function runDailyRenewalJob(stockConfig, paymentConfig, supabase, options = {}) {
   if (!stockConfig) return;
-  if (!isWithinAllowedHours()) {
+  const force = options.force === true;
+  if (!force && !isWithinAllowedHours()) {
     console.log('[RENEWAL] Fora do horário permitido (22h–08h), sem envio.');
     return;
   }
   resetDailyCountIfNeeded();
+  console.log('[RENEWAL] Cron iniciado' + (force ? ' (execução manual #renovacao)' : ''));
 
   const p = paymentConfig || {};
   const metodoPagamento = p.methods ? p.methods.join(' ou ') : `IBAN ${p.iban || ''} / Multicaixa ${p.multicaixa || ''}`;
@@ -94,36 +108,50 @@ async function runDailyRenewalJob(stockConfig, paymentConfig, supabase) {
   try {
     // ── 3 dias antes da expiração ──
     const linhas3d = await getLinhasRenovacao(stockConfig, '3dias');
+    console.log(`[RENEWAL] ${linhas3d.length} cliente(s) a verificar (3 dias antes)`);
     for (const lin of linhas3d) {
+      const dias = diasRestantes(lin.dataExpiracao);
+      console.log(`[RENEWAL] Cliente ${lin.telefone} — expira ${lin.dataExpiracaoRaw} — dias restantes: ${dias}`);
       if (!canSendRenewalMessage()) break;
       const msg =
         `Olá ${lin.cliente || 'Cliente'}! 😊 A sua conta *${lin.platform}* (${lin.plano || 'Plano'}) expira no dia *${formatData(lin.dataExpiracaoRaw)}*. ` +
         `Para renovar sem interrupção, basta confirmar o pagamento de *${lin.valor || '—'} Kz*. Dados: ${metodoPagamento}. Quer renovar?`;
-      await sendRenewalWhatsApp(lin.telefone, msg);
+      const ok = await sendRenewalWhatsApp(lin.telefone, msg);
+      if (ok) console.log(`[RENEWAL] ✅ Lembrete enviado para ${lin.telefone}`);
+      else console.log(`[RENEWAL] ⏭ ${lin.telefone} — sem acção (envio falhou)`);
       await sleep(RATE_LIMIT_MS);
     }
 
     // ── No dia da expiração ──
     const linhasHoje = await getLinhasRenovacao(stockConfig, 'hoje');
+    console.log(`[RENEWAL] ${linhasHoje.length} cliente(s) a verificar (expira hoje)`);
     for (const lin of linhasHoje) {
+      console.log(`[RENEWAL] Cliente ${lin.telefone} — expira hoje ${lin.dataExpiracaoRaw}`);
       if (!canSendRenewalMessage()) break;
       const msg =
         `Olá ${lin.cliente || 'Cliente'}, a sua conta *${lin.platform}* expira hoje. ` +
         `Se quiser continuar, confirme o pagamento. Caso contrário, o perfil será libertado para outro cliente. Obrigado! 🤝`;
-      await sendRenewalWhatsApp(lin.telefone, msg);
+      const ok = await sendRenewalWhatsApp(lin.telefone, msg);
+      if (ok) console.log(`[RENEWAL] ✅ Lembrete enviado para ${lin.telefone}`);
+      else console.log(`[RENEWAL] ⏭ ${lin.telefone} — sem acção (envio falhou)`);
       await sleep(RATE_LIMIT_MS);
     }
 
     // ── 1 dia após expiração: marcar a_verificar + última mensagem + notificar supervisor ──
     const linhas1d = await getLinhasRenovacao(stockConfig, '1dia');
+    console.log(`[RENEWAL] ${linhas1d.length} cliente(s) expirados há 1 dia (a_verificar)`);
     for (const lin of linhas1d) {
+      console.log(`[RENEWAL] Cliente ${lin.telefone} — expirou ${lin.dataExpiracaoRaw} — marcar a_verificar`);
       await marcarComoAVerificar(stockConfig, lin.sheetRow);
       if (canSendRenewalMessage()) {
         const msg =
           `A sua conta *${lin.platform}* expirou. Se ainda quiser renovar, tem 48h para regularizar. Depois o perfil será atribuído a outro cliente.`;
-        await sendRenewalWhatsApp(lin.telefone, msg);
-        await sleep(RATE_LIMIT_MS);
+        const ok = await sendRenewalWhatsApp(lin.telefone, msg);
+        if (ok) console.log(`[RENEWAL] ✅ Lembrete enviado para ${lin.telefone}`);
+      } else {
+        console.log(`[RENEWAL] ⏭ ${lin.telefone} — sem acção necessária (limite diário)`);
       }
+      await sleep(RATE_LIMIT_MS);
       await notifySupervisor(
         `⚠️ Perfil ${lin.nomePerfil || lin.email || 'N/D'} da conta ${lin.email} expirou. Cliente ${lin.cliente || lin.telefone} não renovou. Libertando em 48h.`
       );
@@ -131,9 +159,11 @@ async function runDailyRenewalJob(stockConfig, paymentConfig, supabase) {
 
     // ── 3 dias após expiração: libertar perfil e notificar waitlist ──
     const linhas3dLibertar = await getLinhasRenovacao(stockConfig, '3dias_libertar');
+    console.log(`[RENEWAL] ${linhas3dLibertar.length} perfil(is) a libertar (3+ dias expirados)`);
     for (const lin of linhas3dLibertar) {
+      console.log(`[RENEWAL] Cliente ${lin.telefone} — libertar perfil linha ${lin.sheetRow} (${lin.platform})`);
       await libertarPerfil(stockConfig, lin.sheetRow);
-      console.log(`[RENEWAL] Perfil libertado: linha ${lin.sheetRow} (${lin.platform})`);
+      console.log(`[RENEWAL] ✅ Perfil libertado: linha ${lin.sheetRow} (${lin.platform})`);
       if (supabase && process.env.STOCK_NOTIFICATIONS_ENABLED === 'true') {
         try {
           await notificarClientesWaitlist(supabase, stockConfig, lin.platform);
@@ -141,6 +171,11 @@ async function runDailyRenewalJob(stockConfig, paymentConfig, supabase) {
           console.error('[RENEWAL] Waitlist notify error:', e.message);
         }
       }
+    }
+
+    const totalClientes = linhas3d.length + linhasHoje.length + linhas1d.length + linhas3dLibertar.length;
+    if (totalClientes === 0) {
+      console.log('[RENEWAL] Nenhum cliente/perfil a processar neste ciclo.');
     }
   } catch (err) {
     console.error('[RENEWAL] runDailyRenewalJob error:', err.message);

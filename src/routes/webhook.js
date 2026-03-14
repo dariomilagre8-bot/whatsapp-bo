@@ -31,6 +31,7 @@ const {
 const { addToWaitlist, getWaitlistResumo, handleWaitlist } = require('../stock/waitlist');
 const { triggerStockReposto, notificarClientesWaitlist } = require('../stock/stock-notifier');
 const { getStockResumo } = require('../stock/stock-summary');
+const { runDailyRenewalJob } = require('../renewal/renewal-cron');
 const { detectarReclamacao, detectarLocalizacao, gerarRespostaLocalizacao, formatarNotificacaoReclamacao } = require('../crm/complaints');
 
 const supervisorTestMode = new Set();
@@ -230,6 +231,19 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           } catch (e) {
             console.error('[STOCK-NOTIFIER] #repor error:', e.message);
             await sendText(replyJid, '❌ Erro ao notificar waitlist.', evolutionConfig);
+          }
+          return;
+        }
+
+        // ── Comando #renovacao — execução imediata do cron de renovação (teste manual) ──
+        if (/^#renovacao$/i.test(firstWord)) {
+          try {
+            const sbClient = require('../integrations/supabase').getClient();
+            await runDailyRenewalJob(config.stock, config.payment, sbClient, { force: true });
+            await sendText(replyJid, '✅ Cron de renovação executado manualmente.', evolutionConfig);
+          } catch (e) {
+            console.error('[RENEWAL] #renovacao error:', e.message);
+            await sendText(replyJid, '❌ Erro ao executar cron de renovação.', evolutionConfig);
           }
           return;
         }
