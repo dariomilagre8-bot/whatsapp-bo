@@ -17,8 +17,8 @@ function buildPricingTableFromSettings() {
   const cur = botSettings.currency || 'Kz';
   const n = pt.netflix || {};
   const p = pt.prime || {};
-  const netflixLine = `* NETFLIX: Individual (${n['1_slot'] || '5.000'} ${cur}) | Partilha (${n['2_slots'] || '9.000'} ${cur}) | Família (${n['3_slots'] || '13.500'} ${cur}) | Família Completa (${n['5_slots'] || '24.000'} ${cur})`;
-  const primeLine = `* PRIME VIDEO: Individual (${p['1_slot'] || '3.000'} ${cur}) | Partilha (${p['2_slots'] || '5.500'} ${cur}) | Família (${p['3_slots'] || '8.000'} ${cur}) | Família Completa (${p['5_slots'] || '16.000'} ${cur})`;
+  const netflixLine = `* NETFLIX: Individual (${n['1_slot'] || '5.000'} ${cur}) | Partilha (${n['2_slots'] || '9.000'} ${cur}) | Família (${n['3_slots'] || '14.000'} ${cur}) | Família Completa (${n['5_slots'] || '24.000'} ${cur})`;
+  const primeLine = `* PRIME VIDEO: Individual (${p['1_slot'] || '3.000'} ${cur}) | Partilha (${p['2_slots'] || '5.500'} ${cur}) | Família (${p['3_slots'] || '8.000'} ${cur}) | Família Completa (${p['5_slots'] || '12.000'} ${cur})`;
   return `${netflixLine}\n${primeLine}`;
 }
 
