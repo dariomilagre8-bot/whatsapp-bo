@@ -30,6 +30,7 @@ const {
 } = require('../crm/leads');
 const { addToWaitlist, getWaitlistResumo, handleWaitlist } = require('../stock/waitlist');
 const { triggerStockReposto } = require('../stock/stock-notifier');
+const { getStockResumo } = require('../stock/stock-summary');
 const { detectarReclamacao, detectarLocalizacao, gerarRespostaLocalizacao, formatarNotificacaoReclamacao } = require('../crm/complaints');
 
 const supervisorTestMode = new Set();
@@ -220,7 +221,19 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           return;
         }
 
-        // ── Comando #stock [produto] — Opção B: trigger manual de notificação ──
+        // ── Comando #stock (sem args) — resumo de stock actual da Sheets ──
+        if (firstWord === '#stock' && restParts.length === 0) {
+          try {
+            const resumo = await getStockResumo(config.stock);
+            await sendText(replyJid, resumo, evolutionConfig);
+          } catch (e) {
+            console.error('[STOCK] #stock resumo error:', e.message);
+            await sendText(replyJid, '❌ Erro ao ler stock da planilha.', evolutionConfig);
+          }
+          return;
+        }
+
+        // ── Comando #stock [produto] — trigger manual de notificação waitlist ──
         if (firstWord === '#stock' && restParts.length > 0) {
           const sbClient = require('../integrations/supabase').getClient();
           const produtoStr = restParts.join(' ');
