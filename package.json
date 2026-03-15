@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "test": "node tests/engine.test.js"
+    "test": "node tests/engine.test.js",
+    "deploy": "bash scripts/deploy.sh",
+    "backup": "bash scripts/backup-env.sh"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
