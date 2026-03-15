@@ -144,3 +144,4 @@ app.listen(PORT, () => {
   console.log(`🔄 Renovação automática: ${process.env.RENEWAL_ENABLED === 'true' ? 'activado' : 'desactivado'}`);
   console.log(`✅ Pronto!\n`);
 });
+// deploy-check Sun Mar 15 15:15:59 GMT 2026
