@@ -1,8 +1,7 @@
 // src/routes/webhook.js — LLM-First pipeline (Agentic RAG)
 // Sem matcher/regex/intenções: TODAS as mensagens de texto vão direto para o pipeline LLM (A→B→C→D).
 
-const { createLogger } = require('../utils/logger');
-const logger = createLogger('webhook');
+const { createLogger } = require('../../engine/lib/logger');
 const { sendText } = require('../engine/sender');
 const llm = require('../engine/llm');
 const { extractName } = require('../utils/name-extractor');
@@ -79,6 +78,7 @@ const isSupervisorFromList = (senderId, adminNumbers) => {
 function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionConfig) {
 
   return async function handleWebhook(req, res) {
+    const logger = createLogger(req.traceId || null, req.clientSlug || null, 'webhook');
     try {
       const bodySafe = req && req.body !== undefined ? (req.body || {}) : {};
       logger.debug('webhook recebido', { body: bodySafe });
@@ -89,21 +89,20 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
     const body = req && req.body;
     const data = body && body.data;
     if (!data || !data.key) {
-      res.status(200).send('OK');
+      if (!res.headersSent) res.status(200).send('OK');
       return;
     }
     if (data.key.fromMe) {
-      res.status(200).json({ ok: true });
+      if (!res.headersSent) res.status(200).json({ ok: true });
       return;
     }
 
-    // Multi-instância: Evolution API envia instance no payload
     const instanceName = body?.instance || body?.instanceName || body?.provider?.instance || body?.data?.provider?.instance
       || process.env.EVOLUTION_INSTANCE || process.env.EVOLUTION_INSTANCE_NAME || 'Zara-Teste';
     const clientConfig = clientesConfig[instanceName] || clientesConfig['Zara-Teste'];
-    const supervisors = Array.isArray(clientConfig?.supervisores)
-      ? clientConfig.supervisores
-      : ['244941713216'];
+    const supervisors = (req.clientConfig && Array.isArray(req.clientConfig.supervisors))
+      ? req.clientConfig.supervisors
+      : (Array.isArray(clientConfig?.supervisores) ? clientConfig.supervisores : ['244941713216']);
     const evolutionConfigForInstance = { ...evolutionConfig, instance: instanceName };
 
     res.status(200).json({ ok: true });

@@ -2,12 +2,17 @@
 require('dotenv').config();
 
 const express = require('express');
-const config = require('./config/streamzone');
-const StateMachine = require('./src/engine/state-machine');
+const path = require('path');
+const fs = require('fs');
+const config = require('./clients/streamzone/config');
+const StateMachine = require('./engine/lib/state-machine');
 const { createWebhookHandler } = require('./src/routes/webhook');
+const { createWebhookRouter } = require('./engine/middleware/webhook-router');
+const { getRedis } = require('./engine/lib/dedup');
+const metrics = require('./engine/lib/metrics');
 const { reconnectHandler } = require('./src/routes/reconnect');
 const { connectBraulioHandler } = require('./src/routes/connect-braulio');
-const llm = require('./src/engine/llm');
+const llm = require('./engine/lib/llm');
 const googleSheets = require('./src/integrations/google-sheets');
 const supabaseIntegration = require('./src/integrations/supabase');
 const { initBilling, handlePaymentConfirmation } = require('./src/billing/reminder');
@@ -15,7 +20,6 @@ const { initStockNotifier } = require('./src/stock/stock-notifier');
 const { initFollowUp } = require('./src/crm/followup');
 const { marcarInactivos } = require('./src/crm/leads');
 const { initRenewal } = require('./src/renewal/renewal-cron');
-const path = require('path');
 
 const app = express();
 app.use(express.json());
@@ -54,16 +58,26 @@ async function getInventoryForPrompt() {
   return inventoryCache || 'Nenhum dado de inventário disponível no momento.';
 }
 
-// ── Evolution API config ──
+// ── Evolution API config (instance overridden por request) ──
 const evolutionConfig = {
   apiUrl: process.env.EVOLUTION_API_URL,
   apiKey: process.env.EVOLUTION_API_KEY,
-  instance: process.env.EVOLUTION_INSTANCE || process.env.EVOLUTION_INSTANCE_NAME || 'Zara-Teste',
+  instance: config.evolutionInstance || process.env.EVOLUTION_INSTANCE || process.env.EVOLUTION_INSTANCE_NAME || 'Zara-Teste',
 };
 
-// ── Routes ──
+// ── Registry: instanceName → { config, handler } (multi-tenant) ──
 const webhookHandler = createWebhookHandler(config, stateMachine, getInventoryForPrompt, evolutionConfig);
-app.post('/webhook', webhookHandler);
+const registry = {
+  [config.evolutionInstance]: { config, handler: webhookHandler },
+  'Zara-Teste': { config, handler: webhookHandler },
+};
+const webhookRouter = createWebhookRouter(registry, getRedis());
+app.post('/webhook', webhookRouter);
+app.post('/webhook/messages', webhookRouter);
+app.get('/api/metrics', (req, res) => {
+  res.set('Content-Type', 'text/plain; charset=utf-8');
+  res.send(metrics.getPrometheusText());
+});
 app.get('/reconnect/:instanceId', reconnectHandler);
 app.get('/connect/braulio', connectBraulioHandler);
 

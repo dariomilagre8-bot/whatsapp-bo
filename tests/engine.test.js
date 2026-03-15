@@ -1,11 +1,11 @@
 // tests/engine.test.js
 
-const config = require('../config/streamzone');
-const StateMachine = require('../src/engine/state-machine');
-const { findMatch } = require('../src/engine/matcher');
-const { validate } = require('../src/engine/validator');
-const { handlers } = require('../src/engine/handlers');
-const llm = require('../src/engine/llm');
+const config = require('../clients/streamzone/config');
+const StateMachine = require('../engine/lib/state-machine');
+const { findMatch } = require('../engine/lib/matcher');
+const { validate } = require('../engine/lib/validator');
+const { handlers } = require('../engine/lib/handlers');
+const llm = require('../engine/lib/llm');
 const { extractName } = require('../src/utils/name-extractor');
 
 let passed = 0;
