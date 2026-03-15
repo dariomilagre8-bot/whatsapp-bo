@@ -116,6 +116,63 @@ app.get('/health', async (req, res) => {
   });
 });
 
+app.get('/api/health', async (req, res) => {
+  const checks = {};
+  const start = Date.now();
+
+  // 1. Supabase
+  try {
+    const sb = supabaseIntegration.getClient();
+    if (sb) {
+      const { error } = await sb.from('clientes').select('id').limit(1);
+      checks.supabase = error ? `error: ${error.message}` : 'ok';
+    } else {
+      checks.supabase = 'not_configured';
+    }
+  } catch (e) {
+    checks.supabase = `error: ${e.message}`;
+  }
+
+  // 2. Google Sheets
+  try {
+    checks.google_sheets = googleSheets.isReady() ? 'ok' : 'not_initialized';
+  } catch (e) {
+    checks.google_sheets = `error: ${e.message}`;
+  }
+
+  // 3. Evolution API (verifica estado da instância)
+  try {
+    const evoUrl = process.env.EVOLUTION_API_URL;
+    const evoKey = process.env.EVOLUTION_API_KEY;
+    const evoInstance = process.env.EVOLUTION_INSTANCE || process.env.EVOLUTION_INSTANCE_NAME || 'default';
+    if (evoUrl) {
+      const resp = await fetch(`${evoUrl}/instance/connectionState/${evoInstance}`, {
+        headers: { 'apikey': evoKey },
+        signal: AbortSignal.timeout(5000),
+      });
+      const data = await resp.json();
+      const state = data?.instance?.state || data?.state;
+      checks.evolution_api = state === 'open' ? 'ok' : `state: ${state}`;
+    } else {
+      checks.evolution_api = 'not_configured';
+    }
+  } catch (e) {
+    checks.evolution_api = `error: ${e.message}`;
+  }
+
+  checks.uptime_seconds = Math.floor(process.uptime());
+  checks.response_ms = Date.now() - start;
+
+  const criticalChecks = ['supabase', 'evolution_api'];
+  const allOk = criticalChecks.every(k => checks[k] === 'ok');
+
+  res.status(allOk ? 200 : 503).json({
+    status: allOk ? 'healthy' : 'degraded',
+    timestamp: new Date().toISOString(),
+    checks,
+  });
+});
+
 // ── Billing + Stock Notifier + CRM Follow-up (cron jobs) ──
 const sbClient = supabaseIntegration.getClient();
 if (sbClient) {

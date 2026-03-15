@@ -670,8 +670,13 @@ async function renovarClientePorTelefone(stockConfig, telefone) {
   return count;
 }
 
+function isReady() {
+  return sheets !== null;
+}
+
 module.exports = {
   init,
+  isReady,
   getStock,
   getInventoryForPrompt,
   getStockCountsForPrompt,
