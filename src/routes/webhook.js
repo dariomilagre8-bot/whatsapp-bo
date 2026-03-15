@@ -1,6 +1,8 @@
 // src/routes/webhook.js — LLM-First pipeline (Agentic RAG)
 // Sem matcher/regex/intenções: TODAS as mensagens de texto vão direto para o pipeline LLM (A→B→C→D).
 
+const { createLogger } = require('../utils/logger');
+const logger = createLogger('webhook');
 const { sendText } = require('../engine/sender');
 const llm = require('../engine/llm');
 const { extractName } = require('../utils/name-extractor');
@@ -79,9 +81,9 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
   return async function handleWebhook(req, res) {
     try {
       const bodySafe = req && req.body !== undefined ? (req.body || {}) : {};
-      console.log('=== WEBHOOK BATEU ===', JSON.stringify(bodySafe));
+      logger.debug('webhook recebido', { body: bodySafe });
     } catch (logErr) {
-      console.error('[WEBHOOK] log entrada', logErr && logErr.message);
+      logger.error('log entrada falhou', { error: logErr && logErr.message });
     }
 
     const body = req && req.body;
@@ -107,27 +109,21 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
     res.status(200).json({ ok: true });
 
     try {
-      const rawJid =
-        data?.key?.senderPn ||
-        req.body?.sender ||
-        data?.key?.remoteJid ||
-        '';
+      // Evolution API v2.3.0: quem enviou está em data.key.remoteJid. NUNCA usar req.body.sender (é o bot/instância).
+      const remoteJid = data?.key?.remoteJid || '';
+      const senderNum = remoteJid.replace(/@s\.whatsapp\.net|@c\.us|@lid/g, '');
 
-      const phoneNumber = extractPhoneNumber(rawJid);
-
-      if (!phoneNumber) {
-        console.log('[WEBHOOK] JID inválido, ignorado:', rawJid);
+      if (!senderNum) {
+        logger.warn('JID inválido ignorado', { remoteJid });
         return res.status(200).json({ status: 'ignored', reason: 'invalid_jid' });
       }
 
-      const senderNum = phoneNumber;
-      if (rawJid && String(rawJid).endsWith('@g.us')) return;
-      if (rawJid && rawJid !== senderNum) {
-        console.log(`[WEBHOOK] rawJid normalizado: "${rawJid}" → senderNum: "${senderNum}"`);
-      }
-      const replyJid = rawJid.includes('@')
-        ? rawJid
-        : (senderNum ? `${senderNum}@s.whatsapp.net` : rawJid);
+      logger.info('mensagem recebida', { senderNum, remoteJid });
+
+      if (remoteJid.endsWith('@g.us')) return;
+      const replyJid = remoteJid.includes('@')
+        ? remoteJid
+        : (senderNum ? `${senderNum}@s.whatsapp.net` : remoteJid);
 
       const pushName = (data.pushName != null ? String(data.pushName) : '') || '';
       const messageData = data.message || {};

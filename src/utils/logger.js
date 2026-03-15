@@ -27,4 +27,13 @@ function createLogger(module) {
   };
 }
 
-module.exports = { createLogger };
+// Instância padrão para uso directo: const logger = require('../utils/logger')
+const _default = createLogger('app');
+
+module.exports = {
+  createLogger,
+  error: (msg, meta) => _default.error(msg, meta),
+  warn:  (msg, meta) => _default.warn(msg, meta),
+  info:  (msg, meta) => _default.info(msg, meta),
+  debug: (msg, meta) => _default.debug(msg, meta),
+};
