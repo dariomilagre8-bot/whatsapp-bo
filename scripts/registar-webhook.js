@@ -8,7 +8,8 @@ require('dotenv').config();
 const EVOLUTION_API_URL = (process.env.EVOLUTION_API_URL || '').replace(/\/$/, '');
 const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY;
 const INSTANCE = 'Streamzone Braulio';
-const WEBHOOK_URL = 'https://whatssiru.46.224.99.52.nip.io/webhook';
+// URL acessível PELA Evolution API (ex.: http://jules_whatssiru:80/webhook após fix de redes Docker)
+const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://whatssiru.46.224.99.52.nip.io/webhook';
 
 if (!EVOLUTION_API_URL || !EVOLUTION_API_KEY) {
   console.error('Erro: EVOLUTION_API_URL e EVOLUTION_API_KEY são obrigatórios no .env');
