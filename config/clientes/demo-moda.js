@@ -9,13 +9,34 @@
 // ============================================================
 
 module.exports = {
-  // ── IDENTIDADE ─────────────────────────────────────────────
+  // ── IDENTIDADE (compatível com engine multi-tenant) ─────────
   slug: 'demo-moda',
+  evolutionInstance: 'demo-moda',
+  identity: {
+    botName: 'Zara',
+    businessName: 'Moda Luanda Store',
+  },
+  supervisors: ['244941713216'],
+  systemMessages: {
+    botUnpaused: 'O responsável já tratou do assunto. Em que mais posso ajudar?',
+  },
   nome: 'Moda Luanda Store',
   numero: '244958765478',
   supervisorNumbers: ['244941713216'],
   plano: 'profissional',
   ativo: true,
+  stock: null,
+  payment: null,
+  products: null,
+
+  // ── STATE MACHINE ──────────────────────────────────────────
+  states: {
+    initial: 'inicio',
+    transitions: {
+      inicio: ['menu'],
+      menu: ['menu'],
+    },
+  },
 
   // ── SAUDAÇÃO ───────────────────────────────────────────────
   saudacao: `Olá! 👗 Bem-vindo/a à *Moda Luanda Store*!

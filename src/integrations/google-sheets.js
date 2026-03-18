@@ -203,6 +203,7 @@ function isRowIndividualPlan(rawPlan, hasPlanCol) {
 }
 
 async function getStockCountsForPrompt(stockConfig) {
+  if (!stockConfig) return { counts: null, erro: null };
   if (!sheets || !spreadsheetId) return { counts: null, erro: 'ERRO DE SINCRONIZAÇÃO' };
 
   const fetchPromise = sheets.spreadsheets.values.get({
@@ -439,7 +440,7 @@ function parseDataExpiracao(str) {
  * Status activo = "indisponivel" ou "vendido". Retorna [] se não encontrar.
  */
 async function getClienteByTelefone(stockConfig, telefone) {
-  if (!sheets || !spreadsheetId) return [];
+  if (!stockConfig || !stockConfig.sheetName || !sheets || !spreadsheetId) return [];
   const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
   const want = extractPhoneNumber(telefone) || normalizePhone(telefone);
   if (!want) return [];
@@ -587,7 +588,7 @@ async function libertarPerfil(stockConfig, sheetRow) {
 
 /** Lista perfis expirados (Data_Expiracao < hoje) ainda não renovados (status indisponivel ou a_verificar). Para #expirados. */
 async function getPerfisExpirados(stockConfig) {
-  if (!sheets || !spreadsheetId) return [];
+  if (!stockConfig || !stockConfig.sheetName || !sheets || !spreadsheetId) return [];
   const cell = (row, idx) => (row[idx] != null ? String(row[idx]).trim() : '');
   const today = new Date();
   today.setHours(0, 0, 0, 0);

@@ -17,7 +17,7 @@ function createWebhookRouter(registry, redis = null) {
     if (!data || !data.key) return;
 
     const instanceName = body?.instance || body?.instanceName || body?.provider?.instance
-      || body?.data?.provider?.instance || process.env.EVOLUTION_INSTANCE || process.env.EVOLUTION_INSTANCE_NAME || '';
+      || body?.data?.provider?.instance || req.params?.instanceName || process.env.EVOLUTION_INSTANCE || process.env.EVOLUTION_INSTANCE_NAME || '';
 
     const entry = registry[instanceName];
     if (!entry) {

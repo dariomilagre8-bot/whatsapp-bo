@@ -5,6 +5,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const config = require('./clients/streamzone/config');
+const clientRouter = require('./src/router');
 const StateMachine = require('./engine/lib/state-machine');
 const { createWebhookHandler } = require('./src/routes/webhook');
 const { createWebhookRouter } = require('./engine/middleware/webhook-router');
@@ -70,10 +71,24 @@ const webhookHandler = createWebhookHandler(config, stateMachine, getInventoryFo
 const registry = {
   [config.evolutionInstance]: { config, handler: webhookHandler },
   'Zara-Teste': { config, handler: webhookHandler },
+  'Streamzone Braulio': { config, handler: webhookHandler },
 };
+
+// Adicionar clientes de src/router.js ao registry
+for (const [, entry] of Object.entries(clientRouter.clientes)) {
+  const instName = entry.evolutionInstance;
+  if (instName && !registry[instName]) {
+    const clientStateMachine = new StateMachine(entry.config);
+    const clientEvoConfig = { ...evolutionConfig, instance: instName };
+    const clientHandler = createWebhookHandler(entry.config, clientStateMachine, () => Promise.resolve(''), clientEvoConfig);
+    registry[instName] = { config: entry.config, handler: clientHandler };
+  }
+}
+
 const webhookRouter = createWebhookRouter(registry, getRedis());
 app.post('/webhook', webhookRouter);
 app.post('/webhook/messages', webhookRouter);
+app.post('/webhook/:instanceName', webhookRouter);
 app.get('/api/metrics', (req, res) => {
   res.set('Content-Type', 'text/plain; charset=utf-8');
   res.send(metrics.getPrometheusText());
