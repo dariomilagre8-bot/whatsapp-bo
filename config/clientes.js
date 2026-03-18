@@ -11,4 +11,8 @@ module.exports = {
     botName: 'Zara',
     supervisores: ['244941529470', '244941713216'],
   },
+  'demo-moda': {
+    botName: 'Zara',
+    supervisores: ['244941713216'],
+  },
 };
