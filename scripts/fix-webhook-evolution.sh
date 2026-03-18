@@ -1,26 +1,31 @@
 #!/bin/bash
-# scripts/fix-webhook-evolution.sh — Corrige conectividade Evolution API → whatssiru (redes Docker distintas)
-# Executar NO VPS: bash fix-webhook-evolution.sh
-# Ou: scp scripts/fix-webhook-evolution.sh don@46.224.99.52:/tmp && ssh don@46.224.99.52 'bash /tmp/fix-webhook-evolution.sh'
+# scripts/fix-webhook-evolution.sh — Corrige webhooks Evolution API → whatssiru (Streamzone Braulio + Zara-Teste)
+# Redes Docker isoladas: liga Evolution à rede do whatssiru, descobre URL acessível, actualiza ambos os webhooks.
+#
+# Executar NO VPS (com SSH):
+#   scp scripts/fix-webhook-evolution.sh don@46.224.99.52:/tmp && ssh don@46.224.99.52 'bash /tmp/fix-webhook-evolution.sh'
+# Ou no servidor: bash /tmp/fix-webhook-evolution.sh
 
 set -e
 
 EVOLUTION_API_URL="${EVOLUTION_API_URL:-https://whatsapp-evolution-api.oxuzyt.easypanel.host}"
 EVOLUTION_API_KEY="${EVOLUTION_API_KEY:-429683C4C977415CAAFCCE10F7D57E11}"
-INSTANCE_NAME="Streamzone Braulio"
+# Ambas as instâncias: produção (Bráulio) + demo (Don)
+INSTANCES=("Streamzone Braulio" "Zara-Teste")
 
 echo "=== 1. Containers e redes ==="
 # Nomes podem variar: whatsapp_evolution-api (Easypanel) ou evolution-api
-EVO_CONTAINER=$(docker ps -q -f 'name=evolution-api' | head -1)
-WHATSSIRU_CONTAINER=$(docker ps -q -f 'name=whatssiru' | head -1)
+EVO_CONTAINER=$(docker ps -q -f 'name=whatsapp_evolution-api' | head -1)
+[ -z "$EVO_CONTAINER" ] && EVO_CONTAINER=$(docker ps -q -f 'name=evolution-api' | head -1)
+WHATSSIRU_CONTAINER=$(docker ps -q -f 'name=jules_whatssiru' | head -1)
+[ -z "$WHATSSIRU_CONTAINER" ] && WHATSSIRU_CONTAINER=$(docker ps -q -f 'name=whatssiru' | head -1)
 
 if [ -z "$EVO_CONTAINER" ]; then
   echo "Container evolution-api não encontrado. A tentar alternativas..."
   EVO_CONTAINER=$(docker ps -q -f 'name=whatsapp_evolution' | head -1)
 fi
 if [ -z "$WHATSSIRU_CONTAINER" ]; then
-  echo "Container whatssiru não encontrado. A tentar jules_whatssiru..."
-  WHATSSIRU_CONTAINER=$(docker ps -q -f 'name=jules_whatssiru' | head -1)
+  echo "Container whatssiru não encontrado."
 fi
 
 if [ -z "$EVO_CONTAINER" ]; then
@@ -94,17 +99,19 @@ fi
 echo ""
 echo "=== 3. Testar URLs a partir do container Evolution API ==="
 
-# Nomes de serviço típicos no Easypanel (project_service)
-for URL in "http://jules_whatssiru:80" "http://whatssiru:80" "http://${WHATSSIRU_IP}:80"; do
-  echo -n "  $URL/health -> "
-  OUT=$(docker exec "$EVO_CONTAINER" wget -q -O- --timeout=5 "$URL/health" 2>/dev/null || true)
-  if echo "$OUT" | grep -q "ok\|status"; then
-    echo " OK"
-    WORKING_BASE="$URL"
-    break
-  else
-    echo " falhou"
-  fi
+# Nomes de serviço típicos no Easypanel (project_service); IP directo funciona entre redes após connect
+for URL in "http://${WHATSSIRU_IP}:80" "http://jules_whatssiru:80" "http://whatssiru:80"; do
+  for EP in "/api/health" "/health"; do
+    echo -n "  ${URL}${EP} -> "
+    OUT=$(docker exec "$EVO_CONTAINER" wget -q -O- --timeout=5 "${URL}${EP}" 2>/dev/null || true)
+    if echo "$OUT" | grep -q "ok\|status\|healthy"; then
+      echo " OK"
+      WORKING_BASE="$URL"
+      break 2
+    else
+      echo " falhou"
+    fi
+  done
 done
 
 if [ -z "$WORKING_BASE" ]; then
@@ -113,9 +120,9 @@ if [ -z "$WORKING_BASE" ]; then
   # Gateway da rede do container (geralmente .1)
   GW=$(docker exec "$EVO_CONTAINER" sh -c 'ip route | grep default | awk "{print \$3}"' 2>/dev/null | head -1)
   if [ -n "$GW" ]; then
-    echo -n "  http://${GW}:80/health -> "
-    OUT=$(docker exec "$EVO_CONTAINER" wget -q -O- --timeout=5 "http://${GW}:80/health" 2>/dev/null || true)
-    if echo "$OUT" | grep -q "ok\|status"; then
+    echo -n "  http://${GW}:80/api/health -> "
+    OUT=$(docker exec "$EVO_CONTAINER" wget -q -O- --timeout=5 "http://${GW}:80/api/health" 2>/dev/null || true)
+    if echo "$OUT" | grep -q "ok\|status\|healthy"; then
       echo " OK"
       WORKING_BASE="http://${GW}:80"
     else
@@ -136,36 +143,37 @@ echo ""
 echo "=== 4. URL de webhook a usar (acessível pela Evolution): $WEBHOOK_URL ==="
 
 echo ""
-echo "=== 5. Actualizar webhook na Evolution API (POST) ==="
-INSTANCE_ENC=$(echo -n "$INSTANCE_NAME" | python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.stdin.read().strip()))')
+echo "=== 5. Actualizar webhooks na Evolution API (ambas as instâncias) ==="
 BODY=$(cat <<EOF
 {"url":"$WEBHOOK_URL","enabled":true,"webhookByEvents":false,"webhookBase64":false,"events":["MESSAGES_UPSERT","MESSAGES_UPDATE","CONNECTION_UPDATE","QRCODE_UPDATED"]}
 EOF
 )
-HTTP=$(curl -s -o /tmp/evo_webhook_resp.txt -w "%{http_code}" -X POST \
-  "${EVOLUTION_API_URL}/webhook/set/${INSTANCE_ENC}" \
-  -H "apikey: ${EVOLUTION_API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d "$BODY")
-# Fallback: algumas versões aceitam PUT
-if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+for INSTANCE_NAME in "${INSTANCES[@]}"; do
+  INSTANCE_ENC=$(echo -n "$INSTANCE_NAME" | python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.stdin.read().strip()))')
+  echo -n "  $INSTANCE_NAME -> "
   HTTP=$(curl -s -o /tmp/evo_webhook_resp.txt -w "%{http_code}" -X PUT \
     "${EVOLUTION_API_URL}/webhook/set/${INSTANCE_ENC}" \
     -H "apikey: ${EVOLUTION_API_KEY}" \
     -H "Content-Type: application/json" \
     -d "$BODY")
-fi
-if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
-  echo "Webhook actualizado (HTTP $HTTP)."
-  cat /tmp/evo_webhook_resp.txt | python3 -m json.tool 2>/dev/null || cat /tmp/evo_webhook_resp.txt
-else
-  echo "Resposta Evolution API (HTTP $HTTP):"
-  cat /tmp/evo_webhook_resp.txt
-fi
+  if [ "$HTTP" != "200" ] && [ "$HTTP" != "201" ]; then
+    HTTP=$(curl -s -o /tmp/evo_webhook_resp.txt -w "%{http_code}" -X POST \
+      "${EVOLUTION_API_URL}/webhook/set/${INSTANCE_ENC}" \
+      -H "apikey: ${EVOLUTION_API_KEY}" \
+      -H "Content-Type: application/json" \
+      -d "$BODY")
+  fi
+  if [ "$HTTP" = "200" ] || [ "$HTTP" = "201" ]; then
+    echo "OK (HTTP $HTTP)"
+  else
+    echo "Falhou (HTTP $HTTP)"
+    cat /tmp/evo_webhook_resp.txt
+  fi
+done
 
 echo ""
-echo "=== 6. Testar: enviar mensagem para 244941529470 e ver logs ==="
-echo "  docker service logs jules_whatssiru --tail 50 -f"
-echo "  (ou: docker logs $WHATSSIRU_CONTAINER --tail 50 -f)"
+echo "=== 6. Testar: enviar mensagem para 244941529470 (Bráulio) e 244958765478 (Don) e ver logs ==="
+echo "  docker service logs jules_whatssiru --tail 30 -f"
+echo "  (ou: docker logs $WHATSSIRU_CONTAINER --tail 30 -f)"
 echo ""
 echo "Concluído."

@@ -18,9 +18,9 @@ Sintoma: health check OK, servidor a correr, mas **as mensagens não chegam ao b
 
    O script:
    - Mostra em que redes está cada container (evolution-api vs whatssiru).
-   - Se estiverem em redes diferentes, tenta ligar a Evolution API à rede do whatssiru (container ou serviço Swarm).
-   - Testa, a partir do container da evolution-api, qual URL atinge o `/health` do whatssiru (`jules_whatssiru`, IP interno, gateway, etc.).
-   - Actualiza o webhook na Evolution API para esse URL (ex.: `http://jules_whatssiru:80/webhook`).
+   - Se estiverem em redes diferentes, liga a Evolution API à rede do whatssiru (container ou serviço Swarm).
+   - Testa, a partir do container da evolution-api, qual URL atinge o `/api/health` do whatssiru (IP interno primeiro, depois `jules_whatssiru`, etc.).
+   - Actualiza o webhook na Evolution API para esse URL em **ambas as instâncias**: "Streamzone Braulio" (244941529470) e "Zara-Teste" (244958765478).
    - Indica como testar (enviar mensagem e ver logs).
 
 2. **Variáveis (opcional)** — no VPS podes passar:
@@ -31,7 +31,7 @@ Sintoma: health check OK, servidor a correr, mas **as mensagens não chegam ao b
    bash /tmp/fix-webhook-evolution.sh
    ```
 
-3. **Testar** — enviar mensagem para o número da instância (ex.: 244941529470) e ver logs:
+3. **Testar** — enviar mensagem para 244941529470 (Bráulio) ou 244958765478 (Don) e ver logs:
 
    ```bash
    docker service logs jules_whatssiru --tail 50 -f
