@@ -152,6 +152,7 @@ function buildErrorPage(message, currentUrl) {
 async function connectBraulioHandler(req, res) {
   const token = req.query.token;
   if (token !== CONNECT_TOKEN) {
+    if (res.headersSent) return;
     res.status(403).setHeader('Content-Type', 'text/html; charset=utf-8').send(
       '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Acesso negado</title></head>' +
       '<body style="font-family:sans-serif;padding:2rem;text-align:center;"><h1>Acesso negado</h1><p>Token inválido ou em falta.</p></body></html>'
@@ -162,6 +163,7 @@ async function connectBraulioHandler(req, res) {
   const currentUrl = `${req.protocol}://${req.get('host') || req.hostname}${req.path}?token=${encodeURIComponent(token)}`;
 
   if (!EVOLUTION_API_URL || !EVOLUTION_API_KEY) {
+    if (res.headersSent) return;
     res.status(500).setHeader('Content-Type', 'text/html; charset=utf-8').send(
       buildErrorPage('Configuração em falta: EVOLUTION_API_URL ou EVOLUTION_API_KEY.', currentUrl)
     );
@@ -176,6 +178,7 @@ async function connectBraulioHandler(req, res) {
     });
 
     if (!response.ok) {
+      if (res.headersSent) return;
       res.setHeader('Content-Type', 'text/html; charset=utf-8').status(response.status).send(
         buildErrorPage('Erro ao obter QR Code da Evolution API. Verifique se a instância "' + BRAULIO_INSTANCE + '" existe.', currentUrl)
       );
@@ -185,6 +188,7 @@ async function connectBraulioHandler(req, res) {
     const data = await response.json();
     const parsed = parseApiData(data);
 
+    if (res.headersSent) return;
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     if (parsed.alreadyConnected) {
       res.send(buildAlreadyConnectedPage(currentUrl));
@@ -197,6 +201,7 @@ async function connectBraulioHandler(req, res) {
     res.send(buildAlreadyConnectedPage(currentUrl));
   } catch (err) {
     console.error('[CONNECT-BRAULIO]', err.message);
+    if (res.headersSent) return;
     res.status(500).setHeader('Content-Type', 'text/html; charset=utf-8').send(
       buildErrorPage('Não foi possível contactar a Evolution API.', currentUrl)
     );

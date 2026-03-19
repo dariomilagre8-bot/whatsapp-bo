@@ -4,7 +4,7 @@
 // PALANCA AUTOMAÇÕES — Bot Demo: Moda Luanda Store
 // Nicho: Loja de Roupa Online
 // Número WPP: 244958765478
-// Supervisor: 244941713216 (Don — teste)
+// Supervisor: 244946014060 (teste)
 // Plano: Profissional (mostra TUDO ao lead)
 // ============================================================
 
@@ -16,13 +16,13 @@ module.exports = {
     botName: 'Zara',
     businessName: 'Moda Luanda Store',
   },
-  supervisors: ['244941713216'],
+  supervisors: ['244946014060'],
   systemMessages: {
     botUnpaused: 'O responsável já tratou do assunto. Em que mais posso ajudar?',
   },
   nome: 'Moda Luanda Store',
   numero: '244958765478',
-  supervisorNumbers: ['244941713216'],
+  supervisorNumbers: ['244946014060'],
   plano: 'profissional',
   ativo: true,
   stock: null,

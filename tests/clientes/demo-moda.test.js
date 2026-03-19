@@ -49,7 +49,7 @@ console.log('\n📋 Bot Demo — Moda Luanda Store (config/clientes/demo-moda):'
 // ── 1. CONFIGURAÇÃO BÁSICA ────────────────────────────────
 test('slug correcto', () => expect(config.slug).toBe('demo-moda'));
 test('número correcto', () => expect(config.numero).toBe('244958765478'));
-test('supervisor correcto', () => expect(config.supervisorNumbers).toContain('244941713216'));
+test('supervisor correcto', () => expect(config.supervisorNumbers).toContain('244946014060'));
 test('está activo', () => expect(config.ativo).toBe(true));
 test('plano profissional', () => expect(config.plano).toBe('profissional'));
 

@@ -4,6 +4,7 @@ const EVOLUTION_API_URL = (process.env.EVOLUTION_API_URL || '').replace(/\/$/, '
 const EVOLUTION_API_KEY = process.env.EVOLUTION_API_KEY || '';
 
 function denyHtml(res) {
+  if (res.headersSent) return;
   res.status(403).send(
     '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Acesso negado</title></head>' +
     '<body style="font-family:sans-serif;padding:2rem;text-align:center;"><h1>Acesso negado</h1></body></html>'
@@ -184,6 +185,7 @@ async function reconnectHandler(req, res) {
 
   const instanceId = req.params.instanceId;
   if (!EVOLUTION_API_URL || !EVOLUTION_API_KEY) {
+    if (res.headersSent) return;
     res.status(500).send(
       '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Erro</title></head>' +
       '<body style="font-family:sans-serif;padding:2rem;"><h1>Configuração em falta</h1><p>EVOLUTION_API_URL ou EVOLUTION_API_KEY não definidos.</p></body></html>'
@@ -199,6 +201,7 @@ async function reconnectHandler(req, res) {
     });
 
     if (!response.ok) {
+      if (res.headersSent) return;
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.status(response.status).send(buildApiErrorPage());
       return;
@@ -207,6 +210,7 @@ async function reconnectHandler(req, res) {
     const data = await response.json();
     const parsed = parseApiData(data);
 
+    if (res.headersSent) return;
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     if (parsed.alreadyConnected) {
       res.send(buildAlreadyConnectedPage());
@@ -227,6 +231,7 @@ async function reconnectHandler(req, res) {
     res.send(buildAlreadyConnectedPage());
   } catch (err) {
     console.error('[RECONNECT]', err.message);
+    if (res.headersSent) return;
     res.status(500).send(
       '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Erro</title></head>' +
       '<body style="font-family:sans-serif;padding:2rem;background:#0a0a0a;color:#fff;"><h1>Erro</h1><p>Não foi possível contactar a Evolution API.</p></body></html>'

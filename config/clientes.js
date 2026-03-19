@@ -5,14 +5,14 @@
 module.exports = {
   'Zara-Teste': {
     botName: 'Zara',
-    supervisores: ['244941713216', '251371634868240'],
+    supervisores: ['244946014060', '251371634868240'],
   },
   'Streamzone Braulio': {
     botName: 'Zara',
-    supervisores: ['244941529470', '244941713216'],
+    supervisores: ['244946014060'],
   },
   'demo-moda': {
     botName: 'Zara',
-    supervisores: ['244941713216'],
+    supervisores: ['244946014060'],
   },
 };

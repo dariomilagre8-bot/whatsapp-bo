@@ -90,6 +90,7 @@ app.post('/webhook', webhookRouter);
 app.post('/webhook/messages', webhookRouter);
 app.post('/webhook/:instanceName', webhookRouter);
 app.get('/api/metrics', (req, res) => {
+  if (res.headersSent) return;
   res.set('Content-Type', 'text/plain; charset=utf-8');
   res.send(metrics.getPrometheusText());
 });
@@ -133,6 +134,7 @@ app.get('/health', async (req, res) => {
   }
 
   const statusCode = allOk ? 200 : 503;
+  if (res.headersSent) return;
   res.status(statusCode).json({
     status: allOk ? 'ok' : 'degraded',
     engine: 'Palanca Bot Engine (LLM-First)',
@@ -195,6 +197,7 @@ app.get('/api/health', async (req, res) => {
   const criticalChecks = ['supabase', 'evolution_api'];
   const allOk = criticalChecks.every(k => checks[k] === 'ok');
 
+  if (res.headersSent) return;
   res.status(allOk ? 200 : 503).json({
     status: allOk ? 'healthy' : 'degraded',
     timestamp: new Date().toISOString(),

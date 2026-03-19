@@ -11,6 +11,8 @@ module.exports = {
   whatsappBusiness: process.env.WHATSAPP_BUSINESS || '244941529470',
   supervisors: base.supervisorNumber
     ? [base.supervisorNumber]
-    : (process.env.SUPERVISOR_NUMBERS ? process.env.SUPERVISOR_NUMBERS.split(',').map(s => s.trim()) : ['244941713216']),
+    : (process.env.SUPERVISOR_NUMBERS
+      ? process.env.SUPERVISOR_NUMBERS.split(',').map(s => s.trim()).filter(Boolean)
+      : ['244946014060']),
   evolutionInstance: process.env.EVOLUTION_INSTANCE || process.env.EVOLUTION_INSTANCE_NAME || 'Streamzone Braulio',
 };

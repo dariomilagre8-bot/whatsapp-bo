@@ -35,6 +35,7 @@ const { getStockResumo } = require('../stock/stock-summary');
 const { runDailyRenewalJob } = require('../renewal/renewal-cron');
 const { detectarReclamacao, detectarLocalizacao, gerarRespostaLocalizacao, formatarNotificacaoReclamacao } = require('../crm/complaints');
 const clientesConfig = require('../../config/clientes');
+const { detectIntent, INTENTS } = require('../engine/intentDetector');
 
 const supervisorTestMode = new Set();
 
@@ -89,11 +90,13 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
     const body = req && req.body;
     const data = body && body.data;
     if (!data || !data.key) {
-      if (!res.headersSent) res.status(200).send('OK');
+      if (res.headersSent) return;
+      res.status(200).send('OK');
       return;
     }
     if (data.key.fromMe) {
-      if (!res.headersSent) res.status(200).json({ ok: true });
+      if (res.headersSent) return;
+      res.status(200).json({ ok: true });
       return;
     }
 
@@ -102,10 +105,8 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
     const clientConfig = clientesConfig[instanceName] || clientesConfig['Zara-Teste'];
     const supervisors = (req.clientConfig && Array.isArray(req.clientConfig.supervisors))
       ? req.clientConfig.supervisors
-      : (Array.isArray(clientConfig?.supervisores) ? clientConfig.supervisores : ['244941713216']);
+      : (Array.isArray(clientConfig?.supervisores) ? clientConfig.supervisores : []);
     const evolutionConfigForInstance = { ...evolutionConfig, instance: instanceName };
-
-    res.status(200).json({ ok: true });
 
     try {
       // Evolution API v2.3.0: quem enviou está em data.key.remoteJid. NUNCA usar req.body.sender (é o bot/instância).
@@ -114,7 +115,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       if (!senderNum) {
         logger.warn('JID inválido ignorado', { remoteJid });
-        return res.status(200).json({ status: 'ignored', reason: 'invalid_jid' });
+        return;
       }
 
       logger.info('mensagem recebida', { senderNum, remoteJid });
@@ -146,6 +147,10 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       const isSup = isSupervisorFromList(senderNum, supervisors);
       const isCmd = cleanMsg.startsWith('#');
+
+      // ── Intent detection (antes de qualquer funil/LLM) ──
+      // Ordem: suporte código → suporte erro → suporte pagamento → imagem ambígua → venda → saudação → desconhecido
+      const { intent } = detectIntent({ text: textMessage, isImage, isAudio, isDocument });
 
       // ── Interceptador global: #sim / #nao incompletos NUNCA chegam à Zara ──
       if (isSup && (firstWord === '#sim' || firstWord === '#nao') && !targetRaw) {
@@ -440,6 +445,44 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       if (session.paused) {
         console.log(`[PAUSED] ${senderNum}: message ignored`);
+        return;
+      }
+
+      // ── INTENTS de suporte (prioridade máxima; não chamar LLM; escalar ao supervisor) ──
+      if (!isSup && (intent === INTENTS.SUPORTE_CODIGO || intent === INTENTS.SUPORTE_ERRO)) {
+        session.paused = true;
+        stateMachine.setState(senderNum, 'pausado');
+        const clientName = session.name || pushName || 'Cliente';
+        const intentLabel = intent;
+        const originalMsg = (textMessage || '').trim();
+        const isImgNote = isImage ? '(imagem recebida)' : '';
+        const replyText = intent === INTENTS.SUPORTE_CODIGO
+          ? 'Caríssimo(a), muito obrigado. 🔐 Vou verificar e envio-lhe o código em breve. Por favor, aguarde.'
+          : 'Caríssimo(a), lamento o inconveniente. Vou encaminhar o seu caso para resolução imediata. Aguarde um momento.';
+
+        await sendText(replyJid, replyText, evolutionConfigForInstance);
+
+        const supMsg =
+          `🆘 SUPORTE DETECTADO\n\n` +
+          `Intenção: ${intentLabel}\n` +
+          `Cliente: ${clientName}\n` +
+          `Número: ${senderNum}\n` +
+          `Mensagem: ${originalMsg || '(sem texto)'} ${isImgNote}\n` +
+          `Instância: ${instanceName}`;
+
+        for (const sup of supervisors) {
+          if (sup) await sendText(sup, supMsg, evolutionConfigForInstance);
+        }
+        return;
+      }
+
+      // ── INTENT: imagem ambígua (não assumir venda) ──
+      if (!isSup && intent === INTENTS.SUPORTE_IMAGEM) {
+        await sendText(
+          replyJid,
+          'Caríssimo(a), recebi a sua imagem. Para que eu possa ajudá-lo(a) da melhor forma, poderia indicar-me o que precisa?\n\n1) Código de verificação\n2) Problema com a conta\n3) Novo pedido/compra',
+          evolutionConfigForInstance
+        );
         return;
       }
 
@@ -830,7 +873,16 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const history = (session.history || []).slice(-5);
 
       // Passo C: Dynamic Prompt (com contexto do cliente + stock em tempo real + memória de quantidade + diasRestantes) e chamada ao Gemini
-      const systemInstruction = llm.buildDynamicPrompt(inventoryString, customerName, isReturningCustomer, stockCountsResult, session, diasRestantes);
+      let systemInstruction = llm.buildDynamicPrompt(inventoryString, customerName, isReturningCustomer, stockCountsResult, session, diasRestantes);
+      if (intent === INTENTS.DESCONHECIDO) {
+        systemInstruction =
+          `[REGRA CRÍTICA]\n` +
+          `NUNCA assumes que o cliente quer comprar. Se não tiveres certeza da intenção, faz uma pergunta curta e educada para clarificar se é:\n` +
+          `- suporte (código, erro na conta, login/localização)\n` +
+          `- pagamento/renovação\n` +
+          `- novo pedido/compra\n\n` +
+          systemInstruction;
+      }
       const response = await llm.generate(systemInstruction, textMessage, history);
 
       // Passo D: Resposta da IA e captura do metadata_tag (ex: #RESUMO_VENDA) para fluxo de aprovação (#sim)
@@ -954,7 +1006,8 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
     } catch (err) {
       console.error('[WEBHOOK FATAL ERROR]', err);
       try {
-        if (!res.headersSent) res.status(500).send('Erro interno');
+        if (res.headersSent) return;
+        res.status(500).send('Erro interno');
       } catch (sendErr) {
         console.error('[WEBHOOK] send 500 fail', sendErr && sendErr.message);
       }

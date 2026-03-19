@@ -30,7 +30,7 @@ console.log('📋 1. extractPhoneNumber (Bug 1):');
 // ═══════════════════════════════════════════════════
 
 test('JID normal @s.whatsapp.net', () => {
-  assert(extractPhoneNumber('244941713216@s.whatsapp.net') === '244941713216');
+  assert(extractPhoneNumber('244946014060@s.whatsapp.net') === '244946014060');
 });
 
 test('JID @lid sem 244 embutido → devolvido tal como está + warning nos logs', () => {
@@ -39,16 +39,16 @@ test('JID @lid sem 244 embutido → devolvido tal como está + warning nos logs'
 });
 
 test('JID @lid COM 244 embutido → extrai correctamente', () => {
-  const result = extractPhoneNumber('9999244941713216');
-  assert(result === '244941713216', `Esperado 244941713216, recebeu: ${result}`);
+  const result = extractPhoneNumber('9999244946014060');
+  assert(result === '244946014060', `Esperado 244946014060, recebeu: ${result}`);
 });
 
 test('Número angolano 12 dígitos passthrough', () => {
-  assert(extractPhoneNumber('244941713216') === '244941713216');
+  assert(extractPhoneNumber('244946014060') === '244946014060');
 });
 
 test('Número local 9 dígitos → prefixar 244', () => {
-  assert(extractPhoneNumber('941713216') === '244941713216');
+  assert(extractPhoneNumber('946014060') === '244946014060');
 });
 
 test('String vazia → string vazia', () => {

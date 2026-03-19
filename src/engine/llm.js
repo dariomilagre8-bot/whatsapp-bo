@@ -23,8 +23,24 @@ function buildPricingTableFromSettings() {
 }
 
 function init(apiKey) {
+  if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
+    genAI = null;
+    model = null;
+    return false;
+  }
   genAI = new GoogleGenerativeAI(apiKey);
   model = genAI.getGenerativeModel({ model: MODEL_PRIMARY });
+  return true;
+}
+
+function isReady() {
+  return !!model;
+}
+
+function ensureInitFromEnv() {
+  if (model) return true;
+  const ok = init(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '');
+  return ok;
 }
 
 /**
@@ -186,7 +202,8 @@ Responda directamente a estas perguntas frequentes SEM perguntar outra coisa dep
 }
 
 async function generate(systemPrompt, userMessage, history = []) {
-  if (!model) throw new Error('LLM not initialized');
+  // Nunca crashar o webhook por falta de API key / init.
+  if (!ensureInitFromEnv()) return FALLBACK_MESSAGE;
 
   const contents = [];
   const recentHistory = (history || []).slice(-5);
@@ -235,4 +252,4 @@ async function generate(systemPrompt, userMessage, history = []) {
   }
 }
 
-module.exports = { init, generate, buildDynamicPrompt, FALLBACK_MESSAGE };
+module.exports = { init, isReady, generate, buildDynamicPrompt, FALLBACK_MESSAGE };
