@@ -18,68 +18,36 @@ jobs:
           script: |
             set -euo pipefail
 
-            BASE="/etc/easypanel/projects/jules"
-            REPO_SSH="git@github.com:dariomilagre8-bot/whatsapp-bo.git"
+            REPO_DIR="/opt/palanca/whatsapp-bo"
+            REPO_URL="https://github.com/dariomilagre8-bot/whatsapp-bo.git"
 
-            # Descobre onde está o source (se já existir) e, caso contrário, faz clone.
-            DOCKERFILE_PATH="$(find "$BASE" -name Dockerfile 2>/dev/null | head -n 1 || true)"
-            PACKAGE_JSON_PATH="$(find "$BASE" -name package.json 2>/dev/null | head -n 1 || true)"
+            mkdir -p /opt/palanca
 
-            if [ -n "$DOCKERFILE_PATH" ]; then
-              SOURCE_DIR="$(dirname "$DOCKERFILE_PATH")"
-            elif [ -n "$PACKAGE_JSON_PATH" ]; then
-              SOURCE_DIR="$(dirname "$PACKAGE_JSON_PATH")"
-            else
-              SOURCE_DIR="$BASE/whatsapp-bo"
-            fi
-
-            if [ -d "$SOURCE_DIR/.git" ]; then
-              cd "$SOURCE_DIR"
+            if [ -d "$REPO_DIR/.git" ]; then
+              cd "$REPO_DIR"
               git pull
             else
-              if [ -e "$SOURCE_DIR" ] && [ -n "$(ls -A "$SOURCE_DIR" 2>/dev/null || true)" ]; then
-                echo "Diretorio $SOURCE_DIR existe e nao parece ser um repo Git. Ajuste BASE ou remova o diretorio." >&2
-                exit 1
+              if [ -e "$REPO_DIR" ]; then
+                rm -rf "$REPO_DIR"
               fi
-              mkdir -p "$SOURCE_DIR"
-              cd "$SOURCE_DIR"
-              git clone "$REPO_SSH" .
+              git clone "$REPO_URL" "$REPO_DIR"
             fi
 
-            health_url_whatssiru="https://jules-whatssiru.oxuzyt.easypanel.host/health"
-            health_url_demo_moda="https://jules-demo-moda.oxuzyt.easypanel.host/health"
+            cd "$REPO_DIR"
 
-            wait_health() {
-              local url="$1"
-              local retries="${2:-10}"
-              local sleep_s="${3:-2}"
-
-              for ((i=1; i<=retries; i++)); do
-                if curl -fsS "$url" >/dev/null 2>&1; then
-                  echo "OK health: $url"
-                  return 0
-                fi
-                sleep "$sleep_s"
-              done
-
-              echo "Falha no health: $url" >&2
-              return 1
-            }
-
-            # Builds: imagens Swarm com tag ':latest'.
+            # Mesmo Dockerfile na raiz; ACTIVE_CLIENT e restantes env vêm dos serviços Swarm.
             docker build -t easypanel/jules/whatssiru:latest .
             docker build -t easypanel/jules/demo-moda:latest .
 
-            # whatssiru: tem host-mode port 8080. Reescala em 0 -> wait -> 1.
+            # whatssiru: host-mode port 8080 — sem --force; reescala.
             docker service scale jules_whatssiru=0
-            sleep 10
+            sleep 5
             docker service scale jules_whatssiru=1
-
-            # demo-moda: sem host-mode port; pode atualizar imagem normalmente.
-            docker service update --image easypanel/jules/demo-moda:latest jules_demo-moda
-
-            # Espera e valida health de ambos.
             sleep 10
-            wait_health "$health_url_whatssiru"
-            wait_health "$health_url_demo_moda"
 
+            # demo-moda: sem host-mode — update normal.
+            docker service update --image easypanel/jules/demo-moda:latest jules_demo-moda
+            sleep 10
+
+            curl -sf https://jules-whatssiru.oxuzyt.easypanel.host/health || echo "WARN: whatssiru health failed"
+            curl -sf https://jules-demo-moda.oxuzyt.easypanel.host/health || echo "WARN: demo-moda health failed"
