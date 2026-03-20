@@ -39,8 +39,9 @@ async function getClientByPhone(phone) {
       if (!res.error && res.data) data = res.data;
     }
 
-    const customerName = (data && data.nome) || null;
+    let customerName = (data && data.nome) || null;
     let lastSale = null;
+    let leadMatch = null;
 
     // Venda mais recente com data_expiracao (por whatsapp ou por cliente_id)
     try {
@@ -93,7 +94,28 @@ async function getClientByPhone(phone) {
       } catch (_) {}
     }
 
-    return { customerName, isReturningCustomer: !!data, lastSale };
+    // Se ainda não temos nome em "clientes", tentar em "leads"
+    try {
+      if (!customerName) {
+        const { data: leadData } = await supabase
+          .from('leads')
+          .select('nome')
+          .eq('numero', normalized)
+          .maybeSingle();
+        leadMatch = leadData || null;
+        if (leadMatch && leadMatch.nome) customerName = leadMatch.nome;
+      }
+    } catch (_) {
+      // "leads" pode não existir neste deployment
+    }
+
+    // Retornante se existir em qualquer uma das camadas:
+    // - clientes (nome/ID)
+    // - vendas (lastSale)
+    // - leads (leadMatch)
+    const isReturningCustomer = !!data || !!lastSale || !!leadMatch;
+
+    return { customerName, isReturningCustomer, lastSale };
   } catch (err) {
     console.error('[SUPABASE] getClientByPhone:', err.message);
     return { customerName: null, isReturningCustomer: false, lastSale: null };

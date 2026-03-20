@@ -6,6 +6,9 @@ const { sendText } = require('../engine/sender');
 const llm = require('../engine/llm');
 const { extractName } = require('../utils/name-extractor');
 const { extractPhoneNumber } = require('../utils/phone');
+const { resolveNumber } = require('../../engine/utils/resolve-number');
+const { trackPausedChat, getMostRecentPaused, removePausedChat } = require('../../engine/utils/paused-chats-tracker');
+const { needsQualifyingQuestions, getQuestionsForClient, recordQualifyingAnswer } = require('../../engine/utils/qualifying-questions');
 const { getClientByPhone } = require('../integrations/supabase');
 const {
   allocateProfile,
@@ -111,7 +114,9 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
     try {
       // Evolution API v2.3.0: quem enviou está em data.key.remoteJid. NUNCA usar req.body.sender (é o bot/instância).
       const remoteJid = data?.key?.remoteJid || '';
-      const senderNum = remoteJid.replace(/@s\.whatsapp\.net|@c\.us|@lid/g, '');
+      const senderFallback = remoteJid.replace(/@s\.whatsapp\.net|@c\.us|@lid/g, '');
+      const senderNumResolved = await resolveNumber(remoteJid, instanceName, evolutionConfigForInstance, logger);
+      const senderNum = senderNumResolved || senderFallback;
 
       if (!senderNum) {
         logger.warn('JID inválido ignorado', { remoteJid });
@@ -312,15 +317,31 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             const targetSession = stateMachine.getSession(target);
             targetSession.paused = true;
             stateMachine.setState(target, 'pausado');
+            trackPausedChat(senderNum, target);
             await sendText(replyJid, `✅ Bot pausado para ${target}. Use #retomar ${target} para reactivar.`, evolutionConfigForInstance);
             return;
           }
-          if (cmd === 'unpause' && target) {
-            const targetSession = stateMachine.getSession(target);
+          if (cmd === 'unpause') {
+            let targetToResume = target;
+            if (!targetToResume) {
+              targetToResume = getMostRecentPaused(senderNum);
+              if (!targetToResume) {
+                await sendText(replyJid, '⚠️ Nenhum chat pausado encontrado. Use: #retomar NUMERO', evolutionConfigForInstance);
+                return;
+              }
+            }
+
+            const targetSession = stateMachine.getSession(targetToResume);
             targetSession.paused = false;
-            stateMachine.setState(target, 'menu');
-            await sendText(target, config.systemMessages?.botUnpaused ?? 'O responsável já tratou do assunto. Em que mais posso ajudar?', evolutionConfigForInstance);
-            await sendText(replyJid, `✅ Bot retomado para ${target}`, evolutionConfigForInstance);
+            stateMachine.setState(targetToResume, 'menu');
+            removePausedChat(senderNum, targetToResume);
+
+            await sendText(
+              targetToResume,
+              config.systemMessages?.botUnpaused ?? 'O responsável já tratou do assunto. Em que mais posso ajudar?',
+              evolutionConfigForInstance
+            );
+            await sendText(replyJid, `✅ Bot retomado para ${targetToResume}`, evolutionConfigForInstance);
           } else if (cmd === 'reset_session') {
             let count = 0;
             if (target) {
@@ -329,6 +350,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
               stateMachine.setState(target, 'menu');
               await sendText(target, config.systemMessages?.botUnpaused ?? 'O responsável já tratou do assunto. Em que mais posso ajudar?', evolutionConfigForInstance);
               count = 1;
+              removePausedChat(senderNum, target);
               await sendText(replyJid, `✅ Reset/despausado: ${target} (1 número)`, evolutionConfigForInstance);
             } else {
               for (const [phone, s] of stateMachine.sessions) {
@@ -443,36 +465,91 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         await upsertLead(sbClient, senderNum, session.name || pushName || null);
       } catch (_) {}
 
+      // BUG-056: qualifying questions antes de escalar ao supervisor (SUPORTE_ERRO / SUPORTE_CODIGO)
+      if (!isSup && session.pendingQualifying && textMessage && String(textMessage).trim()) {
+        const incoming = String(textMessage).trim();
+        const questions = session.pendingQualifyingQuestions || getQuestionsForClient(config);
+        const currentIndex = typeof session.pendingQualifyingIndex === 'number'
+          ? session.pendingQualifyingIndex
+          : (session.qualifyingAnswers ? session.qualifyingAnswers.length : 0);
+
+        const currentQuestion = questions[currentIndex];
+        if (!currentQuestion) {
+          // Inconsistência de estado: limpar e seguir.
+          session.pendingQualifying = false;
+          session.pendingQualifyingIndex = null;
+          session.pendingQualifyingIntent = null;
+          session.pendingQualifyingQuestions = null;
+          session.pendingQualifyingOriginalMsg = null;
+        } else {
+          recordQualifyingAnswer(session, currentQuestion, incoming);
+          session.pendingQualifyingIndex = currentIndex + 1;
+
+          // Mais perguntas por fazer
+          if (session.qualifyingAnswers.length < questions.length) {
+            await sendText(replyJid, questions[session.qualifyingAnswers.length], evolutionConfigForInstance);
+            return;
+          }
+
+          // Final: agora sim pausa e escalada com diagnóstico
+          const detectedIntent = session.pendingQualifyingIntent || intent;
+          const originalMsg = session.pendingQualifyingOriginalMsg || (incoming || '').trim();
+          const clientName = session.name || pushName || 'Cliente';
+
+          session.pendingQualifying = false;
+          session.pendingQualifyingIndex = null;
+          session.pendingQualifyingIntent = null;
+          session.pendingQualifyingQuestions = null;
+          session.pendingQualifyingOriginalMsg = null;
+
+          session.paused = true;
+          stateMachine.setState(senderNum, 'pausado');
+
+          const replyText = detectedIntent === INTENTS.SUPORTE_CODIGO
+            ? 'Caríssimo(a), muito obrigado. 🔐 Vou verificar e envio-lhe o código em breve. Por favor, aguarde.'
+            : 'Caríssimo(a), lamento o inconveniente. Vou encaminhar o seu caso para resolução imediata. Aguarde um momento.';
+
+          await sendText(replyJid, replyText, evolutionConfigForInstance);
+
+          const qaSection = (session.qualifyingAnswers || []).map((qa) => `   ↳ ${qa.question}: ${qa.answer}`).join('\n');
+          const supMsg =
+            `🆘 SUPORTE DETECTADO\n\n` +
+            `Intenção: ${detectedIntent}\n` +
+            `Cliente: ${clientName}\n` +
+            `Número: ${senderNum}\n` +
+            `Mensagem: ${originalMsg} \n` +
+            `${qaSection ? `📋 Diagnóstico:\n${qaSection}\n` : ''}` +
+            `Instância: ${instanceName}`;
+
+          for (const sup of supervisors) {
+            if (sup) {
+              await sendText(sup, supMsg, evolutionConfigForInstance);
+              trackPausedChat(sup, senderNum);
+            }
+          }
+
+          return;
+        }
+      }
+
       if (session.paused) {
         console.log(`[PAUSED] ${senderNum}: message ignored`);
         return;
       }
 
       // ── INTENTS de suporte (prioridade máxima; não chamar LLM; escalar ao supervisor) ──
-      if (!isSup && (intent === INTENTS.SUPORTE_CODIGO || intent === INTENTS.SUPORTE_ERRO)) {
-        session.paused = true;
-        stateMachine.setState(senderNum, 'pausado');
-        const clientName = session.name || pushName || 'Cliente';
-        const intentLabel = intent;
+      if (!isSup && needsQualifyingQuestions(intent)) {
+        const questions = getQuestionsForClient(config);
         const originalMsg = (textMessage || '').trim();
-        const isImgNote = isImage ? '(imagem recebida)' : '';
-        const replyText = intent === INTENTS.SUPORTE_CODIGO
-          ? 'Caríssimo(a), muito obrigado. 🔐 Vou verificar e envio-lhe o código em breve. Por favor, aguarde.'
-          : 'Caríssimo(a), lamento o inconveniente. Vou encaminhar o seu caso para resolução imediata. Aguarde um momento.';
 
-        await sendText(replyJid, replyText, evolutionConfigForInstance);
+        session.pendingQualifying = true;
+        session.pendingQualifyingIndex = 0;
+        session.pendingQualifyingIntent = intent;
+        session.pendingQualifyingQuestions = questions;
+        session.pendingQualifyingOriginalMsg = originalMsg;
+        session.qualifyingAnswers = [];
 
-        const supMsg =
-          `🆘 SUPORTE DETECTADO\n\n` +
-          `Intenção: ${intentLabel}\n` +
-          `Cliente: ${clientName}\n` +
-          `Número: ${senderNum}\n` +
-          `Mensagem: ${originalMsg || '(sem texto)'} ${isImgNote}\n` +
-          `Instância: ${instanceName}`;
-
-        for (const sup of supervisors) {
-          if (sup) await sendText(sup, supMsg, evolutionConfigForInstance);
-        }
+        await sendText(replyJid, questions[0], evolutionConfigForInstance);
         return;
       }
 
@@ -501,6 +578,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           const planInfo = session.pendingSale;
           for (const sup of supervisors) {
             if (sup) await sendText(sup, `COMPROVATIVO RECEBIDO (imagem)\n\nCliente: ${customerName}\nNúmero: ${senderNum}\nPlano: ${planInfo}\n\n💡 PARA ENTREGAR: #sim ${senderNum}\n🚫 PARA REJEITAR: #nao ${senderNum}`, evolutionConfigForInstance);
+            if (sup) trackPausedChat(sup, senderNum);
           }
         } else {
           await sendText(replyJid, 'Recebi a sua imagem. Em que posso ajudá-lo(a)?', evolutionConfigForInstance);
@@ -531,6 +609,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         const planInfo = session.pendingSale || 'Aguardando Extração';
         for (const sup of supervisors) {
           if (sup) await sendText(sup, `COMPROVATIVO RECEBIDO\n\nCliente: ${customerName}\nPlano: ${planInfo}\n\n💡 PARA ENTREGAR: #sim ${senderNum}\n🚫 PARA REJEITAR: #nao ${senderNum}`, evolutionConfigForInstance);
+          if (sup) trackPausedChat(sup, senderNum);
         }
         return;
       }
@@ -708,6 +787,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             `Número: ${senderNum}\nContexto: ${planoInfo}\n\n` +
             `💡 Para reactivar o bot: #retomar ${senderNum}`,
             evolutionConfigForInstance);
+          if (sup) trackPausedChat(sup, senderNum);
         }
         await sendText(replyJid,
           'Compreendo. Vou chamar o responsável para ' +
@@ -734,6 +814,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
                 formatarNotificacaoReclamacao(clientName, senderNum, session.platform || 'Netflix', `Erro de localização/Household PERSISTENTE (cliente já recebeu instruções): "${textMessage.substring(0, 200)}"`),
                 evolutionConfigForInstance
               );
+              trackPausedChat(sup, senderNum);
             }
           }
           console.log(`[LOCALIZACAO-PERSISTENTE] ${senderNum}: escalado ao supervisor`);
@@ -770,6 +851,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
               formatarNotificacaoReclamacao(clientName, senderNum, plataformaSessao, textMessage),
               evolutionConfigForInstance
             );
+            trackPausedChat(sup, senderNum);
           }
         }
         console.log(`[RECLAMACAO] ${senderNum}: "${textMessage.substring(0, 80)}"`);
@@ -799,6 +881,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
               `🚫 *PEDIDO DE CANCELAMENTO*\n\n*Cliente:* ${clientName}\n*Número:* ${senderNum}\n*Serviço:* ${plataformaSessao}\n\n💡 Para reactivar o bot: #retomar ${senderNum}`,
               evolutionConfigForInstance
             );
+            trackPausedChat(sup, senderNum);
           }
         }
         console.log(`[CANCELAMENTO] ${senderNum}: "${textMessage.substring(0, 80)}"`);
@@ -873,7 +956,9 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const history = (session.history || []).slice(-5);
 
       // Passo C: Dynamic Prompt (com contexto do cliente + stock em tempo real + memória de quantidade + diasRestantes) e chamada ao Gemini
-      let systemInstruction = llm.buildDynamicPrompt(inventoryString, customerName, isReturningCustomer, stockCountsResult, session, diasRestantes);
+      let systemInstruction = config.llmSystemPrompt
+        ? config.llmSystemPrompt
+        : llm.buildDynamicPrompt(inventoryString, customerName, isReturningCustomer, stockCountsResult, session, diasRestantes);
       if (intent === INTENTS.DESCONHECIDO) {
         systemInstruction =
           `[REGRA CRÍTICA]\n` +
@@ -932,6 +1017,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
               formatarNotificacaoReclamacao(session.name || senderNum, senderNum, session.platform || '', descricao),
               evolutionConfigForInstance
             );
+            trackPausedChat(sup, senderNum);
           }
         }
         console.log(`[RECLAMACAO-LLM] ${senderNum}: "${descricao}"`);
@@ -951,6 +1037,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
               `🚫 *CANCELAMENTO (confirmado pelo cliente)*\n\n*Cliente:* ${session.name || senderNum}\n*Número:* ${senderNum}\n*Serviço:* ${infoCancelamento}\n\n💡 Para reactivar o bot: #retomar ${senderNum}`,
               evolutionConfigForInstance
             );
+            trackPausedChat(sup, senderNum);
           }
         }
         console.log(`[CANCELAMENTO-LLM] ${senderNum}: "${infoCancelamento}"`);
