@@ -12,7 +12,11 @@ module.exports = {
     supervisores: ['244946014060'],
   },
   'demo-moda': {
-    botName: 'Zara',
-    supervisores: ['244946014060'],
+    botName: 'Bia',
+    supervisores: ['244941713216'],
+  },
+  ZapPrincipal: {
+    botName: 'Luna',
+    supervisores: ['244941713216'],
   },
 };

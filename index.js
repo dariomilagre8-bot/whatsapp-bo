@@ -74,7 +74,7 @@ const registry = {
   'Streamzone Braulio': { config, handler: webhookHandler },
 };
 
-// Adicionar clientes de src/router.js ao registry
+// Adicionar clientes de src/router.js ao registry (legado)
 for (const [, entry] of Object.entries(clientRouter.clientes)) {
   const instName = entry.evolutionInstance;
   if (instName && !registry[instName]) {
@@ -84,6 +84,35 @@ for (const [, entry] of Object.entries(clientRouter.clientes)) {
     registry[instName] = { config: entry.config, handler: clientHandler };
   }
 }
+
+// Auto-registo: clients/<slug>/config.js (exceto streamzone — já coberto acima)
+(function registerClientsFromDisk() {
+  const clientsRoot = path.join(__dirname, 'clients');
+  const registered = [];
+  for (const dirent of fs.readdirSync(clientsRoot, { withFileTypes: true })) {
+    if (!dirent.isDirectory() || dirent.name === 'streamzone') continue;
+    const cfgPath = path.join(clientsRoot, dirent.name, 'config.js');
+    if (!fs.existsSync(cfgPath)) continue;
+    const clientCfg = require(cfgPath);
+    const inst = clientCfg.evolutionInstance;
+    if (!inst || !clientCfg.slug) {
+      console.warn(`[CLIENTS] Ignorado pasta "${dirent.name}": falta slug ou evolutionInstance`);
+      continue;
+    }
+    if (registry[inst]) {
+      console.warn(`[CLIENTS] Ignorado slug=${clientCfg.slug}: instância "${inst}" já no registry`);
+      continue;
+    }
+    const sm = new StateMachine(clientCfg);
+    const clientEvoConfig = { ...evolutionConfig, instance: inst };
+    const h = createWebhookHandler(clientCfg, sm, () => Promise.resolve(''), clientEvoConfig);
+    registry[inst] = { config: clientCfg, handler: h };
+    registered.push(`${clientCfg.slug}→${inst}`);
+  }
+  console.log(registered.length
+    ? `✅ Clientes clients/: ${registered.join(' | ')}`
+    : '✅ Clientes clients/: (nenhum extra)');
+})();
 
 const webhookRouter = createWebhookRouter(registry, getRedis());
 app.post('/webhook', webhookRouter);
