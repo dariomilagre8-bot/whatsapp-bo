@@ -105,17 +105,24 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
     const instanceName = body?.instance || body?.instanceName || body?.provider?.instance || body?.data?.provider?.instance
       || process.env.EVOLUTION_INSTANCE || process.env.EVOLUTION_INSTANCE_NAME || 'Zara-Teste';
+    const tenantConfig = req.clientConfig || config;
     const clientConfig = clientesConfig[instanceName] || clientesConfig['Zara-Teste'];
-    const supervisors = (req.clientConfig && Array.isArray(req.clientConfig.supervisors))
-      ? req.clientConfig.supervisors
+    const supervisors = (tenantConfig && Array.isArray(tenantConfig.supervisors))
+      ? tenantConfig.supervisors
       : (Array.isArray(clientConfig?.supervisores) ? clientConfig.supervisores : []);
-    const evolutionConfigForInstance = { ...evolutionConfig, instance: instanceName };
+    const resolvedEvolutionInstance = (tenantConfig && tenantConfig.evolutionInstance)
+      || instanceName
+      || process.env.EVOLUTION_INSTANCE
+      || process.env.EVOLUTION_INSTANCE_NAME
+      || 'Zara-Teste';
+    const evolutionConfigForInstance = { ...evolutionConfig, instance: resolvedEvolutionInstance };
+    const sendClient = (phone, text) => sendText(phone, text, evolutionConfigForInstance, tenantConfig);
 
     try {
       // Evolution API v2.3.0: quem enviou está em data.key.remoteJid. NUNCA usar req.body.sender (é o bot/instância).
       const remoteJid = data?.key?.remoteJid || '';
       const senderFallback = remoteJid.replace(/@s\.whatsapp\.net|@c\.us|@lid/g, '');
-      const senderNumResolved = await resolveNumber(remoteJid, instanceName, evolutionConfigForInstance, logger);
+      const senderNumResolved = await resolveNumber(remoteJid, resolvedEvolutionInstance, evolutionConfigForInstance, logger);
       const senderNum = senderNumResolved || senderFallback;
 
       if (!senderNum) {
@@ -159,7 +166,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       // ── Interceptador global: #sim / #nao incompletos NUNCA chegam à Zara ──
       if (isSup && (firstWord === '#sim' || firstWord === '#nao') && !targetRaw) {
-        await sendText(replyJid, 'Comando incompleto. Por favor, use: #sim [número_do_cliente] ou #nao [número_do_cliente]', evolutionConfigForInstance);
+        await sendClient(replyJid, 'Comando incompleto. Por favor, use: #sim [número_do_cliente] ou #nao [número_do_cliente]');
         return;
       }
 
@@ -169,16 +176,14 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           const modo = (restParts[0] || '').toLowerCase();
           if (modo === 'on') {
             supervisorTestMode.add(senderNum);
-            await sendText(replyJid,
+            await sendClient(replyJid,
               '🧪 Modo teste ON. As tuas mensagens sem # ' +
               'serão tratadas como cliente. ' +
-              'Envia "#teste off" para sair.',
-              evolutionConfigForInstance);
+              'Envia "#teste off" para sair.');
           } else if (modo === 'off') {
             supervisorTestMode.delete(senderNum);
-            await sendText(replyJid,
-              '✅ Modo teste OFF. Voltaste ao modo supervisor.',
-              evolutionConfigForInstance);
+            await sendClient(replyJid,
+              '✅ Modo teste OFF. Voltaste ao modo supervisor.');
           }
           return;
         }
@@ -190,10 +195,10 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           try {
             const sbClient = require('../integrations/supabase').getClient();
             const resumo = await handleLeads(sbClient, senderNum);
-            await sendText(replyJid, resumo, evolutionConfigForInstance);
+            await sendClient(replyJid, resumo);
           } catch (e) {
             console.error('[CRM] #leads error:', e.message);
-            await sendText(replyJid, '⚠️ CRM não configurado. Execute docs/crm-schema.sql no Supabase SQL Editor (Dashboard → SQL Editor → colar o conteúdo do ficheiro).', evolutionConfigForInstance);
+            await sendClient(replyJid, '⚠️ CRM não configurado. Execute docs/crm-schema.sql no Supabase SQL Editor (Dashboard → SQL Editor → colar o conteúdo do ficheiro).');
           }
           return;
         }
@@ -202,10 +207,10 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             const sbClient = require('../integrations/supabase').getClient();
             const numNorm = extractPhoneNumber(targetRaw);
             const detalhe = await getLeadDetalhe(sbClient, numNorm || targetRaw);
-            await sendText(replyJid, detalhe, evolutionConfigForInstance);
+            await sendClient(replyJid, detalhe);
           } catch (e) {
             console.error('[CRM] #lead error:', e.message);
-            await sendText(replyJid, '❌ Erro. Execute o schema SQL do CRM no Supabase.', evolutionConfigForInstance);
+            await sendClient(replyJid, '❌ Erro. Execute o schema SQL do CRM no Supabase.');
           }
           return;
         }
@@ -215,10 +220,10 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           try {
             const sbClient = require('../integrations/supabase').getClient();
             const resumo = await handleWaitlist(sbClient, senderNum);
-            await sendText(replyJid, resumo, evolutionConfigForInstance);
+            await sendClient(replyJid, resumo);
           } catch (e) {
             console.error('[WAITLIST] #waitlist error:', e.message);
-            await sendText(replyJid, '❌ Erro ao consultar lista de espera. Execute o schema SQL (docs/stock-waitlist-schema.sql) no Supabase.', evolutionConfigForInstance);
+            await sendClient(replyJid, '❌ Erro ao consultar lista de espera. Execute o schema SQL (docs/stock-waitlist-schema.sql) no Supabase.');
           }
           return;
         }
@@ -228,10 +233,10 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           try {
             const sbClient = require('../integrations/supabase').getClient();
             await notificarClientesWaitlist(sbClient, config.stock);
-            await sendText(replyJid, '✅ Clientes em fila notificados sobre reposição de stock.', evolutionConfigForInstance);
+            await sendClient(replyJid, '✅ Clientes em fila notificados sobre reposição de stock.');
           } catch (e) {
             console.error('[STOCK-NOTIFIER] #repor error:', e.message);
-            await sendText(replyJid, '❌ Erro ao notificar waitlist.', evolutionConfigForInstance);
+            await sendClient(replyJid, '❌ Erro ao notificar waitlist.');
           }
           return;
         }
@@ -241,10 +246,10 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           try {
             const sbClient = require('../integrations/supabase').getClient();
             await runDailyRenewalJob(config.stock, config.payment, sbClient, { force: true });
-            await sendText(replyJid, '✅ Cron de renovação executado manualmente.', evolutionConfigForInstance);
+            await sendClient(replyJid, '✅ Cron de renovação executado manualmente.');
           } catch (e) {
             console.error('[RENEWAL] #renovacao error:', e.message);
-            await sendText(replyJid, '❌ Erro ao executar cron de renovação.', evolutionConfigForInstance);
+            await sendClient(replyJid, '❌ Erro ao executar cron de renovação.');
           }
           return;
         }
@@ -253,10 +258,10 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         if (/^#stocks?$/i.test(firstWord) && restParts.length === 0) {
           try {
             const resumo = await getStockResumo(config.stock);
-            await sendText(replyJid, resumo, evolutionConfigForInstance);
+            await sendClient(replyJid, resumo);
           } catch (e) {
             console.error('[STOCK] #stock resumo error:', e.message);
-            await sendText(replyJid, '❌ Erro ao ler stock da planilha.', evolutionConfigForInstance);
+            await sendClient(replyJid, '❌ Erro ao ler stock da planilha.');
           }
           return;
         }
@@ -265,9 +270,9 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         if (/^#stocks?$/i.test(firstWord) && restParts.length > 0) {
           const sbClient = require('../integrations/supabase').getClient();
           const produtoStr = restParts.join(' ');
-          await sendText(replyJid, `⏳ A notificar clientes em lista de espera para "${produtoStr}"...`, evolutionConfigForInstance);
+          await sendClient(replyJid, `⏳ A notificar clientes em lista de espera para "${produtoStr}"...`);
           const resultado = await triggerStockReposto(sbClient, config.stock, produtoStr);
-          await sendText(replyJid, resultado, evolutionConfigForInstance);
+          await sendClient(replyJid, resultado);
           return;
         }
 
@@ -275,7 +280,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         if (firstWord === '#expirados') {
           const expirados = await getPerfisExpirados(config.stock);
           if (expirados.length === 0) {
-            await sendText(replyJid, '✅ Nenhum perfil expirado pendente.', evolutionConfigForInstance);
+            await sendClient(replyJid, '✅ Nenhum perfil expirado pendente.');
           } else {
             let msg = `📋 *Perfis expirados* (${expirados.length}):\n\n`;
             for (const e of expirados.slice(0, 15)) {
@@ -283,7 +288,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
               msg += `• ${e.cliente || e.telefone} | ${e.platform} | ${e.email} | Exp: ${dataStr} | Status: ${e.status}\n`;
             }
             if (expirados.length > 15) msg += `\n... e mais ${expirados.length - 15}`;
-            await sendText(replyJid, msg, evolutionConfigForInstance);
+            await sendClient(replyJid, msg);
           }
           return;
         }
@@ -292,7 +297,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         if (firstWord === '#renovar' && targetRaw) {
           const tel = extractPhoneNumber(targetRaw) || targetRaw.replace(/\D/g, '');
           const n = await renovarClientePorTelefone(config.stock, tel);
-          await sendText(replyJid, n > 0 ? `✅ Renovação registada para ${tel} (${n} perfil(is)).` : `❌ Nenhum perfil activo encontrado para ${tel}.`, evolutionConfigForInstance);
+          await sendClient(replyJid, n > 0 ? `✅ Renovação registada para ${tel} (${n} perfil(is)).` : `❌ Nenhum perfil activo encontrado para ${tel}.`);
           return;
         }
 
@@ -302,10 +307,10 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           const perfil = restParts[1] || null;
           const lin = await findLinhaPorEmailPerfil(config.stock, email, perfil);
           if (!lin) {
-            await sendText(replyJid, `❌ Perfil não encontrado para email "${email}"${perfil ? ` e perfil "${perfil}"` : ''}.`, evolutionConfigForInstance);
+            await sendClient(replyJid, `❌ Perfil não encontrado para email "${email}"${perfil ? ` e perfil "${perfil}"` : ''}.`);
           } else {
             await libertarPerfil(config.stock, lin.sheetRow);
-            await sendText(replyJid, `✅ Perfil libertado: ${lin.email} (linha ${lin.sheetRow}). Disponível para venda.`, evolutionConfigForInstance);
+            await sendClient(replyJid, `✅ Perfil libertado: ${lin.email} (linha ${lin.sheetRow}). Disponível para venda.`);
           }
           return;
         }
@@ -318,7 +323,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             targetSession.paused = true;
             stateMachine.setState(target, 'pausado');
             trackPausedChat(senderNum, target);
-            await sendText(replyJid, `✅ Bot pausado para ${target}. Use #retomar ${target} para reactivar.`, evolutionConfigForInstance);
+            await sendClient(replyJid, `✅ Bot pausado para ${target}. Use #retomar ${target} para reactivar.`);
             return;
           }
           if (cmd === 'unpause') {
@@ -326,7 +331,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             if (!targetToResume) {
               targetToResume = getMostRecentPaused(senderNum);
               if (!targetToResume) {
-                await sendText(replyJid, '⚠️ Nenhum chat pausado encontrado. Use: #retomar NUMERO', evolutionConfigForInstance);
+                await sendClient(replyJid, '⚠️ Nenhum chat pausado encontrado. Use: #retomar NUMERO');
                 return;
               }
             }
@@ -336,34 +341,33 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             stateMachine.setState(targetToResume, 'menu');
             removePausedChat(senderNum, targetToResume);
 
-            await sendText(
+            await sendClient(
               targetToResume,
-              config.systemMessages?.botUnpaused ?? 'O responsável já tratou do assunto. Em que mais posso ajudar?',
-              evolutionConfigForInstance
+              config.systemMessages?.botUnpaused ?? 'O responsável já tratou do assunto. Em que mais posso ajudar?'
             );
-            await sendText(replyJid, `✅ Bot retomado para ${targetToResume}`, evolutionConfigForInstance);
+            await sendClient(replyJid, `✅ Bot retomado para ${targetToResume}`);
           } else if (cmd === 'reset_session') {
             let count = 0;
             if (target) {
               const targetSession = stateMachine.getSession(target);
               targetSession.paused = false;
               stateMachine.setState(target, 'menu');
-              await sendText(target, config.systemMessages?.botUnpaused ?? 'O responsável já tratou do assunto. Em que mais posso ajudar?', evolutionConfigForInstance);
+              await sendClient(target, config.systemMessages?.botUnpaused ?? 'O responsável já tratou do assunto. Em que mais posso ajudar?');
               count = 1;
               removePausedChat(senderNum, target);
-              await sendText(replyJid, `✅ Reset/despausado: ${target} (1 número)`, evolutionConfigForInstance);
+              await sendClient(replyJid, `✅ Reset/despausado: ${target} (1 número)`);
             } else {
               for (const [phone, s] of stateMachine.sessions) {
                 s.paused = false;
                 stateMachine.setState(phone, 'menu');
                 count++;
               }
-              await sendText(replyJid, `✅ DESPAUSAR TODOS: ${count} número(s) libertados. A IA volta a responder a todos.`, evolutionConfigForInstance);
+              await sendClient(replyJid, `✅ DESPAUSAR TODOS: ${count} número(s) libertados. A IA volta a responder a todos.`);
             }
             console.log(`[SUPERVISOR] #reset by ${senderNum}: ${count} session(s) unpaused`);
           } else if (cmd === 'status') {
             const pausedCount = [...stateMachine.sessions.values()].filter(s => s.paused).length;
-            await sendText(replyJid, `📊 Sessões activas: ${stateMachine.sessions.size} | Pausadas: ${pausedCount}`, evolutionConfigForInstance);
+            await sendClient(replyJid, `📊 Sessões activas: ${stateMachine.sessions.size} | Pausadas: ${pausedCount}`);
           } else if (cmd === 'approve_sale' && target) {
             console.log(`[#sim] Recebido para número: ${target}`);
             let targetSession = stateMachine.getSession(target);
@@ -381,7 +385,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             console.log(`[#sim] Sessão encontrada: ${pendingSale ? 'sim' : 'não'}`);
             if (pendingSale) console.log(`[#sim] PendingSale: tipo=${pendingSale.split(/\s/)[0]}, plano=${pendingSale}`);
             if (!pendingSale) {
-              await sendText(replyJid, `⚠️ Não há venda pendente para este número (${target}). Verifique o número ou se o cliente já enviou o comprovativo.`, evolutionConfigForInstance);
+              await sendClient(replyJid, `⚠️ Não há venda pendente para este número (${target}). Verifique o número ou se o cliente já enviou o comprovativo.`);
               return;
             }
             const isRenovacao = /renova[cç][aã]o|renovar/i.test(pendingSale);
@@ -391,7 +395,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
               console.log('[#sim] Alocando renovação...');
               const n = await renovarClientePorTelefone(config.stock, target);
               if (n === 0) {
-                await sendText(replyJid, `Nenhum perfil activo encontrado para ${target}. Verifique o número.`, evolutionConfigForInstance);
+                await sendClient(replyJid, `Nenhum perfil activo encontrado para ${target}. Verifique o número.`);
                 return;
               }
               const perfisExistentes = await getClienteByTelefone(config.stock, target);
@@ -400,7 +404,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             } else {
               const stillHasStock = await hasStockForPendingSale(config.stock, pendingSale);
               if (!stillHasStock) {
-                await sendText(replyJid, `❌ Erro: Stock esgotou. Venda cancelada para evitar duplicidade. Cliente: ${target}`, evolutionConfigForInstance);
+                await sendClient(replyJid, `❌ Erro: Stock esgotou. Venda cancelada para evitar duplicidade. Cliente: ${target}`);
                 return;
               }
               const customerName = targetSession.name || 'Cliente';
@@ -411,7 +415,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             }
 
             if (!credentials || (!credentials.email && !credentials.senha)) {
-              await sendText(replyJid, `❌ Erro ao alocar perfil: ${!credentials ? 'planilha ou stock indisponível.' : 'dados incompletos.'} Cliente: ${target}`, evolutionConfigForInstance);
+              await sendClient(replyJid, `❌ Erro ao alocar perfil: ${!credentials ? 'planilha ou stock indisponível.' : 'dados incompletos.'} Cliente: ${target}`);
               return;
             }
             const perfisLine = (credentials.perfis && credentials.perfis.length > 1)
@@ -421,7 +425,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
               ? 'A sua renovação foi confirmada. O seu acesso continua activo. Qualquer dúvida, estou à disposição.'
               : `O seu acesso foi activado com sucesso. Aqui estão os seus dados:\n\n*Email:* ${credentials.email || 'Aguardando Dados'}\n*Senha:* ${credentials.senha || 'Aguardando Dados'}${perfisLine}\n\nFoi um privilégio servi-lo(a). Qualquer dúvida, estou à disposição.`;
             const targetReplyJid = targetSession.replyJid || `${target}@s.whatsapp.net`;
-            await sendText(targetReplyJid, accessMsg, evolutionConfigForInstance);
+            await sendClient(targetReplyJid, accessMsg);
             console.log('[#sim] Mensagem enviada ao cliente: sim');
             const mesesPagamento = targetSession.mesesPagamento || 1;
             targetSession.paused = false;
@@ -432,7 +436,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             stateMachine.setState(sessionKey, 'menu');
             const mesesInfo = mesesPagamento > 1 ? ` (${mesesPagamento} meses)` : '';
             const clienteNome = targetSession.name || target;
-            await sendText(replyJid, `✅ Venda aprovada para ${clienteNome} (${target}). Dados enviados ao cliente.`, evolutionConfigForInstance);
+            await sendClient(replyJid, `✅ Venda aprovada para ${clienteNome} (${target}). Dados enviados ao cliente.`);
             console.log(`[SUPERVISOR] #sim: ${isRenovacao ? 'renovação' : 'venda'} para ${target}`);
             try {
               const sbClient = require('../integrations/supabase').getClient();
@@ -444,11 +448,11 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             const targetSession = stateMachine.getSession(target);
             const rejectMsg = 'Informamos que o departamento financeiro não conseguiu validar o seu comprovativo de pagamento. A sua reserva encontra-se suspensa. Por favor, verifique os dados da transferência e reenvie um comprovativo válido em PDF, ou contacte-nos para esclarecimentos.';
             const targetReplyJid = targetSession.replyJid || `${target}@s.whatsapp.net`;
-            await sendText(targetReplyJid, rejectMsg, evolutionConfigForInstance);
+            await sendClient(targetReplyJid, rejectMsg);
             targetSession.paused = false;
             targetSession.pendingSale = null;
             stateMachine.setState(target, 'menu');
-            await sendText(replyJid, `Rejeição enviada ao cliente ${target}. Sessão desbloqueada.`, evolutionConfigForInstance);
+            await sendClient(replyJid, `Rejeição enviada ao cliente ${target}. Sessão desbloqueada.`);
             console.log(`[SUPERVISOR] #nao: comprovativo rejeitado para ${target}`);
           }
           return;
@@ -487,7 +491,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
           // Mais perguntas por fazer
           if (session.qualifyingAnswers.length < questions.length) {
-            await sendText(replyJid, questions[session.qualifyingAnswers.length], evolutionConfigForInstance);
+            await sendClient(replyJid, questions[session.qualifyingAnswers.length]);
             return;
           }
 
@@ -509,7 +513,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             ? 'Caríssimo(a), muito obrigado. 🔐 Vou verificar e envio-lhe o código em breve. Por favor, aguarde.'
             : 'Caríssimo(a), lamento o inconveniente. Vou encaminhar o seu caso para resolução imediata. Aguarde um momento.';
 
-          await sendText(replyJid, replyText, evolutionConfigForInstance);
+          await sendClient(replyJid, replyText);
 
           const qaSection = (session.qualifyingAnswers || []).map((qa) => `   ↳ ${qa.question}: ${qa.answer}`).join('\n');
           const supMsg =
@@ -519,11 +523,11 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             `Número: ${senderNum}\n` +
             `Mensagem: ${originalMsg} \n` +
             `${qaSection ? `📋 Diagnóstico:\n${qaSection}\n` : ''}` +
-            `Instância: ${instanceName}`;
+            `Instância: ${resolvedEvolutionInstance}`;
 
           for (const sup of supervisors) {
             if (sup) {
-              await sendText(sup, supMsg, evolutionConfigForInstance);
+              await sendClient(sup, supMsg);
               trackPausedChat(sup, senderNum);
             }
           }
@@ -549,41 +553,40 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         session.pendingQualifyingOriginalMsg = originalMsg;
         session.qualifyingAnswers = [];
 
-        await sendText(replyJid, questions[0], evolutionConfigForInstance);
+        await sendClient(replyJid, questions[0]);
         return;
       }
 
       // ── INTENT: imagem ambígua (não assumir venda) ──
       if (!isSup && intent === INTENTS.SUPORTE_IMAGEM) {
-        await sendText(
+        await sendClient(
           replyJid,
-          'Caríssimo(a), recebi a sua imagem. Para que eu possa ajudá-lo(a) da melhor forma, poderia indicar-me o que precisa?\n\n1) Código de verificação\n2) Problema com a conta\n3) Novo pedido/compra',
-          evolutionConfigForInstance
+          'Caríssimo(a), recebi a sua imagem. Para que eu possa ajudá-lo(a) da melhor forma, poderia indicar-me o que precisa?\n\n1) Código de verificação\n2) Problema com a conta\n3) Novo pedido/compra'
         );
         return;
       }
 
       // ── Roteamento de media: NUNCA chama a IA ──
       if (isAudio) {
-        await sendText(replyJid, 'Desculpe, a Zara ainda não consegue ouvir mensagens de voz. 😅 Poderia escrever a sua dúvida, por favor? ✍️', evolutionConfigForInstance);
+        await sendClient(replyJid, 'Desculpe, a Zara ainda não consegue ouvir mensagens de voz. 😅 Poderia escrever a sua dúvida, por favor? ✍️');
         return;
       }
 
       if (isImage) {
         if (session.pendingSale) {
-          await sendText(replyJid, 'Recebi o seu comprovativo de pagamento! Vou encaminhar para o nosso supervisor validar. Assim que confirmarmos, activamos o seu perfil.', evolutionConfigForInstance);
+          await sendClient(replyJid, 'Recebi o seu comprovativo de pagamento! Vou encaminhar para o nosso supervisor validar. Assim que confirmarmos, activamos o seu perfil.');
           session.paused = true;
           stateMachine.setState(senderNum, 'pausado');
           const customerName = session.name || 'Cliente';
           const planInfo = session.pendingSale;
           for (const sup of supervisors) {
-            if (sup) await sendText(sup, `COMPROVATIVO RECEBIDO (imagem)\n\nCliente: ${customerName}\nNúmero: ${senderNum}\nPlano: ${planInfo}\n\n💡 PARA ENTREGAR: #sim ${senderNum}\n🚫 PARA REJEITAR: #nao ${senderNum}`, evolutionConfigForInstance);
+            if (sup) await sendClient(sup, `COMPROVATIVO RECEBIDO (imagem)\n\nCliente: ${customerName}\nNúmero: ${senderNum}\nPlano: ${planInfo}\n\n💡 PARA ENTREGAR: #sim ${senderNum}\n🚫 PARA REJEITAR: #nao ${senderNum}`);
             if (sup) trackPausedChat(sup, senderNum);
           }
         } else {
-          await sendText(replyJid, 'Recebi a sua imagem. Em que posso ajudá-lo(a)?', evolutionConfigForInstance);
+          await sendClient(replyJid, 'Recebi a sua imagem. Em que posso ajudá-lo(a)?');
           for (const sup of supervisors) {
-            if (sup) await sendText(sup, `📎 Imagem recebida de ${senderNum} (${session.name || 'Cliente'}) — sem contexto de pagamento`, evolutionConfigForInstance);
+            if (sup) await sendClient(sup, `📎 Imagem recebida de ${senderNum} (${session.name || 'Cliente'}) — sem contexto de pagamento`);
           }
         }
         return;
@@ -597,18 +600,18 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         const isImageDoc = /\.(jpg|jpeg|png|gif|webp)$/.test(fileName) || (mimetype && mimetype.startsWith('image/'));
 
         if (!isPdf && !isImageDoc) {
-          await sendText(replyJid, 'Aceitamos comprovativos em imagem (foto do ecrã) ou PDF. Por favor, reenvie em um desses formatos.', evolutionConfigForInstance);
+          await sendClient(replyJid, 'Aceitamos comprovativos em imagem (foto do ecrã) ou PDF. Por favor, reenvie em um desses formatos.');
           console.log(`[WEBHOOK] Documento rejeitado: fileName="${docMsg.fileName}" mimetype="${docMsg.mimetype}" de ${senderNum}`);
           return;
         }
 
-        await sendText(replyJid, 'Recebi o seu comprovativo! Vou encaminhar para o supervisor validar. Assim que for aprovado, activamos o seu acesso.', evolutionConfigForInstance);
+        await sendClient(replyJid, 'Recebi o seu comprovativo! Vou encaminhar para o supervisor validar. Assim que for aprovado, activamos o seu acesso.');
         session.paused = true;
         stateMachine.setState(senderNum, 'pausado');
         const customerName = session.name || 'Cliente';
         const planInfo = session.pendingSale || 'Aguardando Extração';
         for (const sup of supervisors) {
-          if (sup) await sendText(sup, `COMPROVATIVO RECEBIDO\n\nCliente: ${customerName}\nPlano: ${planInfo}\n\n💡 PARA ENTREGAR: #sim ${senderNum}\n🚫 PARA REJEITAR: #nao ${senderNum}`, evolutionConfigForInstance);
+          if (sup) await sendClient(sup, `COMPROVATIVO RECEBIDO\n\nCliente: ${customerName}\nPlano: ${planInfo}\n\n💡 PARA ENTREGAR: #sim ${senderNum}\n🚫 PARA REJEITAR: #nao ${senderNum}`);
           if (sup) trackPausedChat(sup, senderNum);
         }
         return;
@@ -623,13 +626,13 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       if (!isShortConfirmation && !checkRateLimit(senderNum)) {
         console.log(`[RATE-LIMIT] ${senderNum}: ignorado (excedeu ${RATE_LIMIT_MAX} em ${RATE_LIMIT_WINDOW_MS / 1000}s)`);
         await new Promise((r) => setTimeout(r, 2000));
-        await sendText(replyJid, 'Recebi a sua mensagem. Um momento, por favor.', evolutionConfigForInstance);
+        await sendClient(replyJid, 'Recebi a sua mensagem. Um momento, por favor.');
         return;
       }
 
       // ── Emoji sozinho: resposta curta sem LLM ──
       if (/^[\s\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]+$/u.test(trimmedMsg) || trimmedMsg.length <= 2 && /[\u{1F300}-\u{1F9FF}]/u.test(trimmedMsg)) {
-        await sendText(replyJid, 'Olá! Em que posso ajudá-lo(a)?', evolutionConfigForInstance);
+        await sendClient(replyJid, 'Olá! Em que posso ajudá-lo(a)?');
         return;
       }
 
@@ -646,13 +649,13 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           } catch (e) {
             console.error('[WAITLIST] Erro ao adicionar na confirmação:', e.message);
           }
-          await sendText(replyJid, 'Perfeito. Avisarei assim que houver vaga. Até breve.', evolutionConfigForInstance);
+          await sendClient(replyJid, 'Perfeito. Avisarei assim que houver vaga. Até breve.');
           session.ultimaAcao = null;
           session.produtoWaitlist = null;
           return;
         }
         if (negacoesWaitlist.test(trimmedMsg)) {
-          await sendText(replyJid, 'Compreendido. Estarei à disposição sempre que precisar.', evolutionConfigForInstance);
+          await sendClient(replyJid, 'Compreendido. Estarei à disposição sempre que precisar.');
           session.ultimaAcao = null;
           session.produtoWaitlist = null;
           return;
@@ -671,13 +674,13 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             const valorStr = (expirado.valor || '').toString().trim() || '5.000';
             const planLabel = expirado.plano || 'Individual';
             const paymentMsg = `Para renovar o seu *${expirado.platform}* *${planLabel}* — *${valorStr}* Kz.\n\n*Dados de pagamento:*\nMulticaixa Express: ${p.multicaixa || 'N/A'}\nIBAN: ${p.iban || 'N/A'}\nTitular: ${p.titular || 'N/A'}\n\nApós o pagamento, envie o comprovativo (foto do ecrã ou PDF).`;
-            await sendText(replyJid, paymentMsg, evolutionConfigForInstance);
+            await sendClient(replyJid, paymentMsg);
             session.pendingSale = `${expirado.platform} ${planLabel} - Renovação - ${valorStr} Kz`;
             session.renovacaoAguardandoConfirmacao = false;
             session.platform = expirado.platform;
             session.plan = planLabel;
             for (const sup of supervisors) {
-              if (sup) await sendText(sup, `🔄 RENOVAÇÃO: ${session.name || 'Cliente'} (${senderNum}) quer renovar ${expirado.platform} ${planLabel} — ${valorStr} Kz`, evolutionConfigForInstance);
+              if (sup) await sendClient(sup, `🔄 RENOVAÇÃO: ${session.name || 'Cliente'} (${senderNum}) quer renovar ${expirado.platform} ${planLabel} — ${valorStr} Kz`);
             }
             console.log(`[RENOVACAO] ${senderNum}: confirmou renovação, dados enviados`);
             return;
@@ -710,7 +713,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             const nomeCliente = session.name || perfisCliente[0].cliente || 'Cliente';
             const aVerificar = perfisCliente.find((p) => p.status === 'a_verificar');
             if (aVerificar) {
-              await sendText(replyJid, `Olá ${nomeCliente}! Vi que tem uma renovação pendente. Quer continuar com a conta *${aVerificar.platform}*?`, evolutionConfigForInstance);
+              await sendClient(replyJid, `Olá ${nomeCliente}! Vi que tem uma renovação pendente. Quer continuar com a conta *${aVerificar.platform}*?`);
               session.existingCustomerGreeted = true;
               return;
             }
@@ -724,22 +727,22 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
               const dataExp = primeiro.dataExpiracao;
               const dataStr = primeiro.dataExpiracaoRaw || (dataExp ? dataExp.toLocaleDateString('pt-PT') : 'N/D');
               if (dataExp && dataExp >= em7) {
-                await sendText(replyJid, `Olá ${nomeCliente}! Vi que já tem uma conta *${primeiro.platform}* activa até *${dataStr}*. Em que posso ajudá-lo(a)?`, evolutionConfigForInstance);
+                await sendClient(replyJid, `Olá ${nomeCliente}! Vi que já tem uma conta *${primeiro.platform}* activa até *${dataStr}*. Em que posso ajudá-lo(a)?`);
                 session.existingCustomerGreeted = true;
                 return;
               }
               if (dataExp && dataExp >= hoje && dataExp < em7) {
-                await sendText(replyJid, `Olá ${nomeCliente}! A sua conta *${primeiro.platform}* expira em breve (*${dataStr}*). Quer renovar?`, evolutionConfigForInstance);
+                await sendClient(replyJid, `Olá ${nomeCliente}! A sua conta *${primeiro.platform}* expira em breve (*${dataStr}*). Quer renovar?`);
                 session.existingCustomerGreeted = true;
                 return;
               }
               if (dataExp && dataExp < hoje) {
-                await sendText(replyJid, `Olá ${nomeCliente}! A sua conta *${primeiro.platform}* expirou no dia *${dataStr}*. Quer renovar?`, evolutionConfigForInstance);
+                await sendClient(replyJid, `Olá ${nomeCliente}! A sua conta *${primeiro.platform}* expirou no dia *${dataStr}*. Quer renovar?`);
                 session.existingCustomerGreeted = true;
                 session.renovacaoAguardandoConfirmacao = true;
                 return;
               }
-              await sendText(replyJid, `Olá ${nomeCliente}! Vi que já tem conta(s) connosco. Em que posso ajudá-lo(a)?`, evolutionConfigForInstance);
+              await sendClient(replyJid, `Olá ${nomeCliente}! Vi que já tem conta(s) connosco. Em que posso ajudá-lo(a)?`);
               session.existingCustomerGreeted = true;
               return;
             }
@@ -782,17 +785,15 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         const planoInfo = session.pendingSale ||
           `${session.platform || ''} ${session.plan || ''}`.trim() || 'sem plano activo';
         for (const sup of supervisors) {
-          if (sup) await sendText(sup,
+          if (sup) await sendClient(sup,
             `🙋 PEDIDO HUMANO\n\nCliente: ${clientName}\n` +
             `Número: ${senderNum}\nContexto: ${planoInfo}\n\n` +
-            `💡 Para reactivar o bot: #retomar ${senderNum}`,
-            evolutionConfigForInstance);
+            `💡 Para reactivar o bot: #retomar ${senderNum}`);
           if (sup) trackPausedChat(sup, senderNum);
         }
-        await sendText(replyJid,
+        await sendClient(replyJid,
           'Compreendo. Vou chamar o responsável para ' +
-          'o(a) ajudar directamente. Por favor, aguarde.',
-          evolutionConfigForInstance);
+          'o(a) ajudar directamente. Por favor, aguarde.');
         return;
       }
 
@@ -802,17 +803,15 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           session.paused = true;
           stateMachine.setState(senderNum, 'pausado');
           const clientName = session.name || 'Cliente';
-          await sendText(
+          await sendClient(
             replyJid,
-            `Compreendo, ${clientName}. Como os passos anteriores não resolveram, vou chamar o responsável técnico para ajudar directamente. Por favor, aguarde.`,
-            evolutionConfigForInstance
+            `Compreendo, ${clientName}. Como os passos anteriores não resolveram, vou chamar o responsável técnico para ajudar directamente. Por favor, aguarde.`
           );
           for (const sup of supervisors) {
             if (sup) {
-              await sendText(
+              await sendClient(
                 sup,
-                formatarNotificacaoReclamacao(clientName, senderNum, session.platform || 'Netflix', `Erro de localização/Household PERSISTENTE (cliente já recebeu instruções): "${textMessage.substring(0, 200)}"`),
-                evolutionConfigForInstance
+                formatarNotificacaoReclamacao(clientName, senderNum, session.platform || 'Netflix', `Erro de localização/Household PERSISTENTE (cliente já recebeu instruções): "${textMessage.substring(0, 200)}"`)
               );
               trackPausedChat(sup, senderNum);
             }
@@ -820,13 +819,13 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           console.log(`[LOCALIZACAO-PERSISTENTE] ${senderNum}: escalado ao supervisor`);
         } else {
           const clientName = session.name || 'Cliente';
-          await sendText(replyJid, gerarRespostaLocalizacao(clientName), evolutionConfigForInstance);
+          await sendClient(replyJid, gerarRespostaLocalizacao(clientName));
           session.locationHelpSent = true;
           session.platform = session.platform || 'Netflix';
           console.log(`[LOCALIZACAO] ${senderNum}: instruções de auto-ajuda enviadas`);
           for (const sup of supervisors) {
             if (sup) {
-              await sendText(sup, `📍 Erro localização/Household — ${clientName} (${senderNum}). Instruções de auto-ajuda enviadas.`, evolutionConfigForInstance);
+              await sendClient(sup, `📍 Erro localização/Household — ${clientName} (${senderNum}). Instruções de auto-ajuda enviadas.`);
             }
           }
         }
@@ -839,17 +838,15 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         stateMachine.setState(senderNum, 'pausado');
         const clientName = session.name || 'Cliente';
         const plataformaSessao = session.platform || '';
-        await sendText(
+        await sendClient(
           replyJid,
-          `Lamento imenso o transtorno, ${clientName}. Já estou a encaminhar ao nosso responsável técnico para resolver com a máxima brevidade. Por favor, aguarde um momento.`,
-          evolutionConfigForInstance
+          `Lamento imenso o transtorno, ${clientName}. Já estou a encaminhar ao nosso responsável técnico para resolver com a máxima brevidade. Por favor, aguarde um momento.`
         );
         for (const sup of supervisors) {
           if (sup) {
-            await sendText(
+            await sendClient(
               sup,
-              formatarNotificacaoReclamacao(clientName, senderNum, plataformaSessao, textMessage),
-              evolutionConfigForInstance
+              formatarNotificacaoReclamacao(clientName, senderNum, plataformaSessao, textMessage)
             );
             trackPausedChat(sup, senderNum);
           }
@@ -869,17 +866,15 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         const plataformaSessao = session.platform || session.pendingSale?.split(' ')[0] || 'serviço';
         session.paused = true;
         stateMachine.setState(senderNum, 'pausado');
-        await sendText(
+        await sendClient(
           replyJid,
-          `Lamento ouvir isso, ${clientName}. 😔 Vou passar ao responsável para processar o seu pedido. Obrigado pela confiança que depositou em nós.`,
-          evolutionConfigForInstance
+          `Lamento ouvir isso, ${clientName}. 😔 Vou passar ao responsável para processar o seu pedido. Obrigado pela confiança que depositou em nós.`
         );
         for (const sup of supervisors) {
           if (sup) {
-            await sendText(
+            await sendClient(
               sup,
-              `🚫 *PEDIDO DE CANCELAMENTO*\n\n*Cliente:* ${clientName}\n*Número:* ${senderNum}\n*Serviço:* ${plataformaSessao}\n\n💡 Para reactivar o bot: #retomar ${senderNum}`,
-              evolutionConfigForInstance
+              `🚫 *PEDIDO DE CANCELAMENTO*\n\n*Cliente:* ${clientName}\n*Número:* ${senderNum}\n*Serviço:* ${plataformaSessao}\n\n💡 Para reactivar o bot: #retomar ${senderNum}`
             );
             trackPausedChat(sup, senderNum);
           }
@@ -1012,10 +1007,9 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         stateMachine.setState(senderNum, 'pausado');
         for (const sup of supervisors) {
           if (sup) {
-            await sendText(
+            await sendClient(
               sup,
-              formatarNotificacaoReclamacao(session.name || senderNum, senderNum, session.platform || '', descricao),
-              evolutionConfigForInstance
+              formatarNotificacaoReclamacao(session.name || senderNum, senderNum, session.platform || '', descricao)
             );
             trackPausedChat(sup, senderNum);
           }
@@ -1032,10 +1026,9 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         stateMachine.setState(senderNum, 'pausado');
         for (const sup of supervisors) {
           if (sup) {
-            await sendText(
+            await sendClient(
               sup,
-              `🚫 *CANCELAMENTO (confirmado pelo cliente)*\n\n*Cliente:* ${session.name || senderNum}\n*Número:* ${senderNum}\n*Serviço:* ${infoCancelamento}\n\n💡 Para reactivar o bot: #retomar ${senderNum}`,
-              evolutionConfigForInstance
+              `🚫 *CANCELAMENTO (confirmado pelo cliente)*\n\n*Cliente:* ${session.name || senderNum}\n*Número:* ${senderNum}\n*Serviço:* ${infoCancelamento}\n\n💡 Para reactivar o bot: #retomar ${senderNum}`
             );
             trackPausedChat(sup, senderNum);
           }
@@ -1054,10 +1047,9 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         console.log(`[INDICACAO] ${senderNum} indicou: ${nomeIndicado} (${numeroIndicado})`);
         for (const sup of supervisors) {
           if (sup) {
-            await sendText(
+            await sendClient(
               sup,
-              `🤝 *NOVA INDICAÇÃO*\n\n*Indicador:* ${session.name || senderNum} (${senderNum})\n*Indicado:* ${nomeIndicado}\n*Número:* ${numeroIndicado || 'não fornecido'}\n\nConsidere contactar o indicado.`,
-              evolutionConfigForInstance
+              `🤝 *NOVA INDICAÇÃO*\n\n*Indicador:* ${session.name || senderNum} (${senderNum})\n*Indicado:* ${nomeIndicado}\n*Número:* ${numeroIndicado || 'não fornecido'}\n\nConsidere contactar o indicado.`
             );
           }
         }
@@ -1084,7 +1076,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         .trim();
 
       if (textoLimpo) {
-        await sendText(replyJid, textoLimpo, evolutionConfigForInstance);
+        await sendClient(replyJid, textoLimpo);
       }
 
       stateMachine.addToHistory(senderNum, 'user', textMessage);

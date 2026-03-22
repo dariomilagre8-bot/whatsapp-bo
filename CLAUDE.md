@@ -5,7 +5,7 @@
 - **engine/** — Código genérico (ZERO referências a clientes). Inclui: lib (logger, state-machine, matcher, validator, handlers, llm, sender, dedup, metrics, cron-manager), middleware (health, webhook-router), evals (personas, simulator, judge), scripts, templates.
 - **clients/** — Config por cliente (streamzone; futuros: kitanda, etc.). Cada cliente tem config.js, opcionalmente prompts.js e validators.js.
 - **services/** — Microserviços (watchtower: BI em scaffold).
-- **tests/** — engine.test.js (59 testes StreamZone) + tests/engine/* (dedup, logger, metrics, config-loader).
+- **tests/** — engine.test.js (59 testes StreamZone) + tests/engine/* (dedup, logger, metrics, config-loader, sender).
 
 ## Regras invioláveis
 
@@ -18,12 +18,13 @@
 7. **CommonJS** (require/module.exports). Node.js 20. Sem TypeScript.
 8. Toda melhoria ao engine beneficia todos os clientes.
 9. **trace_id** em todos os logs (via createLogger(traceId, clientSlug, module)).
+10. **Evolution — instância de envio:** `engine/lib/sender.js` / `src/engine/sender.js` resolvem o nome da instância por ordem: `clientConfig.evolutionInstance` → `evolutionConfig.instance` → `EVOLUTION_INSTANCE` / `EVOLUTION_INSTANCE_NAME` no `.env`. O webhook usa o `tenantConfig` do registry (`req.clientConfig`) para cada mensagem.
 
 ## Comandos
 
 | Comando | Descrição |
 |--------|-----------|
-| `npm test` | Todos os testes (59 + engine) |
+| `npm test` | Todos os testes (StreamZone + engine, incl. sender) |
 | `npm run eval` | Testes adversariais (4 personas) |
 | `npm run deploy` | Deploy produção (scripts/deploy.sh) |
 | `npm run backup` | Backup env vars do container (BUG-046 fix) |
