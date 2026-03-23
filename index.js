@@ -12,6 +12,7 @@ const StateMachine = require('./engine/lib/state-machine');
 const { createWebhookHandler } = require('./src/routes/webhook');
 const { createWebhookRouter } = require('./engine/middleware/webhook-router');
 const { getRedis } = require('./engine/lib/dedup');
+const { getHealth } = require('./engine/lib/health');
 const metrics = require('./engine/lib/metrics');
 const { reconnectHandler } = require('./src/routes/reconnect');
 const { connectBraulioHandler } = require('./src/routes/connect-braulio');
@@ -208,61 +209,29 @@ app.get('/health', async (req, res) => {
 });
 
 app.get('/api/health', async (req, res) => {
-  const checks = {};
-  const start = Date.now();
-
-  // 1. Supabase
   try {
-    const sb = supabaseIntegration.getClient();
-    if (sb) {
-      const { error } = await sb.from('clientes').select('id').limit(1);
-      checks.supabase = error ? `error: ${error.message}` : 'ok';
-    } else {
-      checks.supabase = 'not_configured';
-    }
+    const evoInstance =
+      config.evolutionInstance
+      || process.env.EVOLUTION_INSTANCE
+      || process.env.EVOLUTION_INSTANCE_NAME
+      || 'default';
+    const supabaseKey = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_KEY;
+    const health = await getHealth({
+      evolutionUrl: process.env.EVOLUTION_API_URL,
+      apiKey: process.env.EVOLUTION_API_KEY,
+      instanceName: evoInstance,
+      supabaseUrl: process.env.SUPABASE_URL,
+      supabaseKey,
+      redisClient: getRedis() || null,
+      clientConfig: config,
+    });
+    const httpCode = health.status === 'unhealthy' ? 503 : 200;
+    if (res.headersSent) return;
+    res.status(httpCode).json(health);
   } catch (e) {
-    checks.supabase = `error: ${e.message}`;
+    if (res.headersSent) return;
+    res.status(500).json({ status: 'error', error: e.message });
   }
-
-  // 2. Google Sheets
-  try {
-    checks.google_sheets = googleSheets.isReady() ? 'ok' : 'not_initialized';
-  } catch (e) {
-    checks.google_sheets = `error: ${e.message}`;
-  }
-
-  // 3. Evolution API (verifica estado da instância)
-  try {
-    const evoUrl = process.env.EVOLUTION_API_URL;
-    const evoKey = process.env.EVOLUTION_API_KEY;
-    const evoInstance = process.env.EVOLUTION_INSTANCE || process.env.EVOLUTION_INSTANCE_NAME || 'default';
-    if (evoUrl) {
-      const resp = await fetch(`${evoUrl}/instance/connectionState/${evoInstance}`, {
-        headers: { 'apikey': evoKey },
-        signal: AbortSignal.timeout(5000),
-      });
-      const data = await resp.json();
-      const state = data?.instance?.state || data?.state;
-      checks.evolution_api = state === 'open' ? 'ok' : `state: ${state}`;
-    } else {
-      checks.evolution_api = 'not_configured';
-    }
-  } catch (e) {
-    checks.evolution_api = `error: ${e.message}`;
-  }
-
-  checks.uptime_seconds = Math.floor(process.uptime());
-  checks.response_ms = Date.now() - start;
-
-  const criticalChecks = ['supabase', 'evolution_api'];
-  const allOk = criticalChecks.every(k => checks[k] === 'ok');
-
-  if (res.headersSent) return;
-  res.status(allOk ? 200 : 503).json({
-    status: allOk ? 'healthy' : 'degraded',
-    timestamp: new Date().toISOString(),
-    checks,
-  });
 });
 
 // ── Billing + Stock Notifier + CRM Follow-up (cron jobs) ──

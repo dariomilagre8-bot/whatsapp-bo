@@ -1,5 +1,9 @@
 // engine/lib/sender.js — Envio de mensagens via Evolution API
 
+const { CircuitBreaker } = require('./circuit-breaker');
+
+const evolutionBreaker = new CircuitBreaker('evolution', { maxFailures: 3, resetTimeout: 60000 });
+
 /**
  * Instância Evolution a usar: config do cliente (multi-tenant), depois evolutionConfig.instance, depois .env.
  * @param {{ instance?: string } | null | undefined} evolutionConfig
@@ -36,6 +40,11 @@ async function sendText(phone, text, evolutionConfig, clientConfig = null) {
     return false;
   }
 
+  if (!evolutionBreaker.canExecute()) {
+    console.warn('[SEND] Circuit breaker Evolution ABERTO — envio ignorado');
+    return false;
+  }
+
   const jid = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;
 
   try {
@@ -54,15 +63,18 @@ async function sendText(phone, text, evolutionConfig, clientConfig = null) {
     if (!res.ok) {
       const err = await res.text();
       console.error(`[SEND] FAIL to ${phone}: ${res.status} ${err}`);
+      evolutionBreaker.recordFailure();
       return false;
     }
 
+    evolutionBreaker.recordSuccess();
     console.log(`[SEND] OK → ${phone} (${text.substring(0, 60)}...)`);
     return true;
   } catch (err) {
     console.error(`[SEND] ERROR to ${phone}:`, err.message);
+    evolutionBreaker.recordFailure();
     return false;
   }
 }
 
-module.exports = { sendText, resolveEvolutionInstance };
+module.exports = { sendText, resolveEvolutionInstance, evolutionBreaker };

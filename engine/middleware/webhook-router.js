@@ -2,6 +2,11 @@
 
 const { isDuplicate } = require('../lib/dedup');
 const logger = require('../lib/logger');
+const { RateLimiter } = require('../lib/rate-limiter');
+const { sendText } = require('../lib/sender');
+
+const webhookRateLimiter = new RateLimiter({ maxRequests: 5, windowMs: 30000 });
+setInterval(() => webhookRateLimiter.cleanup(), 300000);
 
 /**
  * Cria o middleware do webhook: responde 200 em <50ms, depois processa em background.
@@ -31,6 +36,12 @@ function createWebhookRouter(registry, redis = null) {
     const duplicate = await isDuplicate(redis, messageId, clientSlug);
     if (duplicate) return;
 
+    const remoteJid = data.key.remoteJid || '';
+    if (remoteJid && !webhookRateLimiter.isAllowed(remoteJid)) {
+      logger.warn('webhook: rate limit excedido', { remoteJid, clientSlug });
+      return;
+    }
+
     const traceId = require('crypto').randomUUID();
     req.traceId = traceId;
     req.clientSlug = clientSlug;
@@ -39,7 +50,27 @@ function createWebhookRouter(registry, redis = null) {
     try {
       await handler(req, res);
     } catch (err) {
-      logger.error('webhook handler error', { traceId, clientSlug, error: err.message });
+      logger.error('webhook handler error', { traceId, clientSlug, error: err.message, stack: err.stack });
+      if (remoteJid && !remoteJid.endsWith('@g.us')) {
+        try {
+          const evolutionConfig = {
+            apiUrl: process.env.EVOLUTION_API_URL,
+            apiKey: process.env.EVOLUTION_API_KEY,
+            instance: config.evolutionInstance || instanceName,
+          };
+          await sendText(
+            remoteJid,
+            'Pedimos desculpa, ocorreu um erro temporário. Por favor tente novamente em alguns minutos.',
+            evolutionConfig,
+            config
+          );
+        } catch (sendErr) {
+          logger.error('webhook: falha ao enviar mensagem de erro ao cliente', {
+            traceId,
+            error: sendErr.message,
+          });
+        }
+      }
     }
   };
 }

@@ -3,6 +3,9 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const config = require('../../config/streamzone');
 const botSettings = require('../../config/bot_settings.json');
+const { CircuitBreaker } = require('./circuit-breaker');
+
+const llmBreaker = new CircuitBreaker('llm', { maxFailures: 3, resetTimeout: 60000 });
 
 const FALLBACK_MESSAGE = 'Desculpe, estou a atualizar o meu sistema no momento. Pode aguardar um minuto e tentar de novo?';
 
@@ -182,6 +185,11 @@ Responda directamente a estas perguntas frequentes SEM perguntar outra coisa dep
 async function generate(systemPrompt, userMessage, history = []) {
   if (!model) throw new Error('LLM not initialized');
 
+  if (!llmBreaker.canExecute()) {
+    console.warn('[LLM] Circuit breaker ABERTO — resposta fixa');
+    return FALLBACK_MESSAGE;
+  }
+
   const contents = [];
   const recentHistory = (history || []).slice(-5);
   for (const msg of recentHistory) {
@@ -211,6 +219,7 @@ async function generate(systemPrompt, userMessage, history = []) {
 
   try {
     const text = await tryGenerate(model);
+    llmBreaker.recordSuccess();
     console.log(`[LLM] Response: "${text.substring(0, 80)}..."`);
     return text;
   } catch (err) {
@@ -219,14 +228,18 @@ async function generate(systemPrompt, userMessage, history = []) {
       try {
         const fallbackModel = genAI.getGenerativeModel({ model: MODEL_FALLBACK });
         const text = await tryGenerate(fallbackModel);
+        llmBreaker.recordSuccess();
         console.log(`[LLM] Fallback (${MODEL_FALLBACK}): "${text.substring(0, 80)}..."`);
         return text;
       } catch (e) {
         console.error(`[LLM] Fallback ERROR:`, e.message);
+        llmBreaker.recordFailure();
       }
+    } else {
+      llmBreaker.recordFailure();
     }
     return FALLBACK_MESSAGE;
   }
 }
 
-module.exports = { init, generate, buildDynamicPrompt, FALLBACK_MESSAGE };
+module.exports = { init, generate, buildDynamicPrompt, FALLBACK_MESSAGE, llmBreaker };
