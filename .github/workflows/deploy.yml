@@ -1,53 +1,109 @@
-name: Deploy (sem Easypanel)
+name: Deploy via Easypanel
+
+# ─────────────────────────────────────────────────────────────
+# ESTRATÉGIA: GitHub Action faz SSH ao VPS → git pull → chama
+# a Easypanel API local para trigger rebuild/redeploy.
+# NÃO faz docker build nem docker service update directamente.
+# Easypanel (porta 3000) gere o pull + build + Swarm update.
+#
+# Secrets necessários (GitHub → Settings → Secrets → Actions):
+#   HOST             — IP do VPS (46.224.99.52)
+#   USERNAME         — utilizador SSH (root)
+#   SSH_KEY          — chave privada SSH (RSA/Ed25519)
+#   EASYPANEL_TOKEN  — password do painel Easypanel (ou API key)
+# ─────────────────────────────────────────────────────────────
 
 on:
   push:
     branches:
       - main
 
+# Cancela runs anteriores se um novo push chegar antes do deploy terminar.
+# Resolve o problema "update out of sequence" no Docker Swarm.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     steps:
-      - name: Deploy via SSH (Easypanel workaround)
+      - name: Deploy via Easypanel API (SSH)
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.HOST }}
           username: ${{ secrets.USERNAME }}
           key: ${{ secrets.SSH_KEY }}
+          # Tempo máximo para o SSH script (não confundir com timeout do job)
+          command_timeout: 8m
           script: |
             set -euo pipefail
 
             REPO_DIR="/opt/palanca/whatsapp-bo"
             REPO_URL="https://github.com/dariomilagre8-bot/whatsapp-bo.git"
+            EP_URL="http://localhost:3000"
+            EP_TOKEN="${{ secrets.EASYPANEL_TOKEN }}"
 
+            # ── 1. Actualizar repositório local ──────────────────────────
             mkdir -p /opt/palanca
 
             if [ -d "$REPO_DIR/.git" ]; then
               cd "$REPO_DIR"
-              git pull
+              git fetch --all
+              git reset --hard origin/main
             else
-              if [ -e "$REPO_DIR" ]; then
-                rm -rf "$REPO_DIR"
-              fi
+              [ -e "$REPO_DIR" ] && rm -rf "$REPO_DIR"
               git clone "$REPO_URL" "$REPO_DIR"
+              cd "$REPO_DIR"
             fi
 
-            cd "$REPO_DIR"
+            echo "✅ Git: $(git log -1 --format='%h %s')"
 
-            # Mesmo Dockerfile na raiz; ACTIVE_CLIENT e restantes env vêm dos serviços Swarm.
-            docker build -t easypanel/jules/whatssiru:latest .
-            docker build -t easypanel/jules/demo-moda:latest .
+            # ── 2. Trigger redeploy via Easypanel API ────────────────────
+            # Easypanel 2.x tRPC — endpoint de redeploy de serviço Docker/App.
+            # Easypanel lê o Dockerfile do repo e faz build + Swarm update
+            # de forma segura (sem race condition).
 
-            # whatssiru: host-mode port 8080 — sem --force; reescala.
-            docker service scale jules_whatssiru=0
+            redeploy() {
+              local project="$1"
+              local service="$2"
+              echo "▶ Redeploying $project/$service..."
+              HTTP_CODE=$(curl -s -o /tmp/ep_resp.txt -w "%{http_code}" \
+                -X POST "${EP_URL}/api/trpc/services.redeploy" \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer ${EP_TOKEN}" \
+                -d "{\"json\":{\"projectName\":\"${project}\",\"serviceName\":\"${service}\"}}" \
+                --max-time 30 || echo "000")
+
+              if [ "$HTTP_CODE" = "200" ]; then
+                echo "✅ $project/$service: redeploy aceite pelo Easypanel"
+              else
+                echo "⚠️ $project/$service: HTTP ${HTTP_CODE} — $(cat /tmp/ep_resp.txt 2>/dev/null | head -c 200)"
+                echo "   → Deploy manual via Easypanel UI: https://46.224.99.52:3000"
+              fi
+            }
+
+            redeploy "jules" "whatssiru"
             sleep 5
-            docker service scale jules_whatssiru=1
-            sleep 10
+            redeploy "jules" "demo-moda"
 
-            # demo-moda: sem host-mode — update normal.
-            docker service update --image easypanel/jules/demo-moda:latest jules_demo-moda
-            sleep 10
+            # ── 3. Health check (aguarda 45s para o Easypanel terminar) ──
+            echo "⏳ Aguardando deploy... (45s)"
+            sleep 45
 
-            curl -sf https://jules-whatssiru.oxuzyt.easypanel.host/health || echo "WARN: whatssiru health failed"
-            curl -sf https://jules-demo-moda.oxuzyt.easypanel.host/health || echo "WARN: demo-moda health failed"
+            check_health() {
+              local url="$1"
+              local name="$2"
+              if curl -sf --max-time 10 "$url" > /dev/null 2>&1; then
+                echo "✅ $name: healthy"
+              else
+                echo "⚠️ $name: health check falhou — pode ainda estar a arrancar"
+              fi
+            }
+
+            check_health "https://jules-whatssiru.oxuzyt.easypanel.host/api/health" "whatssiru"
+            check_health "https://jules-demo-moda.oxuzyt.easypanel.host/api/health"  "demo-moda"
+
+            echo "🚀 Deploy concluído. Commit: $(git log -1 --format='%h %s')"
