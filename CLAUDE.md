@@ -66,9 +66,40 @@
 ## Deploy
 
 - **Servidor:** 46.224.99.52 (Hetzner)
-- **Easypanel:** jules/whatssiru
-- **Manual:** `npm run deploy` (rsync + docker rebuild)
+- **Easypanel:** jules/whatssiru (porta 3000)
+- **Automático:** push para `main` → GitHub Actions → SSH → git pull → Easypanel API redeploy
+- **Manual (fallback):** Easypanel UI → projecto `jules` → serviço → botão "Implantar"
 - **Health:** GET `/api/health` e GET `/api/metrics` (Prometheus text)
+
+### Estratégia GitHub Actions (`.github/workflows/deploy.yml`)
+
+| Antes | Depois |
+|-------|--------|
+| `docker build` + `service scale 0/1` + `service update` | SSH → `git pull` → Easypanel API `services.redeploy` |
+| Race condition em pushes rápidos ("out of sequence") | `concurrency: cancel-in-progress: true` elimina o problema |
+| Comandos Docker directos (frágeis no Swarm) | Easypanel controla build + Swarm update de forma segura |
+
+### Secrets necessários (GitHub → Settings → Secrets → Actions)
+
+| Secret | Valor |
+|--------|-------|
+| `HOST` | `46.224.99.52` |
+| `USERNAME` | `root` |
+| `SSH_KEY` | Chave privada SSH do VPS |
+| `EASYPANEL_TOKEN` | Password do painel Easypanel (ou API key) |
+
+### Deploy manual (se Easypanel API falhar)
+
+1. Abrir `https://46.224.99.52:3000` → login
+2. Projecto `jules` → serviço `whatssiru` → **Implantar**
+3. Projecto `jules` → serviço `demo-moda` → **Implantar**
+4. Verificar health: `curl https://jules-whatssiru.oxuzyt.easypanel.host/api/health`
+
+### Regras absolutas de deploy
+
+- **NUNCA** `docker service update --force`
+- **NUNCA** dois deploys paralelos (o `concurrency` no CI garante isto)
+- Docker v26.1.4 no VPS — **NUNCA actualizar**
 
 ## Estrutura de rotas
 
