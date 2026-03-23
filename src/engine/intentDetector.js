@@ -12,9 +12,50 @@ const INTENTS = {
   DESCONHECIDO: 'INTENT_DESCONHECIDO',
 };
 
+// Patterns de suporte — cliente existente com problema técnico (StreamZone)
+// Ordem de prioridade: verificado ANTES de qualquer outra intent e ANTES do LLM
+const SUPORTE_CONTA_PATTERNS = new RegExp([
+  // Conta e acesso
+  'meu plano', 'minha conta', 'minha subscri[çc][aã]o',
+  'n[aã]o\\s*consigo', 'nao\\s*consigo', 'n\\s+consigo',
+  'entrar', 'login', 'aceder', 'acessar',
+  'password', 'senha', 'palavra.?passe',
+  'c[oó]digo', 'code',
+  'e-?mail',
+  '\\bativ[ao]\\b', '\\bactiv[ao]\\b',
+  // Problemas técnicos
+  'n[aã]o\\s*funciona', 'nao\\s*funciona',
+  'n[aã]o\\s*est[aá]', 'nao\\s*est[aá]',
+  'n[aã]o\\s*abre', 'nao\\s*abre',
+  '\\berro\\b', '\\bbug\\b', '\\bproblema\\b',
+  'bloqueado', 'bloqueada', 'bloqueou',
+  'expirou', 'expirado', 'expirada',
+  'parou', '\\bcaiu\\b', '\\boffline\\b',
+  '\\btela\\b', 'ecr[aã]',
+  '\\bperfis?\\b',
+  // Localização / Household Netflix
+  'localiza[çc][aã]o', 'localizacao', 'household',
+  'agregado', 'tv n[aã]o faz parte', 'atualizar localiza[çc][aã]o',
+  // Reclamações
+  'reclama[çc][aã]o', 'reclamacao', 'queixa',
+  'paguei', 'j[aá] paguei', 'ja paguei',
+  'n[aã]o activaram', 'nao activaram', 'n[aã]o ativaram',
+  'demora', 'quanto tempo', 'estou [aà] espera',
+  // Renovação
+  'renovar', 'renova[çc][aã]o', 'renovacao',
+  'vencer', 'venceu', 'vence',
+  // Referências a plano existente
+  'meu netflix', 'meu prime', 'minha netflix', 'minha prime',
+  'plano individual', 'plano fam[ií]lia', 'plano partilha',
+  // Pedidos de ajuda genéricos de clientes
+  'preciso de ajuda', 'precisava de ajuda',
+  'podem me ajudar', 'ajuda por favor',
+  'ver temporariamente', 'sess[aã]o',
+].join('|'), 'i');
+
 const rx = {
-  // StreamZone: cliente existente (conta / plano / acesso) — escalar antes do LLM
-  suporteConta: /meu plano|minha conta|c[oó]digo|e-?mail|n[aã]o\s*consigo|password|senha|entrar|login|\bactivo\b|\bactiva\b|minha subscri[çc][aã]o|meu netflix|meu prime|renovar|expirou|expirad/i,
+  // StreamZone: cliente existente (conta / plano / acesso) — escalar ANTES do LLM
+  suporteConta: SUPORTE_CONTA_PATTERNS,
   suporteCodigo: /c[oó]digo|verifica[çc][aã]o|j[aá]\s*envie|pe[çc]a.*c[oó]digo|mand[ae].*c[oó]digo/i,
   suporteErro: /erro|localiza[çc][aã]o|n[aã]o\s*(consigo|funciona|abre|entra)|problema|n[aã]o\s*d[aá]|bugad/i,
   suportePagamento: /pag(amento|ar|uei)|renov(ar|a[çc][aã]o)|transfer[iê]|iban|comprovativo|deposit/i,

@@ -587,15 +587,25 @@ module.exports = {
     },
   },
 
+  // ═══════ QUALIDADE DE RESPOSTA ═══════
+  noEmoji: true, // Filtrar emojis da resposta LLM (PROIBIÇÃO ABSOLUTA no prompt da Zara)
+
   // ═══════ SUPERVISOR (autorização) ═══════
   supervisorNumber: process.env.SUPERVISOR_NUMBER || '244946014060',
 
   // ═══════ SUPORTE CONTA (pré-LLM; INTENT_SUPORTE_CONTA em intentDetector) ═══════
   accountSupport: {
     response:
-      'Compreendo que precisa de ajuda com a sua conta. Vou encaminhar para o nosso técnico que vai ajudá-lo de imediato. 🔧',
+      'Compreendo que precisa de ajuda com a sua conta. Vou encaminhar para o nosso técnico que vai ajudá-lo de imediato.',
     supervisorMessage:
-      '🔔 Cliente {phone} precisa de suporte de conta. Mensagem original: "{message}"',
+      '🔔 SUPORTE TÉCNICO\n' +
+      '━━━━━━━━━━━━━━━━━\n' +
+      'Cliente: {name}\n' +
+      'Número: {phone}\n' +
+      'Mensagem: "{message}"\n' +
+      '━━━━━━━━━━━━━━━━━\n' +
+      'Após resolver, envie:\n' +
+      '#retomar {phone}',
   },
 
   // ═══════ COMANDOS DO SUPERVISOR ═══════

@@ -39,6 +39,7 @@ const { runDailyRenewalJob } = require('../renewal/renewal-cron');
 const { detectarReclamacao, detectarLocalizacao, gerarRespostaLocalizacao, formatarNotificacaoReclamacao } = require('../crm/complaints');
 const clientesConfig = require('../../config/clientes');
 const { detectIntent, INTENTS } = require('../engine/intentDetector');
+const { isSafeResponse, removeEmojis, SAFE_FALLBACK } = require('../../engine/lib/safe-guard');
 
 const supervisorTestMode = new Set();
 
@@ -151,6 +152,10 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       console.log(`\n📩 De: ${senderNum} (${pushName}) | instância: ${instanceName} | Msg: "${textMessage.substring(0, 50)}" | Img: ${isImage} | Doc: ${isDocument} | Audio: ${isAudio}`);
 
+      // Log mensagem recebida (intent ainda não detectada aqui, atualizada abaixo)
+      const _msgToLog = textMessage || (isImage ? '[imagem]' : isAudio ? '[áudio]' : '[documento]');
+      logConversation('in', _msgToLog);
+
       const cleanMsg = typeof textMessage === 'string' ? textMessage.trim().toLowerCase().replace(/\s+/g, ' ') : '';
       const parts = cleanMsg.split(/\s+/).filter(Boolean);
       const firstWord = (parts[0] === '#' && parts[1]) ? '#' + parts[1] : (parts[0] || '');
@@ -159,6 +164,24 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       const isSup = isSupervisorFromList(senderNum, supervisors);
       const isCmd = cleanMsg.startsWith('#');
+
+      // Helper: log de conversa no Supabase (non-blocking, nunca falha)
+      const logConversation = (direction, message, extraFields = {}) => {
+        try {
+          const sbClient = require('../integrations/supabase').getClient();
+          if (!sbClient) return;
+          sbClient.from('pa_conversations').insert({
+            client_slug: tenantConfig.slug || tenantConfig.clientSlug || 'unknown',
+            phone: senderNum,
+            direction,
+            message: String(message || '').substring(0, 1000),
+            trace_id: req.traceId || null,
+            ...extraFields,
+          }).then(() => {}).catch(err => {
+            console.error('[CONV-LOG] Erro insert:', err.message);
+          });
+        } catch (_) {}
+      };
 
       // ── Intent detection (antes de qualquer funil/LLM) ──
       // Ordem: suporte código → suporte erro → suporte pagamento → imagem ambígua → venda → saudação → desconhecido
@@ -557,9 +580,11 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           'Compreendo que precisa de ajuda com a sua conta. Vou encaminhar para o nosso técnico que vai ajudá-lo de imediato. 🔧';
         await sendClient(replyJid, replyText);
         const tmpl = acct.supervisorMessage ||
-          '🔔 Cliente {phone} precisa de suporte de conta. Mensagem original: "{message}"';
+          '🔔 SUPORTE TÉCNICO\n━━━━━━━━━━━━━━━━━\nCliente: {name}\nNúmero: {phone}\nMensagem: "{message}"\n━━━━━━━━━━━━━━━━━\nApós resolver, envie:\n#retomar {phone}';
         const orig = (textMessage || '').trim();
+        const clientName = session.name || pushName || 'Cliente';
         const supMsg = tmpl
+          .replace(/\{name\}/g, clientName)
           .replace(/\{phone\}/g, senderNum)
           .replace(/\{message\}/g, orig.substring(0, 500));
         for (const sup of supervisors) {
@@ -1004,7 +1029,34 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const response = await llm.generate(systemInstruction, textMessage, history, config);
 
       // Passo D: Resposta da IA e captura do metadata_tag (ex: #RESUMO_VENDA) para fluxo de aprovação (#sim)
-      let finalResponse = response || (config.systemMessages?.unknownInput ?? 'Não compreendi. Pode reformular?');
+      let rawLlmResponse = response || (config.systemMessages?.unknownInput ?? 'Não compreendi. Pode reformular?');
+
+      // Safe-guard anti-alucinação: bloquear respostas perigosas antes de qualquer processamento
+      if (!isSafeResponse(rawLlmResponse)) {
+        console.warn(`[SAFE-GUARD] Resposta perigosa bloqueada para ${senderNum}: "${rawLlmResponse.substring(0, 120)}"`);
+        // Notificar supervisor sobre a intercepção
+        for (const sup of supervisors) {
+          if (sup) {
+            await sendClient(sup,
+              `⚠️ SAFE-GUARD\nResposta LLM bloqueada para ${senderNum}.\nMensagem original: "${(textMessage || '').substring(0, 200)}"\nResposta bloqueada: "${rawLlmResponse.substring(0, 200)}"`
+            ).catch(() => {});
+          }
+        }
+        rawLlmResponse = SAFE_FALLBACK;
+        // Pausar e escalar para supervisor tratar
+        session.paused = true;
+        stateMachine.setState(senderNum, 'pausado');
+        for (const sup of supervisors) {
+          if (sup) trackPausedChat(sup, senderNum);
+        }
+      }
+
+      // Filtro de emojis: aplicar se noEmoji: true no config do cliente
+      if (tenantConfig.noEmoji) {
+        rawLlmResponse = removeEmojis(rawLlmResponse);
+      }
+
+      let finalResponse = rawLlmResponse;
       const metaTag = (botSettings.metadata_tag || '#RESUMO_VENDA').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const resumoRegex = new RegExp(`${metaTag}\\s*:\\s*([^\\n]*)`, 'i');
       const resumoMatch = finalResponse.match(resumoRegex);
@@ -1115,6 +1167,8 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       if (textoLimpo) {
         await sendClient(replyJid, textoLimpo);
+        // Log resposta enviada ao cliente
+        logConversation('out', textoLimpo, { intent, llm_used: true });
       }
 
       stateMachine.addToHistory(senderNum, 'user', textMessage);
