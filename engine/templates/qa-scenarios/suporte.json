@@ -1,0 +1,5 @@
+[
+  { "msg": "Tenho um problema com a minha conta", "expectedIntent": "suporte_conta" },
+  { "msg": "Já paguei mas não activaram", "expectedIntent": "suporte_conta" },
+  { "msg": "Quero falar com alguém", "expectedIntent": "escalar" }
+]

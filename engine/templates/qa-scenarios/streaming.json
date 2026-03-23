@@ -1,0 +1,7 @@
+[
+  { "msg": "Olá", "expectedIntent": "saudacao" },
+  { "msg": "Quais planos têm?", "expectedIntent": "catalogo" },
+  { "msg": "Netflix Individual está disponível?", "expectedIntent": "stock" },
+  { "msg": "O meu plano não funciona", "expectedIntent": "suporte_conta" },
+  { "msg": "Obrigado, até logo", "expectedIntent": "despedida" }
+]

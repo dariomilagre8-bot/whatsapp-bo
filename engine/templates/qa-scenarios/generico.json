@@ -1,0 +1,5 @@
+[
+  { "msg": "Olá", "expectedIntent": "saudacao" },
+  { "msg": "Que serviços oferecem?", "expectedIntent": "catalogo" },
+  { "msg": "Obrigado", "expectedIntent": "despedida" }
+]

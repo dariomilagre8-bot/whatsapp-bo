@@ -1,0 +1,7 @@
+[
+  { "msg": "Boa tarde", "expectedIntent": "saudacao" },
+  { "msg": "Que produtos vendem?", "expectedIntent": "catalogo" },
+  { "msg": "Quanto custa?", "expectedIntent": "preco" },
+  { "msg": "Quero encomendar", "expectedIntent": "encomenda" },
+  { "msg": "Como pago?", "expectedIntent": "pagamento" }
+]

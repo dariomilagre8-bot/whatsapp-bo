@@ -10,7 +10,10 @@
     "deploy": "bash scripts/deploy.sh",
     "backup": "bash scripts/backup-env.sh",
     "new-client": "bash engine/scripts/novo-cliente.sh",
-    "eval": "node engine/evals/run-eval.js"
+    "eval": "node engine/evals/run-eval.js",
+    "qa": "node scripts/qa-test.js",
+    "qa:streaming": "node scripts/qa-test.js --client=streamzone",
+    "qa:demo": "node scripts/qa-test.js --client=demo-moda"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
