@@ -104,10 +104,10 @@ test('elapsed > 10s falha timeout', () => {
   assert(!c.timeout, 'timeout deve ser false');
 });
 
-test('saudação detectada correctamente para streamzone (oi)', () => {
-  // "oi" → INTENT_SAUDACAO via padrão /^oi+\b/ (ASCII, \b funciona)
+test('"Olá" detectado como saudacao (BUG-067 fix)', () => {
+  // BUG-067: normalizePattern corrige \b para chars acentuados PT
   const cfg = { slug: 'streamzone' };
-  const c = checkResponse('oi', 'Resposta', 'saudacao', cfg, 500);
+  const c = checkResponse('Olá', 'Resposta', 'saudacao', cfg, 500);
   assert(c.intent, `intent falhou: detectedIntent=${c.detectedIntent}`);
 });
 

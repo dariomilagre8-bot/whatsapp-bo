@@ -12,6 +12,17 @@ const INTENTS = {
   DESCONHECIDO: 'INTENT_DESCONHECIDO',
 };
 
+// BUG-067: \b em JS regex só reconhece [a-zA-Z0-9_] como word char.
+// Chars acentuados PT (á, ã, é, ô, etc.) são non-word → \b falha nas bordas.
+// normalizePattern substitui \b por lookahead/lookbehind que inclui Latin Extended
+// U+00C0–U+024F (cobre á, ã, é, ê, í, ó, ô, õ, ú, ç e variantes).
+function normalizePattern(str) {
+  const UW = '[\\w\\u00C0-\\u024F]';
+  return str
+    .replace(/\\b(?=[\w\[(])/g, `(?<!${UW})`)  // \b no início: não precedido de letra/acento
+    .replace(/\\b/g, `(?!${UW})`);              // \b no fim: não seguido de letra/acento
+}
+
 // Patterns de suporte — cliente existente com problema técnico (StreamZone)
 // Ordem de prioridade: verificado ANTES de qualquer outra intent e ANTES do LLM
 const SUPORTE_CONTA_PATTERNS = new RegExp([
@@ -22,17 +33,17 @@ const SUPORTE_CONTA_PATTERNS = new RegExp([
   'password', 'senha', 'palavra.?passe',
   'c[oó]digo', 'code',
   'e-?mail',
-  '\\bativ[ao]\\b', '\\bactiv[ao]\\b',
+  normalizePattern('\\bativ[ao]\\b'), normalizePattern('\\bactiv[ao]\\b'),
   // Problemas técnicos
   'n[aã]o\\s*funciona', 'nao\\s*funciona',
   'n[aã]o\\s*est[aá]', 'nao\\s*est[aá]',
   'n[aã]o\\s*abre', 'nao\\s*abre',
-  '\\berro\\b', '\\bbug\\b', '\\bproblema\\b',
+  normalizePattern('\\berro\\b'), normalizePattern('\\bbug\\b'), normalizePattern('\\bproblema\\b'),
   'bloqueado', 'bloqueada', 'bloqueou',
   'expirou', 'expirado', 'expirada',
-  'parou', '\\bcaiu\\b', '\\boffline\\b',
-  '\\btela\\b', 'ecr[aã]',
-  '\\bperfis?\\b',
+  'parou', normalizePattern('\\bcaiu\\b'), normalizePattern('\\boffline\\b'),
+  normalizePattern('\\btela\\b'), 'ecr[aã]',
+  normalizePattern('\\bperfis?\\b'),
   // Localização / Household Netflix
   'localiza[çc][aã]o', 'localizacao', 'household',
   'agregado', 'tv n[aã]o faz parte', 'atualizar localiza[çc][aã]o',
@@ -59,11 +70,18 @@ const rx = {
   suporteCodigo: /c[oó]digo|verifica[çc][aã]o|j[aá]\s*envie|pe[çc]a.*c[oó]digo|mand[ae].*c[oó]digo/i,
   suporteErro: /erro|localiza[çc][aã]o|n[aã]o\s*(consigo|funciona|abre|entra)|problema|n[aã]o\s*d[aá]|bugad/i,
   suportePagamento: /pag(amento|ar|uei)|renov(ar|a[çc][aã]o)|transfer[iê]|iban|comprovativo|deposit/i,
-  // Venda (bem explícito) — não deve apanhar suporte genérico
+  // venda: \b em palavras ASCII-safe (netflix, prime, plano, catálogo, preço → terminam em ASCII)
   venda: /\b(netflix|prime(\s*video)?|plano|pre[çc]o|quanto\s*custa|custa\s*quanto|cat[aá]logo|quero\s*(comprar|adquirir)|comprar|assinar)\b/i,
-  saudacao: /^(ol[aá]|ola|oi+|bom dia|boa tarde|boa noite|hey|hi|hello)\b/i,
-  // Texto curto/ambíguo comum quando enviam print/ficheiro
-  ambiguoCurto: /^(ok|pronto|aqui|segue|feito|ja\s*(enviei|mandei)|j[aá]\s*(enviei|mandei)|enviei|mandei|ta\s*a[ií]|est[aá]\s*a[ií])\b/i,
+  // BUG-067: ol[aá] pode terminar em 'á' (non-ASCII) → \b falha; usar normalizePattern
+  saudacao: new RegExp(
+    normalizePattern('^(ol[aá]|ola|oi+|bom dia|boa tarde|boa noite|hey|hi|hello)\\b'),
+    'i'
+  ),
+  // BUG-067: est[aá]\s*a[ií] pode terminar em 'í' → \b falha; usar normalizePattern
+  ambiguoCurto: new RegExp(
+    normalizePattern('^(ok|pronto|aqui|segue|feito|ja\\s*(enviei|mandei)|j[aá]\\s*(enviei|mandei)|enviei|mandei|ta\\s*a[ií]|est[aá]\\s*a[ií])\\b'),
+    'i'
+  ),
 };
 
 function safeText(text) {
@@ -117,5 +135,4 @@ function detectIntent(input) {
   return { intent: INTENTS.DESCONHECIDO, reason: 'fallback:unknown' };
 }
 
-module.exports = { detectIntent, INTENTS };
-
+module.exports = { detectIntent, INTENTS, normalizePattern };

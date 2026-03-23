@@ -76,6 +76,13 @@
 - GET `/api/health` — Estado dos serviços.
 - GET `/api/metrics` — Métricas por cliente (formato Prometheus).
 
+## Bugs Conhecidos / Fixes
+
+| Bug | Ficheiro | Descrição | Fix |
+|-----|----------|-----------|-----|
+| BUG-046 | scripts/backup-env.sh | Perda de env vars após rebuild | `npm run backup` antes de deploy |
+| BUG-067 | src/engine/intentDetector.js | `\b` regex falha com acentos PT (á, ã, é) | `normalizePattern()` usa lookahead/lookbehind Unicode-aware (U+00C0–U+024F) |
+
 ## Watchtower (BI)
 
 - Scaffold em `services/watchtower/` (extract, anonymizer, analyze, deliver).
