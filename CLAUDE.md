@@ -1,5 +1,38 @@
 # CLAUDE.md — Palanca Bot Engine v2.0
 
+## ESTADO OPERACIONAL (actualizar a cada deploy)
+
+### Bots Activos
+| Bot | Serviço | Instância | Número | Status |
+|-----|---------|-----------|--------|--------|
+| Zara | whatssiru | Streamzone Braulio | 244941529470 | PRODUÇÃO |
+| Luna | palanca-ai | ZapPrincipal | 351934937617 | PRODUÇÃO |
+| Bia | demo-moda | demo-moda | 244958765478 | PRODUÇÃO |
+
+### Supervisores
+- Zara (SZ): 244946014060 (Bráulio)
+- Luna (PA): 244941713216 (Don)
+- Bia (Demo): 244941713216 (Don)
+
+### Infra
+- VPS: 46.224.99.52 | Docker 26.1.4 | Easypanel 2.27.0
+- Evolution: https://whatsapp-evolution-api.oxuzyt.easypanel.host
+- Supabase: pa-engine (vxrziqsyfpnmpzkjkxli, eu-west-2)
+
+### Health Checks
+- whatssiru: http://jules_whatssiru:80/api/health
+- demo-moda: http://jules_demo-moda:80/api/health
+- palanca-ai: http://automacoes_palanca-ai:3001/api/health
+
+### Circuit Breakers
+- LLM: 3 falhas → open (60s reset)
+- Evolution: 3 falhas → open (60s reset)
+- Rate limit: 5 msg/30s por número
+
+---
+
+
+
 ## Monorepo
 
 - **engine/** — Código genérico (ZERO referências a clientes). Inclui: lib (logger, state-machine, matcher, validator, handlers, llm, sender, dedup, metrics, cron-manager), middleware (health, webhook-router), evals (personas, simulator, judge), scripts, templates.

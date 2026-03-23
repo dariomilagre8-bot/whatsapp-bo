@@ -147,9 +147,20 @@ for (const [, entry] of Object.entries(clientRouter.clientes)) {
 })();
 
 const webhookRouter = createWebhookRouter(registry, getRedis());
-app.post('/webhook', webhookRouter);
-app.post('/webhook/messages', webhookRouter);
-app.post('/webhook/:instanceName', webhookRouter);
+
+// Middleware para registar actividade no watchdog (tracking inactividade)
+function webhookActivityMiddleware(req, res, next) {
+  const instanceName = req.body?.instance || req.params?.instanceName;
+  if (instanceName && registry[instanceName]) {
+    const slug = registry[instanceName].config?.slug || registry[instanceName].config?.clientSlug;
+    if (slug) watchdog.recordMessage(slug);
+  }
+  next();
+}
+
+app.post('/webhook', webhookActivityMiddleware, webhookRouter);
+app.post('/webhook/messages', webhookActivityMiddleware, webhookRouter);
+app.post('/webhook/:instanceName', webhookActivityMiddleware, webhookRouter);
 app.get('/api/metrics', (req, res) => {
   if (res.headersSent) return;
   res.set('Content-Type', 'text/plain; charset=utf-8');
@@ -233,6 +244,27 @@ app.get('/api/health', async (req, res) => {
     res.status(500).json({ status: 'error', error: e.message });
   }
 });
+
+// ── Watchdog autónomo (health + auto-recovery + alertas) ──
+const { Watchdog } = require('./engine/lib/watchdog');
+const sender = require('./engine/lib/sender');
+
+const watchdog = new Watchdog({
+  supervisors: config.supervisors || [process.env.SUPERVISOR_NUMBERS || '244941713216'],
+  sender,
+  evolutionConfig,
+  clientConfig: config,
+  dependencies: {
+    evolutionUrl: process.env.EVOLUTION_API_URL,
+    apiKey: process.env.EVOLUTION_API_KEY,
+    instanceName: primaryInst,
+    supabaseUrl: process.env.SUPABASE_URL,
+    supabaseKey: process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_KEY,
+    redisClient: getRedis() || null,
+    clientConfig: config,
+  },
+});
+watchdog.start();
 
 // ── Billing + Stock Notifier + CRM Follow-up (cron jobs) ──
 const sbClient = supabaseIntegration.getClient();
