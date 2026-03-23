@@ -40,6 +40,7 @@ const { detectarReclamacao, detectarLocalizacao, gerarRespostaLocalizacao, forma
 const clientesConfig = require('../../config/clientes');
 const { detectIntent, INTENTS } = require('../engine/intentDetector');
 const { isSafeResponse, removeEmojis, SAFE_FALLBACK } = require('../../engine/lib/safe-guard');
+const { getClientByPhone: getPaClient, classifyClient } = require('../../engine/lib/crm');
 
 const supervisorTestMode = new Set();
 
@@ -1002,6 +1003,17 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           diasRestantes = Math.ceil((exp - new Date()) / (1000 * 60 * 60 * 24));
         }
       }
+
+      // ── CRM pa_clients: classificar tipo de cliente (non-blocking) ──
+      let clientType = 'new_lead';
+      try {
+        const paClient = await getPaClient(senderNum);
+        clientType = classifyClient(paClient);
+      } catch (err) {
+        console.error('[CRM] Erro ao verificar pa_clients:', err.message);
+        // Continua como new_lead — não bloqueia o bot
+      }
+      console.log(`[CRM] ${senderNum} → ${clientType}`);
 
       // Passo B: Últimas 5 mensagens (memória)
       const history = (session.history || []).slice(-5);
