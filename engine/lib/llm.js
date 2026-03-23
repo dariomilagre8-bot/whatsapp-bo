@@ -1,7 +1,6 @@
 // engine/lib/llm.js — LLM-First (Agentic RAG) | Motor universal via bot_settings.json
 
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const config = require('../../config/streamzone');
 const botSettings = require('../../config/bot_settings.json');
 const { CircuitBreaker } = require('./circuit-breaker');
 
@@ -29,8 +28,16 @@ function init(apiKey) {
   model = genAI.getGenerativeModel({ model: MODEL_PRIMARY });
 }
 
-function buildDynamicPrompt(inventoryData, customerName, isReturning, stockCountsResult, sessionOrContext = {}, diasRestantes = null) {
-  const p = config.payment || {};
+function buildDynamicPrompt(
+  inventoryData,
+  customerName,
+  isReturning,
+  stockCountsResult,
+  sessionOrContext = {},
+  diasRestantes = null,
+  clientConfig = {}
+) {
+  const p = (clientConfig && clientConfig.payment) ? clientConfig.payment : {};
   const paymentConfig = { iban: p.iban || 'N/A', titular: p.titular || 'N/A', express: p.multicaixa || 'N/A' };
   const botName = botSettings.bot_name || 'Zara';
   const metadataTag = botSettings.metadata_tag || '#RESUMO_VENDA';
@@ -182,7 +189,7 @@ Responda directamente a estas perguntas frequentes SEM perguntar outra coisa dep
   return systemInstruction;
 }
 
-async function generate(systemPrompt, userMessage, history = []) {
+async function generate(systemPrompt, userMessage, history = [], clientConfig = null) {
   if (!model) throw new Error('LLM not initialized');
 
   if (!llmBreaker.canExecute()) {

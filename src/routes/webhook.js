@@ -983,7 +983,15 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       // Passo C: Dynamic Prompt (com contexto do cliente + stock em tempo real + memória de quantidade + diasRestantes) e chamada ao Gemini
       let systemInstruction = config.llmSystemPrompt
         ? config.llmSystemPrompt
-        : llm.buildDynamicPrompt(inventoryString, customerName, isReturningCustomer, stockCountsResult, session, diasRestantes);
+        : llm.buildDynamicPrompt(
+          inventoryString,
+          customerName,
+          isReturningCustomer,
+          stockCountsResult,
+          session,
+          diasRestantes,
+          config
+        );
       if (intent === INTENTS.DESCONHECIDO) {
         systemInstruction =
           `[REGRA CRÍTICA]\n` +
@@ -993,7 +1001,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           `- novo pedido/compra\n\n` +
           systemInstruction;
       }
-      const response = await llm.generate(systemInstruction, textMessage, history);
+      const response = await llm.generate(systemInstruction, textMessage, history, config);
 
       // Passo D: Resposta da IA e captura do metadata_tag (ex: #RESUMO_VENDA) para fluxo de aprovação (#sim)
       let finalResponse = response || (config.systemMessages?.unknownInput ?? 'Não compreendi. Pode reformular?');

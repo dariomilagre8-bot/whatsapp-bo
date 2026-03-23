@@ -287,17 +287,17 @@ test('Greeting retornante expirado: propõe renovar plano', () => {
 });
 
 test('buildDynamicPrompt com diasRestantes > 7 inclui "NÃO mencionar renovação"', () => {
-  const prompt = llm.buildDynamicPrompt('', 'Ana', true, { counts: null, erro: null }, {}, 15);
+  const prompt = llm.buildDynamicPrompt('', 'Ana', true, { counts: null, erro: null }, {}, 15, config);
   assert(prompt.includes('NÃO mencionar renovação'), 'diasRestantes > 7 deve suprimir renovação');
 });
 
 test('buildDynamicPrompt com diasRestantes <= 7 inclui "Propor renovação"', () => {
-  const prompt2 = llm.buildDynamicPrompt('', 'Ana', true, { counts: null, erro: null }, {}, 5);
+  const prompt2 = llm.buildDynamicPrompt('', 'Ana', true, { counts: null, erro: null }, {}, 5, config);
   assert(prompt2.includes('Propor renovação'), 'diasRestantes <= 7 deve propor renovação');
 });
 
 test('buildDynamicPrompt com diasRestantes <= 0 inclui "imediatamente"', () => {
-  const prompt3 = llm.buildDynamicPrompt('', 'Ana', true, { counts: null, erro: null }, {}, -1);
+  const prompt3 = llm.buildDynamicPrompt('', 'Ana', true, { counts: null, erro: null }, {}, -1, config);
   assert(prompt3.includes('imediatamente'), 'diasRestantes <= 0 deve propor renovação imediata');
 });
 
