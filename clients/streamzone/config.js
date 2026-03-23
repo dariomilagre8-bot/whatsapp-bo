@@ -1,5 +1,6 @@
 // clients/streamzone/config.js — Configuração completa StreamZone Connect (Bot: Zara)
 // Multi-tenant: identidade, números, estados, respostas fixas — engine usa zero strings de cliente
+// Suporte conta (pré-LLM): base.accountSupport + INTENT_SUPORTE_CONTA em src/engine/intentDetector.js
 
 const base = require('../../config/streamzone');
 
