@@ -11,7 +11,8 @@ const {
 const { notificarClientesWaitlist } = require('../stock/stock-notifier');
 const clientesConfig = require('../../config/clientes');
 
-const MAX_RENEWAL_MESSAGES_PER_DAY = 10;
+// Aumentado para suportar lotes grandes (ex: 21 clientes StreamZone em 28 Mar)
+const MAX_RENEWAL_MESSAGES_PER_DAY = parseInt(process.env.RENEWAL_MAX_MESSAGES_PER_DAY || '50', 10);
 const RATE_LIMIT_MS = 6000;
 
 let renewalMessagesSentToday = 0;
