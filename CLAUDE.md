@@ -83,6 +83,16 @@
 | BUG-046 | scripts/backup-env.sh | Perda de env vars após rebuild | `npm run backup` antes de deploy |
 | BUG-067 | src/engine/intentDetector.js | `\b` regex falha com acentos PT (á, ã, é) | `normalizePattern()` usa lookahead/lookbehind Unicode-aware (U+00C0–U+024F) |
 
+## CRM (pa_clients)
+
+- Tabela `pa_clients` no Supabase pa-engine (migração aplicada via MCP, 23 Mar 2026).
+- `engine/lib/crm.js` — `getClientByPhone(phone)` + `classifyClient(client)`.
+- `engine/lib/supabase.js` — proxy leve que delega para `src/integrations/supabase.js` (cliente já inicializado).
+- Classificações possíveis: `new_lead`, `active`, `expired`, `cancelled`, `trial`.
+- Integrado no `src/routes/webhook.js` — classifica e loga `[CRM] <phone> → <tipo>` antes de cada chamada ao `generate()`.
+- Não bloqueia o bot em caso de erro (silencioso, continua como `new_lead`).
+- 12 testes unitários em `tests/crm.test.js` (mocks do Supabase — zero chamadas reais).
+
 ## Watchtower (BI)
 
 - Scaffold em `services/watchtower/` (extract, anonymizer, analyze, deliver).
