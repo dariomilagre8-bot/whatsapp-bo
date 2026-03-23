@@ -1,4 +1,4 @@
-// engine/lib/llm.js — LLM-First (Agentic RAG) | Motor universal via bot_settings.json
+// engine/lib/llm.js — LLM-First | Claude (primário) + Gemini (fallback)
 
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const botSettings = require('../../config/bot_settings.json');
@@ -8,11 +8,19 @@ const llmBreaker = new CircuitBreaker('llm', { maxFailures: 3, resetTimeout: 600
 
 const FALLBACK_MESSAGE = 'Desculpe, estou a atualizar o meu sistema no momento. Pode aguardar um minuto e tentar de novo?';
 
-let genAI = null;
-let model = null;
-const MODEL_PRIMARY = 'gemini-2.5-flash';
-const MODEL_FALLBACK = 'gemini-2.5-flash-lite';
+// ── Claude (Anthropic) — primário ──
+let anthropicClient = null;
+const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514';
 
+// ── Gemini (Google) — fallback ──
+let genAI = null;
+let geminiModel = null;
+const GEMINI_MODEL_PRIMARY = 'gemini-2.5-flash';
+const GEMINI_MODEL_FALLBACK = 'gemini-2.5-flash-lite';
+
+// ─────────────────────────────────────────────────────────────
+// Tabela de preços (bot_settings.json)
+// ─────────────────────────────────────────────────────────────
 function buildPricingTableFromSettings() {
   const pt = botSettings.pricing_table || {};
   const cur = botSettings.currency || 'Kz';
@@ -23,11 +31,158 @@ function buildPricingTableFromSettings() {
   return `${netflixLine}\n${primeLine}`;
 }
 
-function init(apiKey) {
-  genAI = new GoogleGenerativeAI(apiKey);
-  model = genAI.getGenerativeModel({ model: MODEL_PRIMARY });
+// ─────────────────────────────────────────────────────────────
+// init(geminiApiKey)
+// Tenta inicializar Claude e Gemini; não crasha se algum faltar.
+// ─────────────────────────────────────────────────────────────
+function init(geminiApiKey) {
+  // Claude
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (anthropicKey) {
+    try {
+      const { Anthropic } = require('@anthropic-ai/sdk');
+      anthropicClient = new Anthropic({ apiKey: anthropicKey });
+      console.log(`✅ [LLM] Claude (${CLAUDE_MODEL}) inicializado`);
+    } catch (err) {
+      console.warn('[LLM] @anthropic-ai/sdk não disponível:', err.message);
+      anthropicClient = null;
+    }
+  } else {
+    console.warn('[LLM] ANTHROPIC_API_KEY não definido — Claude desactivado');
+  }
+
+  // Gemini
+  if (geminiApiKey) {
+    try {
+      genAI = new GoogleGenerativeAI(geminiApiKey);
+      geminiModel = genAI.getGenerativeModel({ model: GEMINI_MODEL_PRIMARY });
+      console.log(`✅ [LLM] Gemini (${GEMINI_MODEL_PRIMARY}) inicializado`);
+    } catch (err) {
+      console.warn('[LLM] Gemini não disponível:', err.message);
+      genAI = null;
+      geminiModel = null;
+    }
+  } else {
+    console.warn('[LLM] GEMINI_API_KEY não definido — Gemini desactivado');
+  }
+
+  if (!anthropicClient && !geminiModel) {
+    console.error('[LLM] NENHUM provider disponível — respostas de fallback serão usadas');
+  }
 }
 
+function isReady() {
+  return !!(anthropicClient || geminiModel);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Chamada Claude (Anthropic Messages API)
+// ─────────────────────────────────────────────────────────────
+async function tryGenerateClaude(systemPrompt, userMessage, history) {
+  const messages = [];
+  const recentHistory = (history || []).slice(-5);
+  for (const msg of recentHistory) {
+    messages.push({
+      role: msg.role === 'user' ? 'user' : 'assistant',
+      content: msg.text,
+    });
+  }
+  messages.push({ role: 'user', content: userMessage });
+
+  const response = await anthropicClient.messages.create({
+    model: CLAUDE_MODEL,
+    max_tokens: 1024,
+    temperature: 0.4,
+    system: systemPrompt,
+    messages,
+  });
+
+  const block = response.content[0];
+  if (!block || block.type !== 'text') throw new Error('Claude: resposta sem bloco de texto');
+  return block.text.trim();
+}
+
+// ─────────────────────────────────────────────────────────────
+// Chamada Gemini (Google GenerativeAI)
+// ─────────────────────────────────────────────────────────────
+async function tryGenerateGemini(systemPrompt, userMessage, history) {
+  const contents = [];
+  const recentHistory = (history || []).slice(-5);
+  for (const msg of recentHistory) {
+    contents.push({
+      role: msg.role === 'user' ? 'user' : 'model',
+      parts: [{ text: msg.text }],
+    });
+  }
+  contents.push({ role: 'user', parts: [{ text: userMessage }] });
+
+  const tryModel = async (m) => {
+    const res = await m.generateContent({
+      contents,
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      generationConfig: { maxOutputTokens: 1024, temperature: 0.4 },
+    });
+    return res.response.text().trim();
+  };
+
+  try {
+    return await tryModel(geminiModel);
+  } catch (err) {
+    // Tentar modelo lite se modelo primário der 404
+    if (genAI && (err.message.includes('404') || err.message.includes('not found'))) {
+      const liteModel = genAI.getGenerativeModel({ model: GEMINI_MODEL_FALLBACK });
+      return await tryModel(liteModel);
+    }
+    throw err;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// generate — Claude → Gemini → FALLBACK_MESSAGE
+// ─────────────────────────────────────────────────────────────
+async function generate(systemPrompt, userMessage, history = [], clientConfig = null) {
+  if (!llmBreaker.canExecute()) {
+    console.warn('[LLM] Circuit breaker ABERTO — resposta fixa');
+    return FALLBACK_MESSAGE;
+  }
+
+  console.log('\n=== 🧠 DYNAMIC PROMPT ===');
+  console.log('Sistema (primeiros 200 chars):', systemPrompt.substring(0, 200));
+  console.log('User:', userMessage);
+  console.log('=========================\n');
+
+  // 1. Claude (primário)
+  if (anthropicClient) {
+    try {
+      const text = await tryGenerateClaude(systemPrompt, userMessage, history);
+      llmBreaker.recordSuccess();
+      console.log(`[LLM] Claude: "${text.substring(0, 80)}..."`);
+      return text;
+    } catch (err) {
+      console.error('[LLM] Claude falhou:', err.message);
+    }
+  }
+
+  // 2. Gemini (fallback)
+  if (geminiModel) {
+    try {
+      const text = await tryGenerateGemini(systemPrompt, userMessage, history);
+      llmBreaker.recordSuccess();
+      console.log(`[LLM] Gemini (fallback): "${text.substring(0, 80)}..."`);
+      return text;
+    } catch (err) {
+      console.error('[LLM] Gemini (fallback) falhou:', err.message);
+    }
+  }
+
+  // 3. Ambos falharam
+  llmBreaker.recordFailure();
+  return FALLBACK_MESSAGE;
+}
+
+// ─────────────────────────────────────────────────────────────
+// buildDynamicPrompt — inalterado
+// ─────────────────────────────────────────────────────────────
 function buildDynamicPrompt(
   inventoryData,
   customerName,
@@ -189,64 +344,4 @@ Responda directamente a estas perguntas frequentes SEM perguntar outra coisa dep
   return systemInstruction;
 }
 
-async function generate(systemPrompt, userMessage, history = [], clientConfig = null) {
-  if (!model) throw new Error('LLM not initialized');
-
-  if (!llmBreaker.canExecute()) {
-    console.warn('[LLM] Circuit breaker ABERTO — resposta fixa');
-    return FALLBACK_MESSAGE;
-  }
-
-  const contents = [];
-  const recentHistory = (history || []).slice(-5);
-  for (const msg of recentHistory) {
-    contents.push({
-      role: msg.role === 'user' ? 'user' : 'model',
-      parts: [{ text: msg.text }],
-    });
-  }
-  contents.push({
-    role: 'user',
-    parts: [{ text: userMessage }],
-  });
-
-  const tryGenerate = async (m) => {
-    const res = await m.generateContent({
-      contents,
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      generationConfig: { maxOutputTokens: 1024, temperature: 0.4 },
-    });
-    return res.response.text().trim();
-  };
-
-  console.log('\n=== 🧠 DYNAMIC PROMPT DA ZARA ===');
-  console.log('Inventário/Contexto Injetado:\n', systemPrompt);
-  console.log('Mensagem do User:', userMessage);
-  console.log('===================================\n');
-
-  try {
-    const text = await tryGenerate(model);
-    llmBreaker.recordSuccess();
-    console.log(`[LLM] Response: "${text.substring(0, 80)}..."`);
-    return text;
-  } catch (err) {
-    console.error(`[LLM] ERROR:`, err.message);
-    if (genAI && (err.message.includes('404') || err.message.includes('not found'))) {
-      try {
-        const fallbackModel = genAI.getGenerativeModel({ model: MODEL_FALLBACK });
-        const text = await tryGenerate(fallbackModel);
-        llmBreaker.recordSuccess();
-        console.log(`[LLM] Fallback (${MODEL_FALLBACK}): "${text.substring(0, 80)}..."`);
-        return text;
-      } catch (e) {
-        console.error(`[LLM] Fallback ERROR:`, e.message);
-        llmBreaker.recordFailure();
-      }
-    } else {
-      llmBreaker.recordFailure();
-    }
-    return FALLBACK_MESSAGE;
-  }
-}
-
-module.exports = { init, generate, buildDynamicPrompt, FALLBACK_MESSAGE, llmBreaker };
+module.exports = { init, isReady, generate, buildDynamicPrompt, FALLBACK_MESSAGE, llmBreaker };
