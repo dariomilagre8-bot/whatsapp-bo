@@ -3,7 +3,7 @@
 
 const { createLogger } = require('../../engine/lib/logger');
 const { sendText } = require('../engine/sender');
-const llm = require('../engine/llm');
+const llm = require('../../engine/lib/llm');
 const { extractName } = require('../utils/name-extractor');
 const { extractPhoneNumber } = require('../utils/phone');
 const { resolveNumber } = require('../../engine/utils/resolve-number');
