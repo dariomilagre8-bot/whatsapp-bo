@@ -166,7 +166,8 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const isCmd = cleanMsg.startsWith('#');
 
       // Helper: log de conversa no Supabase (non-blocking, nunca falha)
-      const logConversation = (direction, message, extraFields = {}) => {
+      // function declaration para ser hoisted antes do primeiro uso (linha ~157)
+      function logConversation(direction, message, extraFields = {}) {
         try {
           const sbClient = require('../integrations/supabase').getClient();
           if (!sbClient) return;
@@ -181,7 +182,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             console.error('[CONV-LOG] Erro insert:', err.message);
           });
         } catch (_) {}
-      };
+      }
 
       // ── Intent detection (antes de qualquer funil/LLM) ──
       // Ordem: suporte código → suporte erro → suporte pagamento → imagem ambígua → venda → saudação → desconhecido
