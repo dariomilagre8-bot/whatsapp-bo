@@ -4,7 +4,9 @@ require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
-const config = require('./clients/streamzone/config');
+const loadClientConfig = require('./config/load-client');
+const streamzoneConfig = require('./clients/streamzone/config');
+const config = loadClientConfig();
 const clientRouter = require('./src/router');
 const StateMachine = require('./engine/lib/state-machine');
 const { createWebhookHandler } = require('./src/routes/webhook');
@@ -42,55 +44,83 @@ console.log('✅ Gemini inicializado');
 const stateMachine = new StateMachine(config);
 setInterval(() => stateMachine.cleanup(), 60 * 60 * 1000);
 
-// ── Inventário para o prompt (cache 60s) ──
-let inventoryCache = '';
-let inventoryCacheTime = 0;
+// ── Inventário para o prompt (cache 60s por cliente) ──
 const INVENTORY_TTL = 60 * 1000;
+const inventorySlots = new Map();
 
-async function getInventoryForPrompt() {
-  const now = Date.now();
-  if (now - inventoryCacheTime < INVENTORY_TTL && inventoryCache) return inventoryCache;
-  try {
-    inventoryCache = await googleSheets.getInventoryForPrompt(config.stock, config.products);
-    inventoryCacheTime = now;
-  } catch (err) {
-    console.error('[INVENTORY] Cache refresh failed:', err.message);
-  }
-  return inventoryCache || 'Nenhum dado de inventário disponível no momento.';
+function evolutionConfigWithInstance(inst) {
+  return {
+    apiUrl: process.env.EVOLUTION_API_URL,
+    apiKey: process.env.EVOLUTION_API_KEY,
+    instance: inst || process.env.EVOLUTION_INSTANCE || process.env.EVOLUTION_INSTANCE_NAME || 'Zara-Teste',
+  };
 }
 
-// ── Evolution API config (instance overridden por request) ──
-const evolutionConfig = {
-  apiUrl: process.env.EVOLUTION_API_URL,
-  apiKey: process.env.EVOLUTION_API_KEY,
-  instance: config.evolutionInstance || process.env.EVOLUTION_INSTANCE || process.env.EVOLUTION_INSTANCE_NAME || 'Zara-Teste',
-};
+function makeInventoryGetter(clientCfg) {
+  return async function getInventoryForPrompt() {
+    if (!clientCfg.stock || !clientCfg.products) {
+      return '';
+    }
+    const key = clientCfg.slug || 'default';
+    let slot = inventorySlots.get(key);
+    if (!slot) {
+      slot = { cache: '', time: 0 };
+      inventorySlots.set(key, slot);
+    }
+    const now = Date.now();
+    if (now - slot.time < INVENTORY_TTL && slot.cache) return slot.cache;
+    try {
+      slot.cache = await googleSheets.getInventoryForPrompt(clientCfg.stock, clientCfg.products);
+      slot.time = now;
+    } catch (err) {
+      console.error(`[INVENTORY] ${key} cache refresh failed:`, err.message);
+    }
+    return slot.cache || 'Nenhum dado de inventário disponível no momento.';
+  };
+}
+
+const primaryInst = config.evolutionInstance || process.env.EVOLUTION_INSTANCE || process.env.EVOLUTION_INSTANCE_NAME || 'Zara-Teste';
+const evolutionConfig = evolutionConfigWithInstance(primaryInst);
+const getInventoryPrimary = makeInventoryGetter(config);
 
 // ── Registry: instanceName → { config, handler } (multi-tenant) ──
-const webhookHandler = createWebhookHandler(config, stateMachine, getInventoryForPrompt, evolutionConfig);
-const registry = {
-  [config.evolutionInstance]: { config, handler: webhookHandler },
-  'Zara-Teste': { config, handler: webhookHandler },
-  'Streamzone Braulio': { config, handler: webhookHandler },
-};
+const registry = {};
+const webhookHandler = createWebhookHandler(config, stateMachine, getInventoryPrimary, evolutionConfig);
+registry[primaryInst] = { config, handler: webhookHandler };
+
+if (config.slug === 'streamzone') {
+  registry['Zara-Teste'] = registry[primaryInst];
+  registry['Streamzone Braulio'] = registry[primaryInst];
+} else {
+  const sz = streamzoneConfig;
+  const szInst = sz.evolutionInstance || process.env.EVOLUTION_INSTANCE || process.env.EVOLUTION_INSTANCE_NAME || 'Streamzone Braulio';
+  if (!registry[szInst]) {
+    const szSm = new StateMachine(sz);
+    const szEvo = evolutionConfigWithInstance(szInst);
+    const szHandler = createWebhookHandler(sz, szSm, makeInventoryGetter(sz), szEvo);
+    registry[szInst] = { config: sz, handler: szHandler };
+  }
+  if (!registry['Zara-Teste']) registry['Zara-Teste'] = registry[szInst];
+  if (!registry['Streamzone Braulio']) registry['Streamzone Braulio'] = registry[szInst];
+}
 
 // Adicionar clientes de src/router.js ao registry (legado)
 for (const [, entry] of Object.entries(clientRouter.clientes)) {
   const instName = entry.evolutionInstance;
   if (instName && !registry[instName]) {
     const clientStateMachine = new StateMachine(entry.config);
-    const clientEvoConfig = { ...evolutionConfig, instance: instName };
+    const clientEvoConfig = evolutionConfigWithInstance(instName);
     const clientHandler = createWebhookHandler(entry.config, clientStateMachine, () => Promise.resolve(''), clientEvoConfig);
     registry[instName] = { config: entry.config, handler: clientHandler };
   }
 }
 
-// Auto-registo: clients/<slug>/config.js (exceto streamzone — já coberto acima)
+// Auto-registo: clients/<slug>/config.js (exceto streamzone e o cliente primário já carregado)
 (function registerClientsFromDisk() {
   const clientsRoot = path.join(__dirname, 'clients');
   const registered = [];
   for (const dirent of fs.readdirSync(clientsRoot, { withFileTypes: true })) {
-    if (!dirent.isDirectory() || dirent.name === 'streamzone') continue;
+    if (!dirent.isDirectory() || dirent.name === 'streamzone' || dirent.name === config.slug) continue;
     const cfgPath = path.join(clientsRoot, dirent.name, 'config.js');
     if (!fs.existsSync(cfgPath)) continue;
     const clientCfg = require(cfgPath);
@@ -104,8 +134,9 @@ for (const [, entry] of Object.entries(clientRouter.clientes)) {
       continue;
     }
     const sm = new StateMachine(clientCfg);
-    const clientEvoConfig = { ...evolutionConfig, instance: inst };
-    const h = createWebhookHandler(clientCfg, sm, () => Promise.resolve(''), clientEvoConfig);
+    const clientEvoConfig = evolutionConfigWithInstance(inst);
+    const invFn = clientCfg.slug === 'streamzone' ? makeInventoryGetter(clientCfg) : () => Promise.resolve('');
+    const h = createWebhookHandler(clientCfg, sm, invFn, clientEvoConfig);
     registry[inst] = { config: clientCfg, handler: h };
     registered.push(`${clientCfg.slug}→${inst}`);
   }

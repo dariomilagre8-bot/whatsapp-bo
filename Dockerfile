@@ -7,6 +7,9 @@ WORKDIR /usr/src/app
 COPY package*.json ./
 RUN npm install
 
+# Garantir pasta clients/ na imagem (multi-tenant; ACTIVE_CLIENT=demo, etc.)
+COPY clients/ ./clients/
+
 # Copiar o resto do código
 COPY . .
 

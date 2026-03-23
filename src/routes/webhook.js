@@ -162,7 +162,13 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       // ── Intent detection (antes de qualquer funil/LLM) ──
       // Ordem: suporte código → suporte erro → suporte pagamento → imagem ambígua → venda → saudação → desconhecido
-      const { intent } = detectIntent({ text: textMessage, isImage, isAudio, isDocument });
+      const { intent } = detectIntent({
+        text: textMessage,
+        isImage,
+        isAudio,
+        isDocument,
+        clientSlug: tenantConfig.slug,
+      });
 
       // ── Interceptador global: #sim / #nao incompletos NUNCA chegam à Zara ──
       if (isSup && (firstWord === '#sim' || firstWord === '#nao') && !targetRaw) {
@@ -538,6 +544,30 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       if (session.paused) {
         console.log(`[PAUSED] ${senderNum}: message ignored`);
+        return;
+      }
+
+      // ── INTENT suporte_conta (StreamZone): resposta fixa + escalar; NUNCA LLM ──
+      if (!isSup && intent === INTENTS.SUPORTE_CONTA && tenantConfig.slug === 'streamzone') {
+        console.log(`[INTENT] suporte_conta detectada para ${senderNum}`);
+        session.paused = true;
+        stateMachine.setState(senderNum, 'pausado');
+        const acct = tenantConfig.accountSupport || {};
+        const replyText = acct.response ||
+          'Compreendo que precisa de ajuda com a sua conta. Vou encaminhar para o nosso técnico que vai ajudá-lo de imediato. 🔧';
+        await sendClient(replyJid, replyText);
+        const tmpl = acct.supervisorMessage ||
+          '🔔 Cliente {phone} precisa de suporte de conta. Mensagem original: "{message}"';
+        const orig = (textMessage || '').trim();
+        const supMsg = tmpl
+          .replace(/\{phone\}/g, senderNum)
+          .replace(/\{message\}/g, orig.substring(0, 500));
+        for (const sup of supervisors) {
+          if (sup) {
+            await sendClient(sup, supMsg);
+            trackPausedChat(sup, senderNum);
+          }
+        }
         return;
       }
 

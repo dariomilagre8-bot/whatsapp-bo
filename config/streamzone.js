@@ -590,6 +590,14 @@ module.exports = {
   // ═══════ SUPERVISOR (autorização) ═══════
   supervisorNumber: process.env.SUPERVISOR_NUMBER || '244946014060',
 
+  // ═══════ SUPORTE CONTA (pré-LLM; INTENT_SUPORTE_CONTA em intentDetector) ═══════
+  accountSupport: {
+    response:
+      'Compreendo que precisa de ajuda com a sua conta. Vou encaminhar para o nosso técnico que vai ajudá-lo de imediato. 🔧',
+    supervisorMessage:
+      '🔔 Cliente {phone} precisa de suporte de conta. Mensagem original: "{message}"',
+  },
+
   // ═══════ COMANDOS DO SUPERVISOR ═══════
   supervisorCommands: {
     '#retomar': 'unpause',

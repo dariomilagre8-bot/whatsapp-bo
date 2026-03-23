@@ -2,6 +2,7 @@
 // CommonJS, Node.js 20
 
 const INTENTS = {
+  SUPORTE_CONTA: 'INTENT_SUPORTE_CONTA',
   SUPORTE_CODIGO: 'INTENT_SUPORTE_CODIGO',
   SUPORTE_ERRO: 'INTENT_SUPORTE_ERRO',
   SUPORTE_PAGAMENTO: 'INTENT_SUPORTE_PAGAMENTO',
@@ -12,6 +13,8 @@ const INTENTS = {
 };
 
 const rx = {
+  // StreamZone: cliente existente (conta / plano / acesso) — escalar antes do LLM
+  suporteConta: /meu plano|minha conta|c[oó]digo|e-?mail|n[aã]o\s*consigo|password|senha|entrar|login|\bactivo\b|\bactiva\b|minha subscri[çc][aã]o|meu netflix|meu prime|renovar|expirou|expirad/i,
   suporteCodigo: /c[oó]digo|verifica[çc][aã]o|j[aá]\s*envie|pe[çc]a.*c[oó]digo|mand[ae].*c[oó]digo/i,
   suporteErro: /erro|localiza[çc][aã]o|n[aã]o\s*(consigo|funciona|abre|entra)|problema|n[aã]o\s*d[aá]|bugad/i,
   suportePagamento: /pag(amento|ar|uei)|renov(ar|a[çc][aã]o)|transfer[iê]|iban|comprovativo|deposit/i,
@@ -39,6 +42,12 @@ function detectIntent(input) {
   const isImage = !!input?.isImage;
   const isAudio = !!input?.isAudio;
   const isDocument = !!input?.isDocument;
+  const clientSlug = input?.clientSlug;
+
+  // 1º: suporte conta (só StreamZone / Zara — antes de código/erro/LLM)
+  if (text && clientSlug === 'streamzone' && rx.suporteConta.test(text)) {
+    return { intent: INTENTS.SUPORTE_CONTA, reason: 'pattern:suporte_conta' };
+  }
 
   // 2º prioridade: suporte código
   if (text && rx.suporteCodigo.test(text)) return { intent: INTENTS.SUPORTE_CODIGO, reason: 'pattern:support_code' };
