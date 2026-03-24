@@ -343,6 +343,12 @@ if (sbClient) {
   }, { timezone: 'Africa/Luanda' });
 }
 
+// ── Daily Intelligence Brief ──
+if (process.env.DAILY_BRIEF_ENABLED === 'true') {
+  const briefCron = require('./engine/intel/briefCron');
+  briefCron.start();
+}
+
 // ── Start ──
 const PORT = process.env.PORT || 80;
 app.listen(PORT, () => {
@@ -354,6 +360,7 @@ app.listen(PORT, () => {
   console.log(`📦 Stock Notifier: ${process.env.STOCK_NOTIFICATIONS_ENABLED === 'true' ? 'activado' : 'desactivado'}`);
   console.log(`📨 Follow-up CRM: ${process.env.FOLLOWUP_ENABLED === 'true' ? 'activado' : 'desactivado'}`);
   console.log(`🔄 Renovação automática: ${process.env.RENEWAL_ENABLED === 'true' ? 'activado' : 'desactivado'}`);
+  console.log(`📊 Daily Brief: ${process.env.DAILY_BRIEF_ENABLED === 'true' ? 'activado (07:00 Angola)' : 'desactivado'}`);
   console.log(`✅ Pronto!\n`);
 });
 // deploy-check Sun Mar 15 15:15:59 GMT 2026

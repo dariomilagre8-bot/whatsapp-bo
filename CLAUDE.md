@@ -131,6 +131,24 @@
 - Não bloqueia o bot em caso de erro (silencioso, continua como `new_lead`).
 - 12 testes unitários em `tests/crm.test.js` (mocks do Supabase — zero chamadas reais).
 
+## Daily Intelligence Brief
+
+- Módulo: `engine/intel/` — `dailyBrief.js`, `sendBrief.js`, `briefCron.js`
+- Cron: diariamente às **07:00 Angola** (06:00 UTC) — activo se `DAILY_BRIEF_ENABLED=true`
+- Destino: Don → 244941713216 via Evolution API (instância `BRIEF_INSTANCE_NAME`)
+- Query: `pa_daily_insights` últimas 24h → totais por bot (streamzone/luna/demo)
+- Alertas automáticos: bot 0 msgs, DLQ > 0, avg response > 5s, Supabase indisponível
+- Template string puro — **zero chamadas LLM**; graceful degradation se Supabase/Redis falharem
+- Retry: 1x após 30s se Evolution API falhar
+- Testes: `tests/engine/intel/dailyBrief.test.js` (5 cenários) + `sendBrief.test.js` (4 cenários)
+
+### .env vars necessárias
+
+| Variável | Descrição | Exemplo |
+|----------|-----------|---------|
+| `DAILY_BRIEF_ENABLED` | Activa o cron do brief | `true` |
+| `BRIEF_INSTANCE_NAME` | Instância Evolution para enviar brief | `ZapPrincipal` |
+
 ## Watchtower (BI)
 
 - Scaffold em `services/watchtower/` (extract, anonymizer, analyze, deliver).
