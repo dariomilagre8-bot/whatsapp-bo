@@ -42,10 +42,27 @@
 
 ## Monorepo
 
-- **engine/** — Código genérico (ZERO referências a clientes). Inclui: lib (logger, state-machine, matcher, validator, handlers, llm, sender, dedup, metrics, cron-manager), middleware (health, webhook-router), evals (personas, simulator, judge), scripts, templates.
+- **engine/** — Código genérico (ZERO referências a clientes). Inclui: lib (logger, state-machine, matcher, validator, handlers, llm, sender, dedup, metrics, cron-manager), **outreach/** (templates + CLI de preparação manual), middleware (health, webhook-router), evals (personas, simulator, judge), scripts, templates.
 - **clients/** — Config por cliente. Registados: **streamzone** (Zara / StreamZone), **luna** (Luna / PA comercial, instância `ZapPrincipal`), **demo** (Bia / Loja Demo, instância `demo-moda`). Pastas `clients/<slug>/config.js` são auto-registadas em `index.js` (excepto `streamzone`, já carregado como primário). Opcionalmente `prompts.js` e `validators.js`.
 - **services/** — Microserviços (watchtower: BI em scaffold).
-- **tests/** — engine.test.js (59 testes StreamZone) + tests/engine/* (dedup, logger, metrics, config-loader, sender).
+- **tests/** — engine.test.js (59 testes StreamZone) + tests/engine/* (dedup, logger, metrics, config-loader, sender) + engine/tests/unit/outreach/* (templates, follow-up, CLI).
+
+## Outreach semi-automatizado (preparação + registo Supabase)
+
+- **Objectivo:** gerar texto de prospecção em português angolano casual, registar em `pa_outreach_log` (Supabase pa-engine `vxrziqsyfpnmpzkjkxli`) e fazer **sempre o envio manual** no WhatsApp (copiar/colar). **NUNCA** ligar Evolution/API de envio a estes templates — risco de ban e violação de políticas.
+- **Migração:** `docs/migrations/20260324_pa_outreach_log.sql` — aplicar no projeto Supabase antes de usar a CLI.
+- **Templates:** `engine/outreach/messageTemplates.js` — nichos `ecommerce`, `restauracao`, `beleza`, `generico` (cada um com variações A/B/C). Nicho `generico` exige `--servico=…` (placeholder `{servico_principal}`).
+- **Follow-ups:** `engine/outreach/followUpSequence.js` — dia 2 e dia 7 após `sent_at`; após dia 7 sem resposta o estado sugerido é `dead` (actualizar no Supabase).
+- **CLI (raiz):** `node outreach.js …` (carrega `.env` com `SUPABASE_URL` + `SUPABASE_KEY` ou `SUPABASE_SERVICE_KEY`).
+
+| Comando | Efeito |
+|--------|--------|
+| `node outreach.js --prepare --lead="…" --niche=ecommerce --pessoa="…" --template=A` | Gera mensagem, `INSERT` com `status=prepared`, imprime texto para copiar |
+| `node outreach.js --prepare … --phone=244…` | Opcional: grava `lead_phone` |
+| `node outreach.js --sent --lead="…"` | Último registo `prepared` desse lead → `sent` + `sent_at` |
+| `node outreach.js --replied --lead="…" --response="…"` | Último registo `sent` → `replied` + `response_text` |
+| `node outreach.js --status` | Lista registos: nome, status, dias desde envio, próximo passo sugerido |
+| `node outreach.js --followups` | Leads `sent` em que o dia calendário desde `sent_at` é **2** ou **7** (e ainda sem `follow_up_1_at` / `follow_up_2_at`), com texto de follow-up para copiar; após colar, actualizar `follow_up_1_at` / `follow_up_2_at` no Supabase para não repetir |
 
 ## Regras invioláveis
 
@@ -60,12 +77,14 @@
 9. Toda melhoria ao engine beneficia todos os clientes.
 10. **trace_id** em todos os logs (via createLogger(traceId, clientSlug, module)).
 11. **Evolution — instância de envio:** `engine/lib/sender.js` / `src/engine/sender.js` resolvem o nome da instância por ordem: `clientConfig.evolutionInstance` → `evolutionConfig.instance` → `EVOLUTION_INSTANCE` / `EVOLUTION_INSTANCE_NAME` no `.env`. O webhook usa o `tenantConfig` do registry (`req.clientConfig`) para cada mensagem.
+12. **Outreach:** mensagens de prospecção são **sempre** enviadas manualmente (copiar/colar). **Proibido** automatizar o envio destes textos via Evolution ou qualquer API de WhatsApp a partir do motor.
 
 ## Comandos
 
 | Comando | Descrição |
 |--------|-----------|
-| `npm test` | Todos os testes (StreamZone + engine, incl. sender + intent v2/regression) |
+| `npm test` | Todos os testes (StreamZone + engine, incl. sender + intent v2/regression + outreach) |
+| `node outreach.js` | CLI de outreach (preparar mensagens; envio manual — ver secção Outreach) |
 | `npm run test:intent` | Apenas testes de intent (v2, regressão, suporte, saudação) |
 | `npm run eval` | Testes adversariais (4 personas) |
 | `npm run deploy` | Deploy produção (scripts/deploy.sh) |
