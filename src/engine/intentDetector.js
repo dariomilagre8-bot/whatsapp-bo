@@ -1,5 +1,6 @@
 // src/engine/intentDetector.js — Detecção de intenção (pré-LLM)
 // CommonJS, Node.js 20
+// BUG-074: suporte_conta só com padrões de alta confiança; VENDA_OVERRIDE tem precedência na ambiguidade.
 
 const INTENTS = {
   SUPORTE_CONTA: 'INTENT_SUPORTE_CONTA',
@@ -13,73 +14,73 @@ const INTENTS = {
 };
 
 // BUG-067: \b em JS regex só reconhece [a-zA-Z0-9_] como word char.
-// Chars acentuados PT (á, ã, é, ô, etc.) são non-word → \b falha nas bordas.
-// normalizePattern substitui \b por lookahead/lookbehind que inclui Latin Extended
-// U+00C0–U+024F (cobre á, ã, é, ê, í, ó, ô, õ, ú, ç e variantes).
 function normalizePattern(str) {
   const UW = '[\\w\\u00C0-\\u024F]';
   return str
-    .replace(/\\b(?=[\w\[(])/g, `(?<!${UW})`)  // \b no início: não precedido de letra/acento
-    .replace(/\\b/g, `(?!${UW})`);              // \b no fim: não seguido de letra/acento
+    .replace(/\\b(?=[\w\[(])/g, `(?<!${UW})`)
+    .replace(/\\b/g, `(?!${UW})`);
 }
 
-// Patterns de suporte — cliente existente com problema técnico (StreamZone)
-// Ordem de prioridade: verificado ANTES de qualquer outra intent e ANTES do LLM
-const SUPORTE_CONTA_PATTERNS = new RegExp([
-  // Conta e acesso
-  'meu plano', 'minha conta', 'minha subscri[çc][aã]o',
-  'n[aã]o\\s*consigo', 'nao\\s*consigo', 'n\\s+consigo',
-  'entrar', 'login', 'aceder', 'acessar',
-  'password', 'senha', 'palavra.?passe',
-  'c[oó]digo', 'code',
-  'e-?mail',
-  normalizePattern('\\bativ[ao]\\b'), normalizePattern('\\bactiv[ao]\\b'),
-  // Problemas técnicos
-  'n[aã]o\\s*funciona', 'nao\\s*funciona',
-  'n[aã]o\\s*est[aá]', 'nao\\s*est[aá]',
-  'n[aã]o\\s*abre', 'nao\\s*abre',
-  normalizePattern('\\berro\\b'), normalizePattern('\\bbug\\b'), normalizePattern('\\bproblema\\b'),
-  'bloqueado', 'bloqueada', 'bloqueou',
-  'expirou', 'expirado', 'expirada',
-  'parou', normalizePattern('\\bcaiu\\b'), normalizePattern('\\boffline\\b'),
-  normalizePattern('\\btela\\b'), 'ecr[aã]',
-  normalizePattern('\\bperfis?\\b'),
-  // Localização / Household Netflix
-  'localiza[çc][aã]o', 'localizacao', 'household',
-  'agregado', 'tv n[aã]o faz parte', 'atualizar localiza[çc][aã]o',
-  // Reclamações
-  'reclama[çc][aã]o', 'reclamacao', 'queixa',
-  'paguei', 'j[aá] paguei', 'ja paguei',
-  'n[aã]o activaram', 'nao activaram', 'n[aã]o ativaram',
-  'demora', 'quanto tempo', 'estou [aà] espera',
-  // Renovação
-  'renovar', 'renova[çc][aã]o', 'renovacao',
-  'vencer', 'venceu', 'vence',
-  // Referências a plano existente
-  'meu netflix', 'meu prime', 'minha netflix', 'minha prime',
-  'plano individual', 'plano fam[ií]lia', 'plano partilha',
-  // Pedidos de ajuda genéricos de clientes
-  'preciso de ajuda', 'precisava de ajuda',
-  'podem me ajudar', 'ajuda por favor',
-  'ver temporariamente', 'sess[aã]o',
-].join('|'), 'i');
+/** StreamZone: escalação suporte_conta só com match inequívoco (BUG-074). */
+const SUPORTE_HARD_PATTERNS = [
+  /\b(código|codigo)\b.*\b(verificação|verificacao|entrar|login|acesso)\b/i,
+  /\b(não|nao)\s+(consigo|funciona|entra|abre)\b/i,
+  /\b(não|nao)\s+est[aá]\s+funcionando\b/i,
+  /\b(expirou|venceu|acabou)\s+(o\s+)?(meu\s+)?(plano|acesso|conta)\b/i,
+  /\b(meus?\s+)?(plano|acesso|conta)\s+(expirou|venceu|acabou)\b/i,
+  /\b(o\s+)?(meu\s+)?(plano|acesso|conta)\s+(já\s+)?(expirou|venceu)\b/i,
+  /\b(erro|problema|bug)\s+(na|no|com)\s+(conta|perfil|acesso)\b/i,
+  /\b(bloqueado|bloqueada|suspens)/i,
+  /\b(reembolso|devolver|dinheiro\s+de\s+volta)\b/i,
+  /\b(household|limite\s+de\s+dispositivos)\b/i,
+  /\b(paguei|pagamento).*(não|nao).*(recebi|chegou|activ|ativ)\b/i,
+  /\b(reclamação|reclamar|queixar|reclamacao)\b/i,
+  /\bmeu\s+plano\b.*\b(não|nao)\s+/i,
+  /\bj[aá]\s+paguei\b/i,
+  /\b(não|nao)\s+activ\b/i,
+  /\b(não|nao)\s+ativ\b/i,
+];
+
+/**
+ * Perguntas de venda / catálogo — têm precedência sobre suporte quando há ambiguidade.
+ * Nota: omitido "para N pessoas" — contexto de sessão, deixar ao LLM (BUG-074).
+ */
+const VENDA_OVERRIDE_PATTERNS = [
+  /\b(tem|têm|teem|existe|há)\s+(plano|pacote|opç[aã]o|opcao)\b/i,
+  /\b(quanto|preço|preco|custa|valor)\s+(é|e|o|a|do|da|de)\b/i,
+  /\bquanto\s+custa\b/i,
+  /\b(quero|gostaria|preciso)\s+(de\s+)?(comprar|adquirir|assinar|aderir)\b/i,
+  /\b(plano\s+de\s+\d+)\b/i,
+  /\b(individual|partilha|fam[ií]lia|completa)\b/i,
+  /\b(netflix|prime\s*video)\b.*\b(tem|preço|preco|quanto|plano)\b/i,
+  /\b(tem\s+plano)\b/i,
+  /\b(quero|gostaria)\s+(de\s+)?(mudar|trocar|alterar)\b/i,
+];
+
+function matchesVendaOverride(text) {
+  return VENDA_OVERRIDE_PATTERNS.some((p) => p.test(text));
+}
+
+function matchesSuporteHard(text) {
+  return SUPORTE_HARD_PATTERNS.some((p) => p.test(text));
+}
 
 const rx = {
-  // StreamZone: cliente existente (conta / plano / acesso) — escalar ANTES do LLM
-  suporteConta: SUPORTE_CONTA_PATTERNS,
   suporteCodigo: /c[oó]digo|verifica[çc][aã]o|j[aá]\s*envie|pe[çc]a.*c[oó]digo|mand[ae].*c[oó]digo/i,
   suporteErro: /erro|localiza[çc][aã]o|n[aã]o\s*(consigo|funciona|abre|entra)|problema|n[aã]o\s*d[aá]|bugad/i,
   suportePagamento: /pag(amento|ar|uei)|renov(ar|a[çc][aã]o)|transfer[iê]|iban|comprovativo|deposit/i,
-  // venda: \b em palavras ASCII-safe (netflix, prime, plano, catálogo, preço → terminam em ASCII)
   venda: /\b(netflix|prime(\s*video)?|plano|pre[çc]o|quanto\s*custa|custa\s*quanto|cat[aá]logo|quero\s*(comprar|adquirir)|comprar|assinar)\b/i,
-  // BUG-067: ol[aá] pode terminar em 'á' (non-ASCII) → \b falha; usar normalizePattern
-  saudacao: new RegExp(
-    normalizePattern('^(ol[aá]|ola|oi+|bom dia|boa tarde|boa noite|hey|hi|hello)\\b'),
+  saudacaoLinha: new RegExp(
+    normalizePattern(
+      '^(ol[aá]|ola|oi+|bom\\s+dia|boa\\s+tarde|boa\\s+noite|hey|hi|hello|e\\s*a[ií])(\\s*[!.?,]*)?$'
+    ),
     'i'
   ),
-  // BUG-067: est[aá]\s*a[ií] pode terminar em 'í' → \b falha; usar normalizePattern
+  saudacaoComplemento: /^(bom\s+dia|boa\s+tarde|boa\s+noite)(\s+\S+){1,3}\s*$/i,
   ambiguoCurto: new RegExp(
-    normalizePattern('^(ok|pronto|aqui|segue|feito|ja\\s*(enviei|mandei)|j[aá]\\s*(enviei|mandei)|enviei|mandei|ta\\s*a[ií]|est[aá]\\s*a[ií])\\b'),
+    normalizePattern(
+      '^(ok|pronto|aqui|segue|feito|ja\\s*(enviei|mandei)|j[aá]\\s*(enviei|mandei)|enviei|mandei|ta\\s*a[ií]|est[aá]\\s*a[ií])\\b'
+    ),
     'i'
   ),
 };
@@ -103,21 +104,34 @@ function detectIntent(input) {
   const isDocument = !!input?.isDocument;
   const clientSlug = input?.clientSlug;
 
-  // 1º: suporte conta (só StreamZone / Zara — antes de código/erro/LLM)
-  if (text && clientSlug === 'streamzone' && rx.suporteConta.test(text)) {
-    return { intent: INTENTS.SUPORTE_CONTA, reason: 'pattern:suporte_conta' };
+  // ── BUG-074: StreamZone — suporte hard vs venda override (ambiguidade → venda, nunca escalar) ──
+  if (text && clientSlug === 'streamzone') {
+    const isVenda = matchesVendaOverride(text);
+    const isSuporte = matchesSuporteHard(text);
+    if (isVenda && isSuporte) {
+      return { intent: INTENTS.VENDA, reason: 'ambiguous:prefer_venda' };
+    }
+    if (isSuporte) {
+      return { intent: INTENTS.SUPORTE_CONTA, reason: 'pattern:suporte_conta_hard' };
+    }
   }
 
-  // 2º prioridade: suporte código
-  if (text && rx.suporteCodigo.test(text)) return { intent: INTENTS.SUPORTE_CODIGO, reason: 'pattern:support_code' };
+  // Suporte código (todos os clientes)
+  if (text && rx.suporteCodigo.test(text)) {
+    return { intent: INTENTS.SUPORTE_CODIGO, reason: 'pattern:support_code' };
+  }
 
-  // 3º prioridade: suporte erro
-  if (text && rx.suporteErro.test(text)) return { intent: INTENTS.SUPORTE_ERRO, reason: 'pattern:support_error' };
+  // Suporte erro
+  if (text && rx.suporteErro.test(text)) {
+    return { intent: INTENTS.SUPORTE_ERRO, reason: 'pattern:support_error' };
+  }
 
-  // 4º prioridade: pagamento/renovação (segue funil existente)
-  if (text && rx.suportePagamento.test(text)) return { intent: INTENTS.SUPORTE_PAGAMENTO, reason: 'pattern:support_payment' };
+  // Pagamento / renovação
+  if (text && rx.suportePagamento.test(text)) {
+    return { intent: INTENTS.SUPORTE_PAGAMENTO, reason: 'pattern:support_payment' };
+  }
 
-  // 5º prioridade: imagem sem contexto/ambígua
+  // Imagem ambígua
   if (isImage && !isAudio && !isDocument) {
     const t = text;
     if (!t) return { intent: INTENTS.SUPORTE_IMAGEM, reason: 'image:no_text' };
@@ -125,14 +139,29 @@ function detectIntent(input) {
     if (rx.ambiguoCurto.test(t)) return { intent: INTENTS.SUPORTE_IMAGEM, reason: 'image:ambiguous_text' };
   }
 
-  // 6º: venda explícita
-  if (text && rx.venda.test(text)) return { intent: INTENTS.VENDA, reason: 'pattern:sale' };
+  // Venda: override explícito (todos os clientes) antes do regex genérico
+  if (text && matchesVendaOverride(text)) {
+    return { intent: INTENTS.VENDA, reason: 'pattern:venda_override' };
+  }
 
-  // 7º: saudação
-  if (text && rx.saudacao.test(text)) return { intent: INTENTS.SAUDACAO, reason: 'pattern:greeting' };
+  if (text && rx.venda.test(text)) {
+    return { intent: INTENTS.VENDA, reason: 'pattern:sale' };
+  }
 
-  // 8º: desconhecido — deixa o LLM ajudar, mas sem assumir venda
+  // Saudação
+  if (text && (rx.saudacaoLinha.test(text) || rx.saudacaoComplemento.test(text))) {
+    return { intent: INTENTS.SAUDACAO, reason: 'pattern:greeting' };
+  }
+
   return { intent: INTENTS.DESCONHECIDO, reason: 'fallback:unknown' };
 }
 
-module.exports = { detectIntent, INTENTS, normalizePattern };
+module.exports = {
+  detectIntent,
+  INTENTS,
+  normalizePattern,
+  SUPORTE_HARD_PATTERNS,
+  VENDA_OVERRIDE_PATTERNS,
+  matchesVendaOverride,
+  matchesSuporteHard,
+};

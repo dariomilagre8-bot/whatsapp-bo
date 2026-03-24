@@ -46,18 +46,20 @@
 2. **NUNCA** usar LID (`@lid`) em SUPERVISOR_NUMBERS — só JIDs `@s.whatsapp.net`.
 3. O bot **NUNCA** revela comandos `#` ao cliente final.
 4. **npm test** e **npm run eval** DEVEM passar antes de deploy.
-5. Zero breaking changes nos testes existentes.
-6. Deploy produção = `whatsapp-bot/`. Deploy manual: `npm run deploy`.
-7. **CommonJS** (require/module.exports). Node.js 20. Sem TypeScript.
-8. Toda melhoria ao engine beneficia todos os clientes.
-9. **trace_id** em todos os logs (via createLogger(traceId, clientSlug, module)).
-10. **Evolution — instância de envio:** `engine/lib/sender.js` / `src/engine/sender.js` resolvem o nome da instância por ordem: `clientConfig.evolutionInstance` → `evolutionConfig.instance` → `EVOLUTION_INSTANCE` / `EVOLUTION_INSTANCE_NAME` no `.env`. O webhook usa o `tenantConfig` do registry (`req.clientConfig`) para cada mensagem.
+5. **`prestart`:** `npm start` corre `npm test` antes — o bot não arranca com testes a falhar (emergência: `node index.js` sem passar pelo script npm).
+6. Zero breaking changes nos testes existentes.
+7. Deploy produção = `whatsapp-bot/`. Deploy manual: `npm run deploy`.
+8. **CommonJS** (require/module.exports). Node.js 20. Sem TypeScript.
+9. Toda melhoria ao engine beneficia todos os clientes.
+10. **trace_id** em todos os logs (via createLogger(traceId, clientSlug, module)).
+11. **Evolution — instância de envio:** `engine/lib/sender.js` / `src/engine/sender.js` resolvem o nome da instância por ordem: `clientConfig.evolutionInstance` → `evolutionConfig.instance` → `EVOLUTION_INSTANCE` / `EVOLUTION_INSTANCE_NAME` no `.env`. O webhook usa o `tenantConfig` do registry (`req.clientConfig`) para cada mensagem.
 
 ## Comandos
 
 | Comando | Descrição |
 |--------|-----------|
-| `npm test` | Todos os testes (StreamZone + engine, incl. sender) |
+| `npm test` | Todos os testes (StreamZone + engine, incl. sender + intent v2/regression) |
+| `npm run test:intent` | Apenas testes de intent (v2, regressão, suporte, saudação) |
 | `npm run eval` | Testes adversariais (4 personas) |
 | `npm run deploy` | Deploy produção (scripts/deploy.sh) |
 | `npm run backup` | Backup env vars do container (BUG-046 fix) |
@@ -105,6 +107,7 @@
 
 - POST `/webhook` e POST `/webhook/messages` — Webhook router (200 imediato, dedup, trace_id, routing por instanceName).
 - GET `/api/health` — Estado dos serviços.
+- GET `/api/health/detailed` — Health expandido (Redis, última mensagem, sessões, intentStats).
 - GET `/api/metrics` — Métricas por cliente (formato Prometheus).
 
 ## Bugs Conhecidos / Fixes
@@ -115,7 +118,8 @@
 | BUG-067 | src/engine/intentDetector.js | `\b` regex falha com acentos PT (á, ã, é) | `normalizePattern()` usa lookahead/lookbehind Unicode-aware (U+00C0–U+024F) |
 | BUG-071 | src/routes/webhook.js | CRM repetia `upsertLead` + `getClientByPhone` em cada mensagem da sessão | Flag `session.crmProcessed` e `session.crmCache` — executa só na 1ª mensagem |
 | BUG-072 | src/utils/phone.js | Números LID `0XXXXXXXXX` (10 díg, começa 0) não normalizados → mismatch Sheets | `extractPhoneNumber` suporta 0→244 (Angola LID) e 351 (Portugal); log de normalização em `checkClienteExistente` |
-| BUG-073 | src/routes/webhook.js | Intent detection recalculava `promptVariant` em cada mensagem → prompt alternava | `session.promptVariant` persistido; só muda para `critical_rules` na escalação `suporte_conta` |
+| BUG-073 | src/routes/webhook.js | Intent detection recalculava `promptVariant` em cada mensagem → prompt alternava | `session.promptVariant` inicia em `default`; só `suporte_conta` (alta confiança) força `critical_rules` |
+| BUG-074 | src/engine/intentDetector.js | "Tem plano de 3 ecrãs?" e similares disparavam `suporte_conta` por regex ampla em "plano" | `SUPORTE_HARD_PATTERNS` + `VENDA_OVERRIDE_PATTERNS`; na ambiguidade preferir VENDA (não escalar) |
 
 ## CRM (pa_clients)
 

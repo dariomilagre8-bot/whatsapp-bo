@@ -41,6 +41,7 @@ const clientesConfig = require('../../config/clientes');
 const { detectIntent, INTENTS } = require('../engine/intentDetector');
 const { isSafeResponse, removeEmojis, SAFE_FALLBACK } = require('../../engine/lib/safe-guard');
 const { getClientByPhone: getPaClient, classifyClient } = require('../../engine/lib/crm');
+const { recordIntentDetected } = require('../../engine/lib/intent-metrics');
 
 const supervisorTestMode = new Set();
 
@@ -153,9 +154,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       console.log(`\n📩 De: ${senderNum} (${pushName}) | instância: ${instanceName} | Msg: "${textMessage.substring(0, 50)}" | Img: ${isImage} | Doc: ${isDocument} | Audio: ${isAudio}`);
 
-      // Log mensagem recebida (intent ainda não detectada aqui, atualizada abaixo)
       const _msgToLog = textMessage || (isImage ? '[imagem]' : isAudio ? '[áudio]' : '[documento]');
-      logConversation('in', _msgToLog);
 
       const cleanMsg = typeof textMessage === 'string' ? textMessage.trim().toLowerCase().replace(/\s+/g, ' ') : '';
       const parts = cleanMsg.split(/\s+/).filter(Boolean);
@@ -167,7 +166,6 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const isCmd = cleanMsg.startsWith('#');
 
       // Helper: log de conversa no Supabase (non-blocking, nunca falha)
-      // function declaration para ser hoisted antes do primeiro uso (linha ~157)
       function logConversation(direction, message, extraFields = {}) {
         try {
           const sbClient = require('../integrations/supabase').getClient();
@@ -193,6 +191,11 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         isAudio,
         isDocument,
         clientSlug: tenantConfig.slug,
+      });
+      recordIntentDetected(intent);
+      logConversation('in', _msgToLog, {
+        intent,
+        customer_name: extractName(pushName) || null,
       });
 
       // ── Interceptador global: #sim / #nao incompletos NUNCA chegam à Zara ──
@@ -1030,13 +1033,12 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
 
       // Passo C: Dynamic Prompt (com contexto do cliente + stock em tempo real + memória de quantidade + diasRestantes) e chamada ao Gemini
 
-      // BUG-073: promptVariant persistido na sessão — não recalcular em cada mensagem
-      // EXCEPÇÃO: suporte_conta força always critical_rules (escalação prioritária)
-      if (intent === INTENTS.SUPORTE_CONTA && session.promptVariant !== 'critical_rules') {
+      // BUG-073: variant definido na sessão; só suporte_conta (alta confiança) força critical_rules
+      if (!session.promptVariant) {
+        session.promptVariant = 'default';
+      }
+      if (intent === INTENTS.SUPORTE_CONTA) {
         session.promptVariant = 'critical_rules';
-      } else if (!session.promptVariant) {
-        // Primeira mensagem da sessão: definir variant baseado no intent inicial
-        session.promptVariant = (intent === INTENTS.DESCONHECIDO) ? 'critical_rules' : 'default';
       }
 
       let systemInstruction = config.llmSystemPrompt

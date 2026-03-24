@@ -3,7 +3,7 @@
 // engine/utils/resolve-number.js
 // Resolve remoteJid que pode vir como LID (@lid) para o número real do WhatsApp.
 
-const { extractPhoneNumber } = require('../../src/utils/phone');
+const { extractPhoneNumber, normalizePhone } = require('../../src/utils/phone');
 const { getRedis } = require('../lib/dedup');
 
 const LID_REGEX = /^(\d+)@lid$/i;
@@ -92,9 +92,8 @@ async function resolveNumber(remoteJid, instanceName, evolutionConfig, logger = 
 
   // Não é LID: apenas normaliza/retorna.
   if (!parsed.isLid) {
-    // Preferir a normalização do projecto (prefixo 244, etc)
-    const normalized = extractPhoneNumber(parsed.number) || digitsOnly(parsed.number);
-    return normalized;
+    const raw = extractPhoneNumber(parsed.number) || digitsOnly(parsed.number);
+    return normalizePhone(raw) || raw || '';
   }
 
   const lid = parsed.number;

@@ -65,6 +65,11 @@ test('"boa noite" → INTENT_SAUDACAO', () => {
   assert(intent === INTENTS.SAUDACAO, `intent=${intent}`);
 });
 
+test('"Boa tarde prezados" → INTENT_SAUDACAO (complemento educado)', () => {
+  const { intent } = detectIntent({ text: 'Boa tarde prezados' });
+  assert(intent === INTENTS.SAUDACAO, `intent=${intent}`);
+});
+
 // ─── Negativas (não deve detectar SAUDACAO) ──────────────────────────────────
 
 test('"Olátimo" → NÃO é SAUDACAO (false positive)', () => {

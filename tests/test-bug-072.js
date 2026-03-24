@@ -46,10 +46,10 @@ async function runTests() {
     assert(extractPhoneNumber('941713216') === '244941713216', `got: ${extractPhoneNumber('941713216')}`);
   });
 
-  // LID angolano — 10 dígitos a começar por 0
-  await test('"0808441748" (10 díg, começa 0) → "244808441748"', () => {
+  // LID / identificador interno 08… — não assumir prefixo Angola (BUG-072 + LID)
+  await test('"0808441748" (10 díg, 08…) → mantém dígitos (não 244)', () => {
     const result = extractPhoneNumber('0808441748');
-    assert(result === '244808441748', `esperado 244808441748, got: ${result}`);
+    assert(result === '0808441748', `esperado 0808441748, got: ${result}`);
   });
 
   await test('"0941713216" (10 díg, começa 0) → "244941713216"', () => {

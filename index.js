@@ -250,6 +250,7 @@ const { Watchdog } = require('./engine/lib/watchdog');
 const sender = require('./engine/lib/sender');
 
 const watchdog = new Watchdog({
+  infraRecipients: ['244941713216'],
   supervisors: config.supervisors || [process.env.SUPERVISOR_NUMBERS || '244941713216'],
   sender,
   evolutionConfig,
@@ -265,6 +266,67 @@ const watchdog = new Watchdog({
   },
 });
 watchdog.start();
+
+const { getIntentStats } = require('./engine/lib/intent-metrics');
+
+app.get('/api/health/detailed', async (req, res) => {
+  try {
+    const evoInstance =
+      config.evolutionInstance
+      || process.env.EVOLUTION_INSTANCE
+      || process.env.EVOLUTION_INSTANCE_NAME
+      || 'default';
+    const supabaseKey = process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_KEY;
+    const r = getRedis();
+    let redisLabel = 'not_configured';
+    if (r) {
+      try {
+        await r.ping();
+        redisLabel = 'connected';
+      } catch {
+        redisLabel = 'error';
+      }
+    }
+    const health = await getHealth({
+      evolutionUrl: process.env.EVOLUTION_API_URL,
+      apiKey: process.env.EVOLUTION_API_KEY,
+      instanceName: evoInstance,
+      supabaseUrl: process.env.SUPABASE_URL,
+      supabaseKey,
+      redisClient: r || null,
+      clientConfig: config,
+    });
+    const evo = health.checks?.evolution?.status === 'ok'
+      ? 'connected'
+      : health.checks?.evolution?.status === 'not_configured'
+        ? 'not_configured'
+        : 'error';
+    const sb = health.checks?.supabase?.status === 'ok'
+      ? 'connected'
+      : health.checks?.supabase?.status === 'not_configured'
+        ? 'not_configured'
+        : 'error';
+
+    const payload = {
+      status: health.status,
+      uptime: health.uptime,
+      redis: redisLabel,
+      supabase: sb,
+      sheets: fs.existsSync(credPath) ? 'configured' : 'not_configured',
+      evolution: evo,
+      lastMessage: watchdog.getLastMessageIso(),
+      activeSessions: stateMachine.sessions.size,
+      intentStats: getIntentStats(),
+      timestamp: new Date().toISOString(),
+    };
+    const httpCode = health.status === 'unhealthy' ? 503 : 200;
+    if (res.headersSent) return;
+    res.status(httpCode).json(payload);
+  } catch (e) {
+    if (res.headersSent) return;
+    res.status(500).json({ status: 'error', error: e.message });
+  }
+});
 
 // ── Billing + Stock Notifier + CRM Follow-up (cron jobs) ──
 const sbClient = supabaseIntegration.getClient();

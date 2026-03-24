@@ -1,10 +1,15 @@
 // engine/lib/watchdog.js — Watchdog autónomo: health checks, auto-recovery, alertas supervisores
+// Alertas de INFRA: Don (244941713216) + supervisores do bot.
 
 const { getHealth } = require('./health');
+
+/** Receptores fixos de alertas de infra (monitor, bot parado, inactividade). */
+const DEFAULT_INFRA_ALERT_RECIPIENTS = ['244941713216'];
 
 class Watchdog {
   constructor(options = {}) {
     this.intervalMs = options.intervalMs || 300000; // 5 min
+    this.infraRecipients = options.infraRecipients || DEFAULT_INFRA_ALERT_RECIPIENTS;
     this.supervisors = options.supervisors || ['244941713216'];
     this.sender = options.sender;
     this.evolutionConfig = options.evolutionConfig;
@@ -18,7 +23,8 @@ class Watchdog {
   }
 
   start() {
-    console.log(`[WATCHDOG] Iniciado — check a cada ${this.intervalMs / 1000}s | supervisores: ${this.supervisors.join(', ')}`);
+    const allAlert = [...new Set([...this.infraRecipients, ...this.supervisors].filter(Boolean))];
+    console.log(`[WATCHDOG] Iniciado — check a cada ${this.intervalMs / 1000}s | alertas: ${allAlert.join(', ')}`);
     this.timer = setInterval(() => this.check(), this.intervalMs);
     // Primeiro check com delay de 30s para dar tempo ao boot
     setTimeout(() => this.check(), 30000);
@@ -34,6 +40,15 @@ class Watchdog {
 
   recordMessage(clientSlug) {
     this.lastMessageTimes.set(clientSlug, Date.now());
+  }
+
+  /** Última mensagem inbound registada (qualquer cliente). */
+  getLastMessageIso() {
+    let latest = 0;
+    for (const t of this.lastMessageTimes.values()) {
+      if (t > latest) latest = t;
+    }
+    return latest ? new Date(latest).toISOString() : null;
   }
 
   async check() {
@@ -134,12 +149,13 @@ class Watchdog {
       return;
     }
 
-    for (const supervisor of this.supervisors) {
+    const recipients = [...new Set([...this.infraRecipients, ...this.supervisors].filter(Boolean))];
+    for (const phone of recipients) {
       try {
-        await this.sender.sendText(supervisor, message, this.evolutionConfig, this.clientConfig);
-        console.log(`[WATCHDOG] Alerta enviado para ${supervisor}`);
+        await this.sender.sendText(phone, message, this.evolutionConfig, this.clientConfig);
+        console.log(`[WATCHDOG] Alerta enviado para ${phone}`);
       } catch (e) {
-        console.error(`[WATCHDOG] Falha ao enviar alerta para ${supervisor}:`, e.message);
+        console.error(`[WATCHDOG] Falha ao enviar alerta para ${phone}:`, e.message);
       }
     }
   }
@@ -163,4 +179,4 @@ class Watchdog {
   }
 }
 
-module.exports = { Watchdog };
+module.exports = { Watchdog, DEFAULT_INFRA_ALERT_RECIPIENTS };

@@ -107,13 +107,14 @@ if (!session.crmCache) {
 
 `extractPhoneNumber` não tratava números com 10 dígitos a começar por `0` (formato LID angolano). Retornava string vazia, tornando o match impossível.
 
-### Fix
+### Fix (actualizado 2026-03-24)
 
-Adicionados dois novos casos em `extractPhoneNumber`:
+- **09XXXXXXXX** (nacional Angola com zero) → `244` + 9 dígitos.
+- **08… / outros 10 dígitos com 0** — tratados como possível LID interno: **não** prefixar `244` automaticamente; preferir resolução via Evolution API (`resolveNumber` / `findContacts`).
 
 ```javascript
-// LID angolano: 10 dígitos a começar por 0 → 244 + últimos 9
-if (digits.length === 10 && digits.startsWith('0')) {
+// Só 09… → Angola; 08… mantém-se como identificador
+if (digits.length === 10 && digits.startsWith('09')) {
   return '244' + digits.slice(1);
 }
 
@@ -130,7 +131,38 @@ console.log(`[CRM] Normalização: raw="${numero}" → normalized="${normalized}
 
 ### Regra Geral
 
-> **Normalizar SEMPRE os telefones antes de comparar. Nunca assumir formato consistente entre fontes (Evolution API, Google Sheets, Supabase).**
+> **Normalizar telefones antes de comparar, mas não assumir que todo o número com 10 dígitos e zero inicial é Angola — LID interno pode colidir. Usar `normalizePhone` / `resolveNumber` conforme a origem do JID.**
+
+---
+
+## BUG-074 — "Tem plano de 3 ecrãs?" classificado como suporte_conta (falso positivo)
+
+**Data:** 2026-03-24  
+**Ficheiro:** `src/engine/intentDetector.js`  
+**Impacto:** Clientes em funil de compra eram escalados ao supervisor como suporte técnico.
+
+### Causa Raiz
+
+Regex de `suporte_conta` incluía tokens ambíguos (`plano`, `meu plano`, etc.) que também aparecem em perguntas de venda.
+
+### Fix
+
+- **Camada 1:** `SUPORTE_HARD_PATTERNS` — só frases inequívocas de suporte (conta bloqueada, expirou, código de verificação, etc.).
+- **Camada 2:** `VENDA_OVERRIDE_PATTERNS` — perguntas de catálogo/preço; se **ambos** fazem match → preferir **VENDA** (não escalar).
+- Regra: **na dúvida entre venda e suporte, preferir venda** — o LLM clarifica; escalação só com alta confiança.
+
+### Testes
+
+- `tests/test-intent-detection-v2.js` — casos positivos/negativos.
+- `tests/test-intent-regression.js` — bugs reais de produção; **cada novo bug de intent deve acrescentar um caso aqui antes do fix.**
+
+### Regras Gerais (BUG-074 + operação)
+
+1. Na dúvida venda vs suporte → **VENDA** (nunca escalar).
+2. Cada regressão de intent em produção → entrada em `test-intent-regression.js` **antes** de corrigir (TDD de regressão).
+3. `npm test` corre antes de `npm start` (`prestart`).
+4. LID não é garantidamente telefone — resolver via Evolution `findContacts` quando possível; não assumir `08…` como Angola (`normalizePhone` / `extractPhoneNumber`: só `09…` → `244`).
+5. Alertas **INFRA** (watchdog: health, inactividade) → Don (`244941713216`) **e** supervisores do bot. Escalação de **cliente** continua só para o supervisor da instância.
 
 ---
 
@@ -144,23 +176,18 @@ console.log(`[CRM] Normalização: raw="${numero}" → normalized="${normalized}
 
 O `promptVariant` era determinado em cada mensagem com base no `intent` actual, sem considerar o que tinha sido definido nas mensagens anteriores da mesma sessão.
 
-### Fix
+### Fix (actualizado 2026-03-24)
 
-`session.promptVariant` persistido na sessão em memória. Determinado apenas na 1ª mensagem. Excepção: `suporte_conta` força sempre `critical_rules` (escalação prioritária):
+`session.promptVariant` inicia em `default` na primeira atribuição. **Apenas** `suporte_conta` (detecção de alta confiança, BUG-074) força `critical_rules`. `INTENT_DESCONHECIDO` já **não** activa `critical_rules` por defeito — o LLM responde com prompt normal.
 
 ```javascript
-if (intent === INTENTS.SUPORTE_CONTA && session.promptVariant !== 'critical_rules') {
-  session.promptVariant = 'critical_rules'; // excepção: escalação
-} else if (!session.promptVariant) {
-  // Definir apenas na 1ª mensagem
-  session.promptVariant = (intent === INTENTS.DESCONHECIDO) ? 'critical_rules' : 'default';
-}
-// Usar session.promptVariant (não intent actual) para construir o prompt
+if (!session.promptVariant) session.promptVariant = 'default';
+if (intent === INTENTS.SUPORTE_CONTA) session.promptVariant = 'critical_rules';
 ```
 
 ### Regra Geral
 
-> **O variant do prompt deve ser definido uma vez na sessão e mantido. Só deve mudar por escalação explícita (suporte_conta), nunca por mudança de intent entre mensagens normais.**
+> **Manter o variant estável na sessão. Só escalação `suporte_conta` muda para regras críticas; intenção desconhecida não deve alternar o prompt entre mensagens.**
 
 ---
 
