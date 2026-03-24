@@ -494,11 +494,16 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       session.replyJid = replyJid;
       if (!session.name) session.name = extractName(pushName);
 
-      // CRM: registar/actualizar lead (non-blocking)
-      try {
-        const sbClient = require('../integrations/supabase').getClient();
-        await upsertLead(sbClient, senderNum, session.name || pushName || null);
-      } catch (_) {}
+      // CRM: registar/actualizar lead (non-blocking) — BUG-071: apenas na 1ª mensagem da sessão
+      if (!session.crmProcessed) {
+        try {
+          const sbClient = require('../integrations/supabase').getClient();
+          await upsertLead(sbClient, senderNum, session.name || pushName || null);
+          session.crmProcessed = true;
+        } catch (_) {}
+      } else {
+        console.log(`[CRM] ${senderNum} → sessão activa, skip lead tracking`);
+      }
 
       // BUG-056: qualifying questions antes de escalar ao supervisor (SUPORTE_ERRO / SUPORTE_CODIGO)
       if (!isSup && session.pendingQualifying && textMessage && String(textMessage).trim()) {
@@ -982,17 +987,22 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         console.error('[CRM] checkClienteExistente error:', crmErr.message);
       }
 
-      // 2) Supabase (clientes + vendas) — enriquece com nome e data_expiracao mais recente
+      // 2) Supabase (clientes + vendas) — BUG-071: cachear resultado na sessão (só consultar 1x)
       customerName = null;
       let lastSale = null;
-      try {
-        ({ customerName, isReturningCustomer, lastSale } = await getClientByPhone(senderNum));
-      } catch (sbErr) {
-        console.error('[SUPABASE] Falha ao consultar cliente:', sbErr.message);
+      if (!session.crmCache) {
+        try {
+          ({ customerName, isReturningCustomer, lastSale } = await getClientByPhone(senderNum));
+          session.crmCache = { customerName, isReturningCustomer, lastSale };
+        } catch (sbErr) {
+          console.error('[SUPABASE] Falha ao consultar cliente:', sbErr.message);
+        }
+        console.log(
+          `[CRM] ${senderNum} → cliente: ${customerName || 'NOVO'} | retornante: ${isReturningCustomer}`
+        );
+      } else {
+        ({ customerName, isReturningCustomer, lastSale } = session.crmCache);
       }
-      console.log(
-        `[CRM] ${senderNum} → cliente: ${customerName || 'NOVO'} | retornante: ${isReturningCustomer}`
-      );
 
       if (lastSale?.data_expiracao) {
         const parts = lastSale.data_expiracao.split('/');
@@ -1019,6 +1029,16 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const history = (session.history || []).slice(-5);
 
       // Passo C: Dynamic Prompt (com contexto do cliente + stock em tempo real + memória de quantidade + diasRestantes) e chamada ao Gemini
+
+      // BUG-073: promptVariant persistido na sessão — não recalcular em cada mensagem
+      // EXCEPÇÃO: suporte_conta força always critical_rules (escalação prioritária)
+      if (intent === INTENTS.SUPORTE_CONTA && session.promptVariant !== 'critical_rules') {
+        session.promptVariant = 'critical_rules';
+      } else if (!session.promptVariant) {
+        // Primeira mensagem da sessão: definir variant baseado no intent inicial
+        session.promptVariant = (intent === INTENTS.DESCONHECIDO) ? 'critical_rules' : 'default';
+      }
+
       let systemInstruction = config.llmSystemPrompt
         ? config.llmSystemPrompt
         : llm.buildDynamicPrompt(
@@ -1030,7 +1050,7 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           diasRestantes,
           config
         );
-      if (intent === INTENTS.DESCONHECIDO) {
+      if (session.promptVariant === 'critical_rules') {
         systemInstruction =
           `[REGRA CRÍTICA]\n` +
           `NUNCA assumes que o cliente quer comprar. Se não tiveres certeza da intenção, faz uma pergunta curta e educada para clarificar se é:\n` +

@@ -316,6 +316,11 @@ async function checkClienteExistente(stockConfig, numero) {
 
   if (!normalized) return baseResult;
 
+  // BUG-072: log de normalização para diagnóstico de mismatches
+  if (normalized !== numero) {
+    console.log(`[CRM] Normalização: raw="${numero}" → normalized="${normalized}"`);
+  }
+
   // 1) Google Sheets primeiro (fonte da verdade das vendas activas)
   try {
     if (stockConfig) {
