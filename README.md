@@ -1,5 +1,7 @@
 # WhatsApp Bot — Deploy
 
+[![PA QA Pipeline](https://github.com/dariomilagre8-bot/whatsapp-bo/actions/workflows/qa.yml/badge.svg)](https://github.com/dariomilagre8-bot/whatsapp-bo/actions/workflows/qa.yml)
+
 ## Deploy sem Easypanel
 
 O Easypanel está crashado devido a incompatibilidade com `Docker 29.x` (ver GitHub issue `#109`). Para contornar, o deploy é feito via `GitHub Actions` (SSH) e também existe um deploy manual por script.

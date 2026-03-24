@@ -7,7 +7,7 @@ const { RateLimiter } = require('../lib/rate-limiter');
 const { sendText } = require('../lib/sender');
 
 const webhookRateLimiter = new RateLimiter({ maxRequests: 5, windowMs: 30000 });
-setInterval(() => webhookRateLimiter.cleanup(), 300000);
+let webhookRateLimiterCleanupInterval = null;
 
 /**
  * Cria o middleware do webhook: responde 200 em <50ms, depois processa via queue (ou inline).
@@ -17,6 +17,9 @@ setInterval(() => webhookRateLimiter.cleanup(), 300000);
  */
 function createWebhookRouter(registry, redis = null, messageQueue = null) {
   return async function webhookRouter(req, res) {
+    if (!webhookRateLimiterCleanupInterval) {
+      webhookRateLimiterCleanupInterval = setInterval(() => webhookRateLimiter.cleanup(), 300000);
+    }
     res.status(200).json({ ok: true });
 
     const body = req && req.body;

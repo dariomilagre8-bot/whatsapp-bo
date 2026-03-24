@@ -38,6 +38,10 @@ if (require('fs').existsSync(credPath)) {
 supabaseIntegration.init(process.env.SUPABASE_URL, process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_KEY);
 console.log('✅ Supabase inicializado');
 
+const negativeRules = require('./engine/learning/negativeRules');
+negativeRules.loadNegativeRules().catch((e) => console.warn('[negative-rules] carga inicial:', e.message));
+negativeRules.startNegativeRulesRefresh();
+
 llm.init(process.env.GEMINI_API_KEY);
 console.log('✅ Gemini inicializado');
 

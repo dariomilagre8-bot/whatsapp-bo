@@ -46,6 +46,8 @@
 - **clients/** — Config por cliente. Registados: **streamzone** (Zara / StreamZone), **luna** (Luna / PA comercial, instância `ZapPrincipal`), **demo** (Bia / Loja Demo, instância `demo-moda`). Pastas `clients/<slug>/config.js` são auto-registadas em `index.js` (excepto `streamzone`, já carregado como primário). Opcionalmente `prompts.js` e `validators.js`.
 - **services/** — Microserviços (watchtower: BI em scaffold).
 - **tests/** — engine.test.js (59 testes StreamZone) + tests/engine/* (dedup, logger, metrics, config-loader, sender) + engine/tests/unit/outreach/* + engine/tests/unit/renewal/* (mensagens, datas, Supabase, sender, CLI).
+- **QA Jest (pipeline):** `engine/tests/unit/pipeline/` (smoke), `engine/tests/integration/` (webhook→queue, dedup Redis real, queue→handler, failover LLM mock, sessão StateMachine), `engine/tests/flows/` — `flow-runner.test.js` lê `scenarios.json` (source of truth dos fluxos conversacionais), 5 execuções por cenário, ≥80% consistência. CI: `.github/workflows/qa.yml`. Comandos locais: `npm run test:legacy` (cadeia `node`), `npm run test:jest` ou `npx jest --testPathPattern=integration|flows|unit`.
+- **Regra:** cada bug novo de conversa/intent → acrescentar cenário em `engine/tests/flows/scenarios.json`.
 
 ## Renovação pa_clients (cron + CLI)
 
@@ -96,13 +98,29 @@
 11. **Evolution — instância de envio:** `engine/lib/sender.js` / `src/engine/sender.js` resolvem o nome da instância por ordem: `clientConfig.evolutionInstance` → `evolutionConfig.instance` → `EVOLUTION_INSTANCE` / `EVOLUTION_INSTANCE_NAME` no `.env`. O webhook usa o `tenantConfig` do registry (`req.clientConfig`) para cada mensagem.
 12. **Outreach:** mensagens de prospecção são **sempre** enviadas manualmente (copiar/colar). **Proibido** automatizar o envio destes textos via Evolution ou qualquer API de WhatsApp a partir do motor.
 
+## Self-Annealing (regras negativas de intent)
+
+- **Tabela:** `pa_negative_rules` no Supabase pa-engine — migração `docs/migrations/20260324_pa_negative_rules.sql`.
+- **Código:** `engine/learning/negativeRules.js` — `loadNegativeRules()`, `matchNegativeRule(text, clientSlug)`, `addNegativeRule()`, cache em memória, refresh a cada **5 min** (`startNegativeRulesRefresh()` no arranque em `index.js`).
+- **Pipeline:** em `src/engine/intentDetector.js`, **antes** de regex/padrões, se a mensagem contiver `input_pattern` (case-insensitive, `includes`), devolve `correct_intent` com `confidence: 1`, `source: 'negative_rule'` — sem custo LLM para classificar.
+- **Prompt:** até **20** regras mais recentes entram no system prompt via `engine/llm/promptExtras.js` (secção «Regras Negativas (auto-actualizadas)»).
+- **CLI:** `node learning.js --add-rule --bug=074 --input="texto" --wrong=COMPRA --correct=CONSULTA_PRECO [--client=streamzone]` — grava na BD, `append` em `CLAUDE.md`, via `engine/learning/postBugHook.js`.
+
+## Iceberg (catálogo leve + detalhes on-demand)
+
+- **Índice:** `engine/catalog/catalogIndex.js` gera linha curta a partir de `clientConfig.products` (sem alterar `clients/*`).
+- **Lookup:** `engine/catalog/catalogLookup.js` — `getProductDetails(clientConfig, query)` com fuzzy `includes`.
+- **Orquestração:** `engine/orchestrator.js` — `prepareLlmUserMessage(intent, text, clientConfig)`: para `INTENT_VENDA` injecta JSON do produto na mensagem ao LLM; se não houver match, instrui lista breve. Para saudação, suporte, `INTENT_DESCONHECIDO`, etc., **não** carrega contexto de catálogo extra.
+- **System prompt:** com `products` no config, `buildDynamicPrompt` substitui a tabela longa de preços do `bot_settings` por bloco **índice leve** (objectivo de redução de tokens no bloco de preços/catálogo **~60%** vs. duplicar tabela + JSON completo; medir no dashboard do provider comparando prompts antes/depois).
+
 ## Comandos
 
 | Comando | Descrição |
 |--------|-----------|
-| `npm test` | Todos os testes (StreamZone + engine, incl. sender + intent v2/regression + outreach + renewal) |
+| `npm test` | `test:legacy` (cadeia `node`) + `test:jest` (unit/pipeline, integration, flows em `engine/tests/`) |
 | `node outreach.js` | CLI de outreach (preparar mensagens; envio manual — ver secção Outreach) |
 | `node renewal.js` | CLI de renovação pa_clients (check / dry-run / send-now / mark-renewed) |
+| `node learning.js` | Self-annealing: `--add-rule --bug=… --input=… --wrong=… --correct=… [--client=slug]` |
 | `npm run test:intent` | Apenas testes de intent (v2, regressão, suporte, saudação) |
 | `npm run eval` | Testes adversariais (4 personas) |
 | `npm run deploy` | Deploy produção (scripts/deploy.sh) |
@@ -231,8 +249,18 @@ redis-cli LLEN bull:pa-messages:failed        # falhas totais
 | `DAILY_BRIEF_ENABLED` | Activa o cron do brief | `true` |
 | `BRIEF_INSTANCE_NAME` | Instância Evolution para enviar brief | `ZapPrincipal` |
 
+## KPIs operacionais (`pa_daily_insights` + router LLM)
+
+- **Schema (evento por mensagem):** além dos campos legados, usar colunas `client_id` (slug: streamzone/luna/demo), `response_time_ms`, `llm_provider` (`claude` \| `gemini`), `llm_success`, `intent_detected`, `intent_confidence`, `resolution_type` (`bot_resolved` \| `human_escalated` \| `abandoned`), `csat_score` (1–5 opcional), `llm_routing_reason` (`simple` \| `medium` \| `complex`), `tokens_used`, `trace_id`, `phone`. Migração: `docs/migrations/20260325_pa_daily_insights_kpis.sql`.
+- **View:** `v_kpis_operacionais` — agrega por `client_id` e dia (UTC). Consultar no Supabase: *SQL Editor* → `SELECT * FROM v_kpis_operacionais ORDER BY dia DESC LIMIT 30;`
+- **Regra 60/30/10:** `engine/llm/router.js` — `routeToModel(intent, context)` devolve só `{ model, reason }`. Casos simples (~saudação, venda single-turn, desconhecido com confiança ≥0,7) → **Gemini 2.5 Flash**; médio (venda multi-turn / `pendingSale`, suporte código/pagamento/imagem) → **Claude Sonnet 4**; complexo (suporte conta/erro, `intent_confidence` \< 0,7) → **Claude Sonnet 4**. O **webhook** chama `llm.generateWithOrder(primary, …)`; se o modelo preferido falhar, inverte ordem (circuit breaker existente).
+- **Intent:** `engine/llm/intentPipeline.js` — ordem **regras negativas** → **classificação Gemini Flash** → **regex** (`INTENT_REGEX_ONLY=true` força só regex, útil em testes).
+- **Instrumentação:** `engine/orchestrator.js` (`recordMessageKpi`) + `engine/lib/paKpiInsert.js` — INSERT assíncrono sem bloquear o handler.
+- **CSAT:** `engine/csat/csatFlow.js` — `CSAT_ENABLED=true`; pergunta automática **2 minutos** após `bot_resolved`; resposta 1–5 grava `csat_score` na linha com o mesmo `trace_id`; outras respostas ignoram (sem insistência).
+- **Testes:** `tests/engine/llm/router.test.js`, `tests/engine/csat/csatFlow.test.js`, `tests/engine/instrumentacao.test.js`.
+
 ## Watchtower (BI)
 
 - Scaffold em `services/watchtower/` (extract, anonymizer, analyze, deliver).
-- Tabela Supabase: `docs/pa_daily_insights.sql`.
+- Tabela Supabase: `docs/pa_daily_insights.sql` (legado) + migração KPIs acima.
 - Cron semanal (sexta 18h) comentado em cron-manager; activar quando houver 3+ clientes.

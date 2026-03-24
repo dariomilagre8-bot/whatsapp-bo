@@ -48,11 +48,12 @@ async function runTests() {
   // ── 1. Exportações ──
   console.log('📋 Exportações:');
 
-  await test('exporta init, isReady, generate, buildDynamicPrompt, FALLBACK_MESSAGE, llmBreaker', () => {
+  await test('exporta init, isReady, generate, generateWithOrder, buildDynamicPrompt, FALLBACK_MESSAGE, llmBreaker', () => {
     const llm = require('../../engine/lib/llm');
     assert(typeof llm.init === 'function', 'init não é função');
     assert(typeof llm.isReady === 'function', 'isReady não é função');
     assert(typeof llm.generate === 'function', 'generate não é função');
+    assert(typeof llm.generateWithOrder === 'function', 'generateWithOrder não é função');
     assert(typeof llm.buildDynamicPrompt === 'function', 'buildDynamicPrompt não é função');
     assert(typeof llm.FALLBACK_MESSAGE === 'string', 'FALLBACK_MESSAGE não é string');
     assert(llm.llmBreaker && typeof llm.llmBreaker.canExecute === 'function', 'llmBreaker inválido');

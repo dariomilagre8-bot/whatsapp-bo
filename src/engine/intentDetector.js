@@ -2,6 +2,9 @@
 // CommonJS, Node.js 20
 // BUG-074: suporte_conta só com padrões de alta confiança; VENDA_OVERRIDE tem precedência na ambiguidade.
 
+const { matchNegativeRule } = require('../../engine/learning/negativeRules');
+const { resolveStoredIntent } = require('../../engine/learning/intentMap');
+
 const INTENTS = {
   SUPORTE_CONTA: 'INTENT_SUPORTE_CONTA',
   SUPORTE_CODIGO: 'INTENT_SUPORTE_CODIGO',
@@ -116,6 +119,21 @@ function detectIntent(input) {
   const isAudio = !!input?.isAudio;
   const isDocument = !!input?.isDocument;
   const clientSlug = input?.clientSlug;
+
+  const ruleHit = text && matchNegativeRule(text, clientSlug);
+  if (ruleHit) {
+    console.log(
+      `Intent overridden by negative rule #${ruleHit.id}: '${ruleHit.input_pattern}' → ${ruleHit.correct_intent}`
+    );
+    return {
+      intent: resolveStoredIntent(ruleHit.correct_intent),
+      reason: 'negative_rule',
+      confidence: 1,
+      source: 'negative_rule',
+      ruleId: ruleHit.id,
+      matchedPattern: ruleHit.input_pattern,
+    };
+  }
 
   // ── BUG-074: StreamZone — suporte hard vs venda override (ambiguidade → venda, nunca escalar) ──
   if (text && clientSlug === 'streamzone') {

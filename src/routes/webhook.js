@@ -38,10 +38,22 @@ const { getStockResumo } = require('../stock/stock-summary');
 const { runDailyRenewalJob } = require('../renewal/renewal-cron');
 const { detectarReclamacao, detectarLocalizacao, gerarRespostaLocalizacao, formatarNotificacaoReclamacao } = require('../crm/complaints');
 const clientesConfig = require('../../config/clientes');
-const { detectIntent, INTENTS } = require('../engine/intentDetector');
+const { INTENTS } = require('../engine/intentDetector');
+const {
+  prepareLlmUserMessage,
+  recordMessageKpi,
+  deriveResolutionType,
+} = require('../../engine/orchestrator');
 const { isSafeResponse, removeEmojis, SAFE_FALLBACK } = require('../../engine/lib/safe-guard');
 const { getClientByPhone: getPaClient, classifyClient } = require('../../engine/lib/crm');
 const { recordIntentDetected } = require('../../engine/lib/intent-metrics');
+const { routeToModel } = require('../../engine/llm/router');
+const { classifyIntent } = require('../../engine/llm/intentPipeline');
+const {
+  bumpInboundCancelCsatSchedule,
+  tryConsumeCsatReply,
+  scheduleCsatIfResolved,
+} = require('../../engine/csat/csatFlow');
 
 const supervisorTestMode = new Set();
 
@@ -122,6 +134,8 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
     const sendClient = (phone, text) => sendText(phone, text, evolutionConfigForInstance, tenantConfig);
 
     try {
+      const handlerStartMs = Date.now();
+
       // Evolution API v2.3.0: quem enviou está em data.key.remoteJid. NUNCA usar req.body.sender (é o bot/instância).
       const remoteJid = data?.key?.remoteJid || '';
       const senderFallback = remoteJid.replace(/@s\.whatsapp\.net|@c\.us|@lid/g, '');
@@ -168,6 +182,16 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const session = stateMachine.getSession(senderNum);
       session.replyJid = replyJid;
       if (!session.name) session.name = extractName(pushName);
+
+      bumpInboundCancelCsatSchedule(session);
+      if (!isSup) {
+        const csatConsumed = await tryConsumeCsatReply({
+          session,
+          textMessage,
+          clientId: tenantConfig.slug || tenantConfig.clientSlug || 'unknown',
+        });
+        if (csatConsumed) return;
+      }
 
       // BUG-071: upsertLead só na 1ª mensagem da sessão
       if (!session.crmProcessed) {
@@ -236,15 +260,22 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         } catch (_) {}
       }
 
-      // ── Intent detection (antes de qualquer funil/LLM) ──
-      // Ordem: suporte código → suporte erro → suporte pagamento → imagem ambígua → venda → saudação → desconhecido
-      const { intent } = detectIntent({
+      // ── Intent: regras negativas → Gemini Flash → regex ──
+      const intentRes = await classifyIntent({
         text: textMessage,
         isImage,
         isAudio,
         isDocument,
         clientSlug: tenantConfig.slug,
       });
+      const intent = intentRes.intent;
+      const intentConfidence = intentRes.confidence;
+      if (intentRes.source === 'negative_rule') {
+        logger.info('Intent overridden by negative rule', {
+          ruleId: intentRes.ruleId,
+          matchedPattern: intentRes.matchedPattern,
+        });
+      }
       recordIntentDetected(intent);
       const convCustomerName =
         session.crmCache?.customerName || session.name || extractName(pushName) || null;
@@ -642,6 +673,21 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
             await sendClient(sup, supMsg);
             trackPausedChat(sup, senderNum);
           }
+        }
+        if (!isSup || supervisorTestMode.has(senderNum)) {
+          recordMessageKpi({
+            clientId: tenantConfig.slug || tenantConfig.clientSlug || 'streamzone',
+            responseTimeMs: Date.now() - handlerStartMs,
+            llmProvider: null,
+            llmSuccess: true,
+            intentDetected: intent,
+            intentConfidence,
+            resolutionType: 'human_escalated',
+            llmRoutingReason: 'complex',
+            tokensUsed: null,
+            traceId: req.traceId || null,
+            phone: senderNum,
+          });
         }
         return;
       }
@@ -1076,7 +1122,15 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           `- novo pedido/compra\n\n` +
           systemInstruction;
       }
-      const response = await llm.generate(systemInstruction, textMessage, history, config);
+      const route = routeToModel(intent, {
+        confidence: intentConfidence,
+        historyLen: history.length,
+        pendingSale: !!session.pendingSale,
+      });
+      const primaryLlm = route.model === 'gemini-flash' ? 'gemini' : 'claude';
+      const { userMessage: userMsgForLlm } = prepareLlmUserMessage(intent, textMessage, config);
+      const gen = await llm.generateWithOrder(primaryLlm, systemInstruction, userMsgForLlm, history);
+      const response = gen.text;
 
       // Passo D: Resposta da IA e captura do metadata_tag (ex: #RESUMO_VENDA) para fluxo de aprovação (#sim)
       let rawLlmResponse = response || (config.systemMessages?.unknownInput ?? 'Não compreendi. Pode reformular?');
@@ -1219,6 +1273,39 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         await sendClient(replyJid, textoLimpo);
         // Log resposta enviada ao cliente
         logConversation('out', textoLimpo, { intent, llm_used: true });
+      }
+
+      const clientSlugId = tenantConfig.slug || tenantConfig.clientSlug || 'unknown';
+      const actAsClient = !isSup || supervisorTestMode.has(senderNum);
+      if (actAsClient) {
+        const resolutionType = deriveResolutionType({
+          pausedAfter: session.paused,
+          hadEscalationTag: false,
+          llmUsed: true,
+        });
+        const traceKpi = req.traceId || `${clientSlugId}:${senderNum}:${handlerStartMs}`;
+        recordMessageKpi({
+          clientId: clientSlugId,
+          responseTimeMs: Date.now() - handlerStartMs,
+          llmProvider: gen.llm_provider,
+          llmSuccess: gen.llm_success,
+          intentDetected: intent,
+          intentConfidence,
+          resolutionType,
+          llmRoutingReason: route.reason,
+          tokensUsed: null,
+          traceId: traceKpi,
+          phone: senderNum,
+        });
+        if (resolutionType === 'bot_resolved' && textoLimpo && gen.llm_success) {
+          scheduleCsatIfResolved({
+            session,
+            sendClient,
+            replyJid,
+            traceId: traceKpi,
+            clientId: clientSlugId,
+          });
+        }
       }
 
       stateMachine.addToHistory(senderNum, 'user', textMessage);

@@ -3,6 +3,7 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const botSettings = require('../../config/bot_settings.json');
 const { CircuitBreaker } = require('./circuit-breaker');
+const { buildNegativeRulesPrefix, buildIcebergPricingBlock } = require('../llm/promptExtras');
 
 const llmBreaker = new CircuitBreaker('llm', { maxFailures: 3, resetTimeout: 60000 });
 
@@ -180,6 +181,61 @@ async function generate(systemPrompt, userMessage, history = [], clientConfig = 
   return FALLBACK_MESSAGE;
 }
 
+/**
+ * Gera resposta com ordem de providers (router 60/30/10). Fallback inverte ordem.
+ * @param {'claude'|'gemini'} primary
+ * @returns {Promise<{ text: string, llm_provider: 'claude'|'gemini'|null, llm_success: boolean, used_failover: boolean }>}
+ */
+async function generateWithOrder(primary, systemPrompt, userMessage, history = []) {
+  if (!llmBreaker.canExecute()) {
+    console.warn('[LLM] Circuit breaker ABERTO — resposta fixa');
+    return { text: FALLBACK_MESSAGE, llm_provider: null, llm_success: false, used_failover: false };
+  }
+
+  const order = primary === 'gemini' ? ['gemini', 'claude'] : ['claude', 'gemini'];
+
+  console.log('\n=== 🧠 DYNAMIC PROMPT (routed) ===');
+  console.log('Sistema (primeiros 200 chars):', systemPrompt.substring(0, 200));
+  console.log('User:', userMessage);
+  console.log('Primary:', primary);
+  console.log('=========================\n');
+
+  let usedFailover = false;
+  for (let i = 0; i < order.length; i++) {
+    const p = order[i];
+    try {
+      if (p === 'claude' && anthropicClient) {
+        const text = await tryGenerateClaude(systemPrompt, userMessage, history);
+        llmBreaker.recordSuccess();
+        console.log(`[LLM] Claude: "${text.substring(0, 80)}..."`);
+        return {
+          text,
+          llm_provider: 'claude',
+          llm_success: true,
+          used_failover: usedFailover,
+        };
+      }
+      if (p === 'gemini' && geminiModel) {
+        const text = await tryGenerateGemini(systemPrompt, userMessage, history);
+        llmBreaker.recordSuccess();
+        console.log(`[LLM] Gemini: "${text.substring(0, 80)}..."`);
+        return {
+          text,
+          llm_provider: 'gemini',
+          llm_success: true,
+          used_failover: usedFailover,
+        };
+      }
+    } catch (err) {
+      console.error(`[LLM] ${p} falhou:`, err.message);
+      usedFailover = i < order.length - 1;
+    }
+  }
+
+  llmBreaker.recordFailure();
+  return { text: FALLBACK_MESSAGE, llm_provider: null, llm_success: false, used_failover: true };
+}
+
 // ─────────────────────────────────────────────────────────────
 // buildDynamicPrompt — inalterado
 // ─────────────────────────────────────────────────────────────
@@ -196,7 +252,7 @@ function buildDynamicPrompt(
   const paymentConfig = { iban: p.iban || 'N/A', titular: p.titular || 'N/A', express: p.multicaixa || 'N/A' };
   const botName = botSettings.bot_name || 'Zara';
   const metadataTag = botSettings.metadata_tag || '#RESUMO_VENDA';
-  const pricingTableText = buildPricingTableFromSettings();
+  const pricingBlock = buildIcebergPricingBlock(clientConfig, buildPricingTableFromSettings);
 
   const counts = (stockCountsResult && stockCountsResult.counts) || {};
   const stockErro = (stockCountsResult && stockCountsResult.erro) || null;
@@ -226,7 +282,7 @@ function buildDynamicPrompt(
     ? `\n[MEMÓRIA ATIVA]: ${memoriaLines.join(' ')}\n`
     : '';
 
-  const systemInstruction = `${contextAmnesia}
+  const systemInstruction = `${buildNegativeRulesPrefix()}${contextAmnesia}
 Você é a ${botName.toUpperCase()}, a assistente virtual e concierge da StreamZone Connect.
 A sua voz é feminina, acolhedora, extremamente educada e profissional. Você não é apenas uma vendedora, você é uma facilitadora de entretenimento.
 
@@ -261,8 +317,7 @@ Diga exactamente: "Lamento imenso, mas o stock para este plano esgotou neste mom
 - Se o cliente recusar (NÃO, n, n obg) → responda: "Compreendido. Posso ajudar com outra coisa?"
 Cenário ERRO TÉCNICO (sistema de reservas): Diga: "Estou a ter uma pequena lentidão no meu sistema de reservas. Pode aguardar um momento enquanto confirmo a disponibilidade para si?"
 
-[TABELA DE PREÇOS BLINDADA]
-${pricingTableText}
+${pricingBlock}
 
 [INVENTÁRIO ATUAL (referência)]
 ${inventoryData || 'Consulte o [STOCK EM TEMPO REAL] acima para decisões de pagamento.'}
@@ -344,4 +399,12 @@ Responda directamente a estas perguntas frequentes SEM perguntar outra coisa dep
   return systemInstruction;
 }
 
-module.exports = { init, isReady, generate, buildDynamicPrompt, FALLBACK_MESSAGE, llmBreaker };
+module.exports = {
+  init,
+  isReady,
+  generate,
+  generateWithOrder,
+  buildDynamicPrompt,
+  FALLBACK_MESSAGE,
+  llmBreaker,
+};
