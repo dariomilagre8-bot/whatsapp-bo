@@ -93,7 +93,8 @@ async function resolveNumber(remoteJid, instanceName, evolutionConfig, logger = 
   // Não é LID: apenas normaliza/retorna.
   if (!parsed.isLid) {
     const raw = extractPhoneNumber(parsed.number) || digitsOnly(parsed.number);
-    return normalizePhone(raw) || raw || '';
+    const out = normalizePhone(raw) || raw || '';
+    return out;
   }
 
   const lid = parsed.number;
@@ -122,16 +123,17 @@ async function resolveNumber(remoteJid, instanceName, evolutionConfig, logger = 
       const resolved = extractPhoneNumber(String(rawId)) || digitsOnly(rawId) || '';
 
       if (resolved) {
+        const normalized = normalizePhone(resolved) || resolved;
         // Guardar no cache
         if (r) {
           try {
-            await r.set(cacheKey, resolved, 'EX', LID_CACHE_TTL_SEC);
+            await r.set(cacheKey, normalized, 'EX', LID_CACHE_TTL_SEC);
           } catch (_) {}
         } else {
-          setMemoryCached(cacheKey, resolved);
+          setMemoryCached(cacheKey, normalized);
         }
-        logger?.info?.(`[resolve-number] LID ${lid} -> ${resolved} (API)`);
-        return resolved;
+        logger?.info?.(`[resolve-number] LID ${lid} -> ${normalized} (API)`);
+        return normalized;
       }
     }
   } catch (err) {

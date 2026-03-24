@@ -142,6 +142,7 @@ class Watchdog {
     );
   }
 
+  /** INFRA (health degradado, inactividade): Don + supervisores — não confundir com escalação de cliente no webhook. */
   async alert(message) {
     if (!this.sender) {
       console.warn('[WATCHDOG] Sem sender — alerta apenas em log:');

@@ -57,7 +57,20 @@ const VENDA_OVERRIDE_PATTERNS = [
   /\b(quero|gostaria)\s+(de\s+)?(mudar|trocar|alterar)\b/i,
 ];
 
+/**
+ * Perguntas de catálogo de streaming ("Têm pacotes do Disney?") — deixar ao LLM (BUG-074).
+ * Não forçar INTENT_VENDA por "tem + pacote" quando há marca de serviço.
+ */
+function isStreamingCatalogPacoteQuestion(text) {
+  if (!text || typeof text !== 'string') return false;
+  const t = text.toLowerCase();
+  if (!/\b(tem|t[eê]m|teem|h[aá]|ha)\b/i.test(t)) return false;
+  if (!/\bpacotes?\b/i.test(t)) return false;
+  return /\b(disney|netflix|hbo|max\b|prime|paramount|apple\s*tv|discovery|crunchyroll|spotify)\b/i.test(t);
+}
+
 function matchesVendaOverride(text) {
+  if (isStreamingCatalogPacoteQuestion(text)) return false;
   return VENDA_OVERRIDE_PATTERNS.some((p) => p.test(text));
 }
 
@@ -162,6 +175,7 @@ module.exports = {
   normalizePattern,
   SUPORTE_HARD_PATTERNS,
   VENDA_OVERRIDE_PATTERNS,
+  isStreamingCatalogPacoteQuestion,
   matchesVendaOverride,
   matchesSuporteHard,
 };

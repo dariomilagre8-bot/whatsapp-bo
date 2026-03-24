@@ -71,25 +71,12 @@ O bloco CRM no webhook não verificava se a sessão já tinha processado o conta
 
 ### Fix
 
-Flag `session.crmProcessed` e `session.crmCache` na sessão em memória:
+No início do webhook (após `resolveNumber` / `senderNum`), numa única passagem por sessão:
 
-```javascript
-// Apenas na 1ª mensagem da sessão
-if (!session.crmProcessed) {
-  await upsertLead(sbClient, senderNum, ...);
-  session.crmProcessed = true;
-} else {
-  console.log(`[CRM] ${senderNum} → sessão activa, skip lead tracking`);
-}
+- `session.crmProcessed` — `upsertLead` só na 1ª mensagem.
+- `session.crmCache` — `checkClienteExistente` (Sheets) + `getClientByPhone` (Supabase) + `pa_clients` / `classifyClient`, com campos `sheetsClienteExistente` e `clientType`. O pipeline LLM só lê o cache.
 
-// Cache do resultado Supabase
-if (!session.crmCache) {
-  const result = await getClientByPhone(senderNum);
-  session.crmCache = result;
-} else {
-  // Usar cache — sem chamada à BD
-}
-```
+O log `pa_conversations.customer_name` usa `crmCache.customerName` ou `pushName` normalizado quando disponível.
 
 ### Regra Geral
 
@@ -149,6 +136,7 @@ Regex de `suporte_conta` incluía tokens ambíguos (`plano`, `meu plano`, etc.) 
 
 - **Camada 1:** `SUPORTE_HARD_PATTERNS` — só frases inequívocas de suporte (conta bloqueada, expirou, código de verificação, etc.).
 - **Camada 2:** `VENDA_OVERRIDE_PATTERNS` — perguntas de catálogo/preço; se **ambos** fazem match → preferir **VENDA** (não escalar).
+- **Excepção:** `isStreamingCatalogPacoteQuestion` — frases tipo "Têm pacotes do Disney plus?" **não** entram em override de venda → `INTENT_DESCONHECIDO` para o LLM responder.
 - Regra: **na dúvida entre venda e suporte, preferir venda** — o LLM clarifica; escalação só com alta confiança.
 
 ### Testes

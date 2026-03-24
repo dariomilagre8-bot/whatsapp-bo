@@ -165,6 +165,59 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const isSup = isSupervisorFromList(senderNum, supervisors);
       const isCmd = cleanMsg.startsWith('#');
 
+      const session = stateMachine.getSession(senderNum);
+      session.replyJid = replyJid;
+      if (!session.name) session.name = extractName(pushName);
+
+      // BUG-071: upsertLead só na 1ª mensagem da sessão
+      if (!session.crmProcessed) {
+        try {
+          const sbLead = require('../integrations/supabase').getClient();
+          if (sbLead) await upsertLead(sbLead, senderNum, session.name || pushName || null);
+          session.crmProcessed = true;
+        } catch (_) {}
+      } else {
+        console.log(`[CRM] ${senderNum} → sessão activa, skip lead tracking`);
+      }
+
+      // BUG-071/072: Sheets + Supabase + pa_clients uma vez por sessão (antes do log da conversa)
+      if (!session.crmCache) {
+        let customerName = null;
+        let isReturningCustomer = false;
+        let lastSale = null;
+        let sheetsClienteExistente = null;
+        try {
+          sheetsClienteExistente = await checkClienteExistente(config.stock, senderNum);
+        } catch (crmErr) {
+          console.error('[CRM] checkClienteExistente error:', crmErr.message);
+        }
+        try {
+          ({ customerName, isReturningCustomer, lastSale } = await getClientByPhone(senderNum));
+        } catch (sbErr) {
+          console.error('[SUPABASE] Falha ao consultar cliente:', sbErr.message);
+        }
+        let clientType = 'new_lead';
+        try {
+          const paClient = await getPaClient(senderNum);
+          clientType = classifyClient(paClient);
+        } catch (err) {
+          console.error('[CRM] Erro ao verificar pa_clients:', err.message);
+        }
+        session.crmCache = {
+          customerName,
+          isReturningCustomer,
+          lastSale,
+          sheetsClienteExistente,
+          clientType,
+        };
+        const sh = sheetsClienteExistente?.existente ? 'EXISTENTE' : 'NOVO';
+        console.log(
+          `[CRM] ${senderNum} → Sheets: ${sh} | Supabase: ${customerName || '—'} | pa_clients: ${clientType}`
+        );
+      } else {
+        console.log(`[CRM] ${senderNum} → sessão activa (cache CRM)`);
+      }
+
       // Helper: log de conversa no Supabase (non-blocking, nunca falha)
       function logConversation(direction, message, extraFields = {}) {
         try {
@@ -193,9 +246,11 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         clientSlug: tenantConfig.slug,
       });
       recordIntentDetected(intent);
+      const convCustomerName =
+        session.crmCache?.customerName || session.name || extractName(pushName) || null;
       logConversation('in', _msgToLog, {
         intent,
-        customer_name: extractName(pushName) || null,
+        customer_name: convCustomerName,
       });
 
       // ── Interceptador global: #sim / #nao incompletos NUNCA chegam à Zara ──
@@ -491,21 +546,6 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
           }
           return;
         }
-      }
-
-      const session = stateMachine.getSession(senderNum);
-      session.replyJid = replyJid;
-      if (!session.name) session.name = extractName(pushName);
-
-      // CRM: registar/actualizar lead (non-blocking) — BUG-071: apenas na 1ª mensagem da sessão
-      if (!session.crmProcessed) {
-        try {
-          const sbClient = require('../integrations/supabase').getClient();
-          await upsertLead(sbClient, senderNum, session.name || pushName || null);
-          session.crmProcessed = true;
-        } catch (_) {}
-      } else {
-        console.log(`[CRM] ${senderNum} → sessão activa, skip lead tracking`);
       }
 
       // BUG-056: qualifying questions antes de escalar ao supervisor (SUPORTE_ERRO / SUPORTE_CODIGO)
@@ -970,41 +1010,24 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       const inventoryString = await getInventoryFn();
       const stockCountsResult = await getStockCountsForPrompt(config.stock);
 
-      // Passo A+: Reconhecimento de cliente existente (Sheets primeiro, Supabase como fallback)
+      // Passo A+: CRM já carregado uma vez por sessão (início do webhook — BUG-071)
       let diasRestantes = null;
       let customerName = null;
       let isReturningCustomer = false;
-
-      // 1) Sheets + leads (CRM) — usa checkClienteExistente
-      try {
-        const infoExistente = await checkClienteExistente(config.stock, senderNum);
-        if (infoExistente && infoExistente.existente) {
-          isReturningCustomer = true;
-          if (infoExistente.dataExpiracao instanceof Date && !isNaN(infoExistente.dataExpiracao)) {
-            diasRestantes = Math.ceil(
-              (infoExistente.dataExpiracao.getTime() - Date.now()) / (1000 * 60 * 60 * 24)
-            );
-          }
-        }
-      } catch (crmErr) {
-        console.error('[CRM] checkClienteExistente error:', crmErr.message);
-      }
-
-      // 2) Supabase (clientes + vendas) — BUG-071: cachear resultado na sessão (só consultar 1x)
-      customerName = null;
       let lastSale = null;
-      if (!session.crmCache) {
-        try {
-          ({ customerName, isReturningCustomer, lastSale } = await getClientByPhone(senderNum));
-          session.crmCache = { customerName, isReturningCustomer, lastSale };
-        } catch (sbErr) {
-          console.error('[SUPABASE] Falha ao consultar cliente:', sbErr.message);
+
+      const crm = session.crmCache || {};
+      customerName = crm.customerName;
+      isReturningCustomer = !!crm.isReturningCustomer;
+      lastSale = crm.lastSale || null;
+      const infoExistente = crm.sheetsClienteExistente;
+      if (infoExistente && infoExistente.existente) {
+        isReturningCustomer = true;
+        if (infoExistente.dataExpiracao instanceof Date && !isNaN(infoExistente.dataExpiracao)) {
+          diasRestantes = Math.ceil(
+            (infoExistente.dataExpiracao.getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+          );
         }
-        console.log(
-          `[CRM] ${senderNum} → cliente: ${customerName || 'NOVO'} | retornante: ${isReturningCustomer}`
-        );
-      } else {
-        ({ customerName, isReturningCustomer, lastSale } = session.crmCache);
       }
 
       if (lastSale?.data_expiracao) {
@@ -1017,16 +1040,8 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
         }
       }
 
-      // ── CRM pa_clients: classificar tipo de cliente (non-blocking) ──
-      let clientType = 'new_lead';
-      try {
-        const paClient = await getPaClient(senderNum);
-        clientType = classifyClient(paClient);
-      } catch (err) {
-        console.error('[CRM] Erro ao verificar pa_clients:', err.message);
-        // Continua como new_lead — não bloqueia o bot
-      }
-      console.log(`[CRM] ${senderNum} → ${clientType}`);
+      const clientType = crm.clientType || 'new_lead';
+      console.log(`[CRM] ${senderNum} → ${clientType} (sessão)`);
 
       // Passo B: Últimas 5 mensagens (memória)
       const history = (session.history || []).slice(-5);

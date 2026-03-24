@@ -116,10 +116,10 @@
 |-----|----------|-----------|-----|
 | BUG-046 | scripts/backup-env.sh | Perda de env vars após rebuild | `npm run backup` antes de deploy |
 | BUG-067 | src/engine/intentDetector.js | `\b` regex falha com acentos PT (á, ã, é) | `normalizePattern()` usa lookahead/lookbehind Unicode-aware (U+00C0–U+024F) |
-| BUG-071 | src/routes/webhook.js | CRM repetia `upsertLead` + `getClientByPhone` em cada mensagem da sessão | Flag `session.crmProcessed` e `session.crmCache` — executa só na 1ª mensagem |
-| BUG-072 | src/utils/phone.js | Números LID `0XXXXXXXXX` (10 díg, começa 0) não normalizados → mismatch Sheets | `extractPhoneNumber` suporta 0→244 (Angola LID) e 351 (Portugal); log de normalização em `checkClienteExistente` |
+| BUG-071 | src/routes/webhook.js | CRM repetia `upsertLead` + `getClientByPhone` + Sheets em cada mensagem | No início do handler: `crmProcessed` (lead) + `crmCache` com Sheets, Supabase e `pa_clients` — pipeline LLM só lê cache |
+| BUG-072 | src/utils/phone.js + `resolveNumber` | LID / `08…` não é telefone real; mismatch Sheets | `extractPhoneNumber`: só `09…`→244; LID resolvido via Evolution `findContacts` e `normalizePhone` no valor final |
 | BUG-073 | src/routes/webhook.js | Intent detection recalculava `promptVariant` em cada mensagem → prompt alternava | `session.promptVariant` inicia em `default`; só `suporte_conta` (alta confiança) força `critical_rules` |
-| BUG-074 | src/engine/intentDetector.js | "Tem plano de 3 ecrãs?" e similares disparavam `suporte_conta` por regex ampla em "plano" | `SUPORTE_HARD_PATTERNS` + `VENDA_OVERRIDE_PATTERNS`; na ambiguidade preferir VENDA (não escalar) |
+| BUG-074 | src/engine/intentDetector.js | "Tem plano de 3 ecrãs?" e similares disparavam `suporte_conta` por regex ampla em "plano" | `SUPORTE_HARD_PATTERNS` + `VENDA_OVERRIDE_PATTERNS`; na ambiguidade preferir VENDA; catálogo streaming ("pacotes Disney…") → `INTENT_DESCONHECIDO` (LLM) via `isStreamingCatalogPacoteQuestion` |
 
 ## CRM (pa_clients)
 
@@ -127,7 +127,7 @@
 - `engine/lib/crm.js` — `getClientByPhone(phone)` + `classifyClient(client)`.
 - `engine/lib/supabase.js` — proxy leve que delega para `src/integrations/supabase.js` (cliente já inicializado).
 - Classificações possíveis: `new_lead`, `active`, `expired`, `cancelled`, `trial`.
-- Integrado no `src/routes/webhook.js` — classifica e loga `[CRM] <phone> → <tipo>` antes de cada chamada ao `generate()`.
+- Integrado no `src/routes/webhook.js` — classifica na carga CRM única por sessão; log `[CRM]` no LLM usa cache. `pa_conversations.customer_name` preenchido quando há nome no CRM ou `pushName` (migração `docs/migrations/20260324_pa_conversations_customer_name.sql`).
 - Não bloqueia o bot em caso de erro (silencioso, continua como `new_lead`).
 - 12 testes unitários em `tests/crm.test.js` (mocks do Supabase — zero chamadas reais).
 
