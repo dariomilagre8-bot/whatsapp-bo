@@ -29,6 +29,13 @@
 - Evolution: 3 falhas → open (60s reset)
 - Rate limit: 5 msg/30s por número
 
+### Message Queue (BullMQ)
+- Queue: `pa-messages` | Worker: concurrency 1 | Retry: 3x (1s → 5s → 30s backoff custom)
+- DLQ: `pa-dead-letters` | Mensagens falhadas 3x → DLQ + alerta WhatsApp ao Don (244941713216)
+- Activado se `REDIS_URL` definido; sem Redis → modo inline (backward compat)
+- Monitorizar: `redis-cli LLEN bull:pa-dead-letters:wait`
+- Endpoint readiness: GET `/ready` → `{ status: 'ok'|'degraded', redis, supabase, queue }`
+
 ---
 
 
@@ -109,6 +116,44 @@
 - GET `/api/health` — Estado dos serviços.
 - GET `/api/health/detailed` — Health expandido (Redis, última mensagem, sessões, intentStats).
 - GET `/api/metrics` — Métricas por cliente (formato Prometheus).
+
+## Arquitectura Message Queue
+
+### Fluxo completo
+```
+POST /webhook
+  └─ webhook-router.js
+       ├─ res.status(200).json({ok:true})   ← imediato (<50ms)
+       ├─ dedup (Redis SETNX)
+       ├─ rate-limit check
+       └─ queue.add('process-message', payload)
+            └─ BullMQ Worker (concurrency:1)
+                 ├─ entry.handler(mockReq, mockRes)   ← pipeline LLM completo
+                 ├─ retry: 1s → 5s → 30s (3 tentativas)
+                 └─ falha final → DLQ + notifyDon(244941713216)
+```
+
+### Retry e DLQ
+- Backoff: tentativa 1 → 1000ms | tentativa 2 → 5000ms | tentativa 3 → 30000ms
+- Após 3 falhas: job vai para `pa-dead-letters` com `{ originalMessage, errorStack, timestamp, clientId }`
+- Re-processar manualmente: inspecionar DLQ via Redis CLI ou dashboard Bull
+
+### Variáveis de ambiente necessárias
+| Var | Descrição |
+|-----|-----------|
+| `REDIS_URL` | `redis://:password@host:6379` |
+| `ALERT_INSTANCE_NAME` | Instância Evolution para alertas (ex: ZapPrincipal) |
+| `ALERT_PHONE` | Telefone do Don (default: 244941713216) |
+
+### Monitorizar
+```bash
+redis-cli LLEN bull:pa-dead-letters:wait      # jobs na DLQ
+redis-cli LLEN bull:pa-messages:wait          # jobs pendentes
+redis-cli LLEN bull:pa-messages:active        # job a processar agora
+redis-cli LLEN bull:pa-messages:failed        # falhas totais
+```
+
+---
 
 ## Bugs Conhecidos / Fixes
 

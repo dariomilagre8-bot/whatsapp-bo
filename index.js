@@ -146,7 +146,22 @@ for (const [, entry] of Object.entries(clientRouter.clientes)) {
     : '✅ Clientes clients/: (nenhum extra)');
 })();
 
-const webhookRouter = createWebhookRouter(registry, getRedis());
+// ── BullMQ: inicializar queue e worker se REDIS_URL disponível ──
+let paMessageQueue = null;
+try {
+  if (process.env.REDIS_URL) {
+    const { createQueue, createWorker } = require('./engine/queue/messageQueue');
+    paMessageQueue = createQueue();
+    createWorker(registry);
+    console.log('✅ BullMQ queue + worker iniciados (pa-messages)');
+  } else {
+    console.warn('⚠️  REDIS_URL não definido — webhook processado inline (sem queue)');
+  }
+} catch (queueErr) {
+  console.error('[QUEUE] Falha ao iniciar BullMQ:', queueErr.message, '— modo inline activado');
+}
+
+const webhookRouter = createWebhookRouter(registry, getRedis(), paMessageQueue);
 
 // Middleware para registar actividade no watchdog (tracking inactividade)
 function webhookActivityMiddleware(req, res, next) {
@@ -168,6 +183,15 @@ app.get('/api/metrics', (req, res) => {
 });
 app.get('/reconnect/:instanceId', reconnectHandler);
 app.get('/connect/braulio', connectBraulioHandler);
+
+app.get('/ready', async (req, res) => {
+  const { getReadyStatus } = require('./engine/health/readyCheck');
+  const { getWorker } = require('./engine/queue/messageQueue');
+  const result = await getReadyStatus(getWorker);
+  const statusCode = result.status === 'ok' ? 200 : 503;
+  if (res.headersSent) return;
+  res.status(statusCode).json(result);
+});
 
 app.get('/health', async (req, res) => {
   const services = { supabase: 'unknown', evolution: 'unknown' };

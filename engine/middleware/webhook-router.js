@@ -1,4 +1,5 @@
 // engine/middleware/webhook-router.js — POST /webhook → 200 imediato, routing por instanceName, dedup, trace_id
+// Se queue fornecida: serializa payload → queue.add (BullMQ). Sem queue: processa inline (backward compat).
 
 const { isDuplicate } = require('../lib/dedup');
 const logger = require('../lib/logger');
@@ -9,11 +10,12 @@ const webhookRateLimiter = new RateLimiter({ maxRequests: 5, windowMs: 30000 });
 setInterval(() => webhookRateLimiter.cleanup(), 300000);
 
 /**
- * Cria o middleware do webhook: responde 200 em <50ms, depois processa em background.
+ * Cria o middleware do webhook: responde 200 em <50ms, depois processa via queue (ou inline).
  * @param {Object} registry - Mapa instanceName -> { config, handler }
  * @param {Object} [redis] - Cliente Redis opcional (dedup)
+ * @param {Object} [messageQueue] - BullMQ queue opcional; se presente, enfileira em vez de processar inline
  */
-function createWebhookRouter(registry, redis = null) {
+function createWebhookRouter(registry, redis = null, messageQueue = null) {
   return async function webhookRouter(req, res) {
     res.status(200).json({ ok: true });
 
@@ -43,6 +45,19 @@ function createWebhookRouter(registry, redis = null) {
     }
 
     const traceId = require('crypto').randomUUID();
+
+    // ── Modo queue (BullMQ) ──────────────────────────────────────────────────
+    if (messageQueue) {
+      try {
+        await messageQueue.add('process-message', { body, instanceName, traceId, clientSlug });
+        logger.info('webhook: mensagem enfileirada', { traceId, clientSlug, instanceName });
+      } catch (qErr) {
+        logger.error('webhook: falha ao enfileirar mensagem', { traceId, clientSlug, error: qErr.message });
+      }
+      return;
+    }
+
+    // ── Modo inline (backward compat / sem Redis) ────────────────────────────
     req.traceId = traceId;
     req.clientSlug = clientSlug;
     req.clientConfig = config;
