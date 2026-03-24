@@ -20,9 +20,11 @@ jest.mock('@google/generative-ai', () => ({
 
 describe('llm failover', () => {
   let logSpy;
+  let errSpy;
 
   beforeAll(() => {
     logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     process.env.ANTHROPIC_API_KEY = 'test-anthropic';
     process.env.GEMINI_API_KEY = 'test-gemini';
     const llm = require('../../lib/llm');
@@ -31,6 +33,7 @@ describe('llm failover', () => {
 
   afterAll(() => {
     logSpy.mockRestore();
+    errSpy.mockRestore();
   });
 
   it('primário falha → fallback responde e regista Gemini nos logs', async () => {
