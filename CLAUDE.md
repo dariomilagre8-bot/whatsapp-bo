@@ -45,7 +45,24 @@
 - **engine/** — Código genérico (ZERO referências a clientes). Inclui: lib (logger, state-machine, matcher, validator, handlers, llm, sender, dedup, metrics, cron-manager), **outreach/** (templates + CLI de preparação manual), middleware (health, webhook-router), evals (personas, simulator, judge), scripts, templates.
 - **clients/** — Config por cliente. Registados: **streamzone** (Zara / StreamZone), **luna** (Luna / PA comercial, instância `ZapPrincipal`), **demo** (Bia / Loja Demo, instância `demo-moda`). Pastas `clients/<slug>/config.js` são auto-registadas em `index.js` (excepto `streamzone`, já carregado como primário). Opcionalmente `prompts.js` e `validators.js`.
 - **services/** — Microserviços (watchtower: BI em scaffold).
-- **tests/** — engine.test.js (59 testes StreamZone) + tests/engine/* (dedup, logger, metrics, config-loader, sender) + engine/tests/unit/outreach/* (templates, follow-up, CLI).
+- **tests/** — engine.test.js (59 testes StreamZone) + tests/engine/* (dedup, logger, metrics, config-loader, sender) + engine/tests/unit/outreach/* + engine/tests/unit/renewal/* (mensagens, datas, Supabase, sender, CLI).
+
+## Renovação pa_clients (cron + CLI)
+
+- **Objectivo:** avisos automáticos de subscrição com base em `pa_clients.expiry_date` (Supabase pa-engine), envio via Evolution (`EVOLUTION_API_URL` + `apikey`), **5 s entre cada mensagem**, continuar o lote se um envio falhar.
+- **Código:** `engine/renewal/` — `renewalMessages.js` (templates AVISO_3_DIAS / AVISO_DIA / EXPIRADO), `renewalDates.js` (janela **dia civil UTC** = hoje + N dias coincide com a data UTC de `expiry_date`), `renewalCheck.js`, `renewalSender.js`, `renewalCron.js`, `renewalCli.js`.
+- **Crons (Africa/Luanda, activo se `RENEWAL_CRON_ENABLED=true`):** às **09:00** — `getClientsForRenewal(3)` → `AVISO_3_DIAS`, depois `getClientsForRenewal(0)` → `AVISO_DIA`; às **10:00** — `getExpiredClients()` → `EXPIRADO`, depois `markClientStatus(phone, 'expired')` só para envios com sucesso.
+- **Registo:** `index.js` junto ao Daily Brief. **Distinto** de `RENEWAL_ENABLED` (`src/renewal/renewal-cron.js`, Google Sheets): não activar os dois em simultâneo para o mesmo público.
+- **Don / testes:** por defeito `RENEWAL_SKIP_PHONE=244941713216` (nunca recebe aviso de renovação nos crons). Ajustável por CSV em `RENEWAL_SKIP_PHONE`.
+- **Pós-lote:** `notifyDonRenewalSummary` em `engine/alerts/notifyDon.js` — `[PA RENOVAÇÃO] Enviados N avisos (TEMPLATE). Falhas: F.` + nomes se `F>0`.
+- **`.env`:** `RENEWAL_CRON_ENABLED`, `RENEWAL_INSTANCE_NAME` (instância Evolution de envio), opcional `RENEWAL_SKIP_PHONE`.
+
+| Comando | Efeito |
+|--------|--------|
+| `node renewal.js --check` | Lista cohortes AVISO_3_DIAS / AVISO_DIA / EXPIRADO para o dia actual |
+| `node renewal.js --dry-run` | Simula envio (log `[dry-run]`, sem Evolution nem notify Don) |
+| `node renewal.js --send-now --template=AVISO_3_DIAS` | Envia já o lote correspondente ao template |
+| `node renewal.js --mark-renewed --phone=244…` | `UPDATE pa_clients` → `status=renewed` |
 
 ## Outreach semi-automatizado (preparação + registo Supabase)
 
@@ -83,8 +100,9 @@
 
 | Comando | Descrição |
 |--------|-----------|
-| `npm test` | Todos os testes (StreamZone + engine, incl. sender + intent v2/regression + outreach) |
+| `npm test` | Todos os testes (StreamZone + engine, incl. sender + intent v2/regression + outreach + renewal) |
 | `node outreach.js` | CLI de outreach (preparar mensagens; envio manual — ver secção Outreach) |
+| `node renewal.js` | CLI de renovação pa_clients (check / dry-run / send-now / mark-renewed) |
 | `npm run test:intent` | Apenas testes de intent (v2, regressão, suporte, saudação) |
 | `npm run eval` | Testes adversariais (4 personas) |
 | `npm run deploy` | Deploy produção (scripts/deploy.sh) |

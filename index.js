@@ -373,6 +373,12 @@ if (process.env.DAILY_BRIEF_ENABLED === 'true') {
   briefCron.start();
 }
 
+// ── Renovação pa_clients (engine) — distinto de RENEWAL_ENABLED (Sheets) ──
+if (process.env.RENEWAL_CRON_ENABLED === 'true') {
+  const renewalCron = require('./engine/renewal/renewalCron');
+  renewalCron.start();
+}
+
 // ── Start ──
 const PORT = process.env.PORT || 80;
 app.listen(PORT, () => {
@@ -385,6 +391,7 @@ app.listen(PORT, () => {
   console.log(`📨 Follow-up CRM: ${process.env.FOLLOWUP_ENABLED === 'true' ? 'activado' : 'desactivado'}`);
   console.log(`🔄 Renovação automática: ${process.env.RENEWAL_ENABLED === 'true' ? 'activado' : 'desactivado'}`);
   console.log(`📊 Daily Brief: ${process.env.DAILY_BRIEF_ENABLED === 'true' ? 'activado (07:00 Angola)' : 'desactivado'}`);
+  console.log(`🔔 Renovação (pa_clients): ${process.env.RENEWAL_CRON_ENABLED === 'true' ? 'activado (09:00/10:00 Angola)' : 'desactivado'}`);
   console.log(`✅ Pronto!\n`);
 });
 // deploy-check Sun Mar 15 15:15:59 GMT 2026

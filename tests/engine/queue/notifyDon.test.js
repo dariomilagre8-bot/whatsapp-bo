@@ -26,7 +26,7 @@ function assert(condition, msg) {
 
 console.log('\n🧪 TESTES — engine/alerts/notifyDon\n');
 
-const { notifyDon, buildAlertMessage } = require('../../../engine/alerts/notifyDon');
+const { notifyDon, buildAlertMessage, buildRenewalSummaryMessage } = require('../../../engine/alerts/notifyDon');
 
 // ── Setup env ────────────────────────────────────────────────────────────────
 const savedEnv = {};
@@ -58,6 +58,13 @@ tests.push(test('buildAlertMessage: trunca erros longos (>300 chars)', () => {
   const longError = 'A'.repeat(400);
   const msg = buildAlertMessage('demo', longError);
   assert(msg.length < 500, 'mensagem deve ser truncada');
+}));
+
+tests.push(test('buildRenewalSummaryMessage: formato [PA RENOVAÇÃO] e falhas', () => {
+  const a = buildRenewalSummaryMessage({ templateKey: 'AVISO_3_DIAS', sent: 3, failed: 0, failedNames: [] });
+  assert(a.includes('[PA RENOVAÇÃO]') && a.includes('AVISO_3_DIAS') && a.includes('Falhas: 0'), a);
+  const b = buildRenewalSummaryMessage({ templateKey: 'AVISO_DIA', sent: 1, failed: 1, failedNames: ['X'] });
+  assert(b.includes('Falhas: 1') && b.includes('Falharam: X'), b);
 }));
 
 tests.push(test('notifyDon: devolve false se ALERT_INSTANCE_NAME não definido', async () => {

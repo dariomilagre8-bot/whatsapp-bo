@@ -15,7 +15,7 @@ const DEFAULT_ALERT_PHONE = '244941713216';
  * @param {string} errorMessage - Mensagem de erro resumida
  * @returns {Promise<boolean>} true se enviado com sucesso
  */
-async function notifyDon(clientSlug, errorMessage) {
+async function sendEvolutionTextToSupervisor(messageText) {
   const alertPhone = process.env.ALERT_PHONE || DEFAULT_ALERT_PHONE;
   const instanceName = process.env.ALERT_INSTANCE_NAME;
   const apiUrl = process.env.EVOLUTION_API_URL;
@@ -26,8 +26,6 @@ async function notifyDon(clientSlug, errorMessage) {
     return false;
   }
 
-  const safeError = String(errorMessage || 'erro desconhecido').slice(0, 300);
-  const message = `[PA ALERTA] Bot ${clientSlug} - Mensagem falhou 3x: ${safeError}`;
   const jid = alertPhone.includes('@') ? alertPhone : `${alertPhone}@s.whatsapp.net`;
 
   try {
@@ -39,7 +37,7 @@ async function notifyDon(clientSlug, errorMessage) {
           'Content-Type': 'application/json',
           apikey: apiKey,
         },
-        body: JSON.stringify({ number: jid, text: message }),
+        body: JSON.stringify({ number: jid, text: messageText }),
         signal: AbortSignal.timeout(8000),
       }
     );
@@ -50,12 +48,20 @@ async function notifyDon(clientSlug, errorMessage) {
       return false;
     }
 
-    logger.info('notifyDon: alerta enviado com sucesso', { alertPhone, clientSlug });
+    logger.info('notifyDon: mensagem enviada ao supervisor', { alertPhone });
     return true;
   } catch (err) {
     logger.error('notifyDon: erro de rede', { error: err.message });
     return false;
   }
+}
+
+async function notifyDon(clientSlug, errorMessage) {
+  const safeError = String(errorMessage || 'erro desconhecido').slice(0, 300);
+  const message = `[PA ALERTA] Bot ${clientSlug} - Mensagem falhou 3x: ${safeError}`;
+  const ok = await sendEvolutionTextToSupervisor(message);
+  if (ok) logger.info('notifyDon: alerta enviado com sucesso', { clientSlug });
+  return ok;
 }
 
 /**
@@ -69,4 +75,22 @@ function buildAlertMessage(clientSlug, errorMessage) {
   return `[PA ALERTA] Bot ${clientSlug} - Mensagem falhou 3x: ${safeError}`;
 }
 
-module.exports = { notifyDon, buildAlertMessage };
+function buildRenewalSummaryMessage({ templateKey, sent, failed, failedNames }) {
+  let msg = `[PA RENOVAÇÃO] Enviados ${sent} avisos (${templateKey}). Falhas: ${failed}.`;
+  if (failed > 0 && failedNames && failedNames.length) {
+    msg += ` Falharam: ${failedNames.join(', ')}.`;
+  }
+  return msg;
+}
+
+async function notifyDonRenewalSummary(opts) {
+  return sendEvolutionTextToSupervisor(buildRenewalSummaryMessage(opts));
+}
+
+module.exports = {
+  notifyDon,
+  buildAlertMessage,
+  buildRenewalSummaryMessage,
+  notifyDonRenewalSummary,
+  sendEvolutionTextToSupervisor,
+};
