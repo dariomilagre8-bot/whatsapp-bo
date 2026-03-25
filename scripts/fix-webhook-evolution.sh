@@ -9,7 +9,7 @@
 set -e
 
 EVOLUTION_API_URL="${EVOLUTION_API_URL:-https://whatsapp-evolution-api.oxuzyt.easypanel.host}"
-EVOLUTION_API_KEY="${EVOLUTION_API_KEY:-429683C4C977415CAAFCCE10F7D57E11}"
+: "${EVOLUTION_API_KEY:?Defina EVOLUTION_API_KEY (mesma que AUTHENTICATION_API_KEY no Easypanel)}"
 # Ambas as instâncias: produção (Bráulio) + demo (Don)
 INSTANCES=("Streamzone Braulio" "Zara-Teste")
 
