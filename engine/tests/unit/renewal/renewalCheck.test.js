@@ -124,6 +124,26 @@ tests.push(test('exclui RENEWAL_SKIP_PHONE (Don)', async () => {
   assert(list.length === 1 && list[0].phone === '244911111111', 'Don excluído');
 }));
 
+tests.push(test('RENEWAL_SKIP_PHONE vazio não exclui ninguém', async () => {
+  process.env.RENEWAL_SKIP_PHONE = '';
+  const RealDate = Date;
+  global.Date = class extends RealDate {
+    constructor(...a) {
+      if (a.length === 0) super('2026-03-31T10:00:00.000Z');
+      else super(...a);
+    }
+    static now() { return new RealDate('2026-03-31T10:00:00.000Z').getTime(); }
+  };
+  mockRows = [
+    { phone: '244941713216', name: 'Don', status: 'active', expiry_date: '2026-03-31T23:59:59.000Z' },
+  ];
+  const { getClientsForRenewal } = freshRenewalCheck();
+  const list = await getClientsForRenewal(0);
+  global.Date = RealDate;
+  delete process.env.RENEWAL_SKIP_PHONE;
+  assert(list.length === 1 && list[0].phone === '244941713216', 'Don incluído com skip vazio');
+}));
+
 (async () => {
   for (const t of tests) await t();
   delete require.cache[require.resolve('../../../lib/supabase')];

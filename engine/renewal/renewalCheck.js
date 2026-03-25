@@ -8,7 +8,11 @@ const { matchesRenewalOffset } = require('./renewalDates');
 const DEFAULT_SKIP = '244941713216';
 
 function skipPhonesSet() {
-  const raw = process.env.RENEWAL_SKIP_PHONE || DEFAULT_SKIP;
+  // Definido no .env como vazio => nenhum skip (útil para testes). Só omissão usa o default.
+  const raw =
+    process.env.RENEWAL_SKIP_PHONE !== undefined
+      ? String(process.env.RENEWAL_SKIP_PHONE)
+      : DEFAULT_SKIP;
   return new Set(
     String(raw)
       .split(',')
