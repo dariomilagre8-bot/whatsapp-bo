@@ -56,8 +56,8 @@
 - **Crons (Africa/Luanda, activo se `RENEWAL_CRON_ENABLED=true`):** às **09:00** — `getClientsForRenewal(3)` → `AVISO_3_DIAS`, depois `getClientsForRenewal(0)` → `AVISO_DIA`; às **10:00** — `getExpiredClients()` → `EXPIRADO`, depois `markClientStatus(phone, 'expired')` só para envios com sucesso.
 - **Registo:** `index.js` junto ao Daily Brief. **Distinto** de `RENEWAL_ENABLED` (`src/renewal/renewal-cron.js`, Google Sheets): não activar os dois em simultâneo para o mesmo público.
 - **Don / testes:** por defeito `RENEWAL_SKIP_PHONE=244941713216` (nunca recebe aviso de renovação nos crons). Ajustável por CSV em `RENEWAL_SKIP_PHONE`.
-- **Pós-lote:** `notifyDonRenewalSummary` em `engine/alerts/notifyDon.js` — `[PA RENOVAÇÃO] Enviados N avisos (TEMPLATE). Falhas: F.` + nomes se `F>0`.
-- **`.env`:** `RENEWAL_CRON_ENABLED`, `RENEWAL_INSTANCE_NAME` (instância Evolution de envio), opcional `RENEWAL_SKIP_PHONE`.
+- **Pós-lote:** `notifyDonRenewalSummary` em `engine/alerts/notifyDon.js` — `[PA RENOVAÇÃO] Enviados N avisos (TEMPLATE). Falhas: F.` + nomes se `F>0`; destinos: `RENEWAL_NOTIFY_PHONES` (CSV, ex.: Don + Bráulio StreamZone), **3 s** entre cada envio; se omitido → só `ALERT_PHONE`.
+- **`.env`:** `RENEWAL_CRON_ENABLED`, `RENEWAL_INSTANCE_NAME` (instância Evolution de envio), opcional `RENEWAL_SKIP_PHONE`, opcional `RENEWAL_NOTIFY_PHONES` (resumo pós-batch).
 
 | Comando | Efeito |
 |--------|--------|

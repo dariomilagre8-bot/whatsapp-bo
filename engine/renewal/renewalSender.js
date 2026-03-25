@@ -1,4 +1,4 @@
-// engine/renewal/renewalSender.js — Envio Evolution + resumo ao Don
+// engine/renewal/renewalSender.js — Envio Evolution + resumo (RENEWAL_NOTIFY_PHONES / ALERT_PHONE)
 
 'use strict';
 

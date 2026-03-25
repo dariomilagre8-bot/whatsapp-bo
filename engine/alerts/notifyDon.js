@@ -1,5 +1,5 @@
-// engine/alerts/notifyDon.js — Alerta WhatsApp para supervisor (Don) quando job falha 3x
-// Config: ALERT_PHONE (default 244941713216), ALERT_INSTANCE_NAME, EVOLUTION_API_URL, EVOLUTION_API_KEY
+// engine/alerts/notifyDon.js — Alerta supervisor (Don) + resumo renovação multi-destino
+// Config: ALERT_PHONE, RENEWAL_NOTIFY_PHONES, ALERT_INSTANCE_NAME, EVOLUTION_API_URL, EVOLUTION_API_KEY
 
 'use strict';
 
@@ -8,25 +8,37 @@ const { createLogger } = require('../lib/logger');
 const logger = createLogger(null, 'engine', 'notify-don');
 
 const DEFAULT_ALERT_PHONE = '244941713216';
+const RENEWAL_NOTIFY_DELAY_MS = 3000;
 
-/**
- * Envia alerta WhatsApp ao supervisor (Don) via Evolution API.
- * @param {string} clientSlug - Slug do cliente onde ocorreu a falha
- * @param {string} errorMessage - Mensagem de erro resumida
- * @returns {Promise<boolean>} true se enviado com sucesso
- */
-async function sendEvolutionTextToSupervisor(messageText) {
-  const alertPhone = process.env.ALERT_PHONE || DEFAULT_ALERT_PHONE;
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Lista de números para o resumo [PA RENOVAÇÃO] após cada batch. Fallback: ALERT_PHONE. */
+function getRenewalNotifyPhoneList() {
+  const raw = process.env.RENEWAL_NOTIFY_PHONES;
+  if (raw !== undefined && raw !== null) {
+    const list = String(raw)
+      .split(',')
+      .map((s) => s.replace(/\D/g, ''))
+      .filter(Boolean);
+    if (list.length > 0) return list;
+  }
+  return [process.env.ALERT_PHONE || DEFAULT_ALERT_PHONE];
+}
+
+async function sendEvolutionTextToNumber(rawPhone, messageText) {
   const instanceName = process.env.ALERT_INSTANCE_NAME;
   const apiUrl = process.env.EVOLUTION_API_URL;
   const apiKey = process.env.EVOLUTION_API_KEY;
 
   if (!instanceName || !apiUrl || !apiKey) {
-    logger.warn('notifyDon: variáveis de ambiente em falta (ALERT_INSTANCE_NAME / EVOLUTION_API_URL / EVOLUTION_API_KEY)');
+    logger.warn('notifyDon: variáveis em falta (ALERT_INSTANCE_NAME / EVOLUTION_API_URL / EVOLUTION_API_KEY)');
     return false;
   }
 
-  const jid = alertPhone.includes('@') ? alertPhone : `${alertPhone}@s.whatsapp.net`;
+  const digits = String(rawPhone || '').replace(/\D/g, '');
+  const jid = String(rawPhone || '').includes('@') ? rawPhone : `${digits}@s.whatsapp.net`;
 
   try {
     const res = await fetch(
@@ -48,12 +60,17 @@ async function sendEvolutionTextToSupervisor(messageText) {
       return false;
     }
 
-    logger.info('notifyDon: mensagem enviada ao supervisor', { alertPhone });
+    logger.info('notifyDon: mensagem enviada ao supervisor', { alertPhone: digits });
     return true;
   } catch (err) {
     logger.error('notifyDon: erro de rede', { error: err.message });
     return false;
   }
+}
+
+async function sendEvolutionTextToSupervisor(messageText) {
+  const alertPhone = process.env.ALERT_PHONE || DEFAULT_ALERT_PHONE;
+  return sendEvolutionTextToNumber(alertPhone, messageText);
 }
 
 async function notifyDon(clientSlug, errorMessage) {
@@ -64,12 +81,6 @@ async function notifyDon(clientSlug, errorMessage) {
   return ok;
 }
 
-/**
- * Gera a mensagem de alerta sem enviar (útil para testes).
- * @param {string} clientSlug
- * @param {string} errorMessage
- * @returns {string}
- */
 function buildAlertMessage(clientSlug, errorMessage) {
   const safeError = String(errorMessage || 'erro desconhecido').slice(0, 300);
   return `[PA ALERTA] Bot ${clientSlug} - Mensagem falhou 3x: ${safeError}`;
@@ -84,7 +95,15 @@ function buildRenewalSummaryMessage({ templateKey, sent, failed, failedNames }) 
 }
 
 async function notifyDonRenewalSummary(opts) {
-  return sendEvolutionTextToSupervisor(buildRenewalSummaryMessage(opts));
+  const msg = buildRenewalSummaryMessage(opts);
+  const phones = getRenewalNotifyPhoneList();
+  let allOk = true;
+  for (let i = 0; i < phones.length; i++) {
+    if (i > 0) await sleep(RENEWAL_NOTIFY_DELAY_MS);
+    const ok = await sendEvolutionTextToNumber(phones[i], msg);
+    if (!ok) allOk = false;
+  }
+  return allOk;
 }
 
 module.exports = {
@@ -93,4 +112,5 @@ module.exports = {
   buildRenewalSummaryMessage,
   notifyDonRenewalSummary,
   sendEvolutionTextToSupervisor,
+  getRenewalNotifyPhoneList,
 };

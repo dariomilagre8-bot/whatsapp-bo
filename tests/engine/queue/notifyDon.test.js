@@ -26,7 +26,13 @@ function assert(condition, msg) {
 
 console.log('\n🧪 TESTES — engine/alerts/notifyDon\n');
 
-const { notifyDon, buildAlertMessage, buildRenewalSummaryMessage } = require('../../../engine/alerts/notifyDon');
+const notifyDonPath = require.resolve('../../../engine/alerts/notifyDon');
+const { notifyDon, buildAlertMessage, buildRenewalSummaryMessage } = require(notifyDonPath);
+
+function freshNotifyDon() {
+  delete require.cache[notifyDonPath];
+  return require(notifyDonPath);
+}
 
 // ── Setup env ────────────────────────────────────────────────────────────────
 const savedEnv = {};
@@ -135,6 +141,68 @@ tests.push(test('notifyDon: usa ALERT_PHONE padrão 244941713216 se não definid
   restoreEnv();
   global.fetch = prevFetch;
   assert(capturedBody.number === '244941713216@s.whatsapp.net', `JID padrão errado: ${capturedBody?.number}`);
+}));
+
+tests.push(test('getRenewalNotifyPhoneList: fallback para ALERT_PHONE se RENEWAL_NOTIFY omitido', () => {
+  setEnv({ ALERT_PHONE: '244911111111', RENEWAL_NOTIFY_PHONES: undefined });
+  const { getRenewalNotifyPhoneList } = freshNotifyDon();
+  const list = getRenewalNotifyPhoneList();
+  restoreEnv();
+  assert(list.length === 1 && list[0] === '244911111111', JSON.stringify(list));
+}));
+
+tests.push(test('getRenewalNotifyPhoneList: CSV Don + Bráulio', () => {
+  setEnv({ RENEWAL_NOTIFY_PHONES: '244941713216, 244946014060' });
+  const { getRenewalNotifyPhoneList } = freshNotifyDon();
+  const list = getRenewalNotifyPhoneList();
+  restoreEnv();
+  assert(
+    list.length === 2 && list[0] === '244941713216' && list[1] === '244946014060',
+    JSON.stringify(list)
+  );
+}));
+
+tests.push(test('getRenewalNotifyPhoneList: string vazia → fallback ALERT_PHONE', () => {
+  setEnv({ RENEWAL_NOTIFY_PHONES: '', ALERT_PHONE: '244900000000' });
+  const { getRenewalNotifyPhoneList } = freshNotifyDon();
+  const list = getRenewalNotifyPhoneList();
+  restoreEnv();
+  assert(list.length === 1 && list[0] === '244900000000', JSON.stringify(list));
+}));
+
+tests.push(test('notifyDonRenewalSummary: dois destinos, delay 3s (setTimeout mock)', async () => {
+  const prevFetch = global.fetch;
+  const prevSetTimeout = global.setTimeout;
+  const delays = [];
+  global.setTimeout = (fn, ms) => {
+    delays.push(ms);
+    fn();
+    return 0;
+  };
+  const bodies = [];
+  global.fetch = async (_, opts) => {
+    bodies.push(JSON.parse(opts.body));
+    return { ok: true };
+  };
+  setEnv({
+    ALERT_INSTANCE_NAME: 'Inst',
+    EVOLUTION_API_URL: 'http://x',
+    EVOLUTION_API_KEY: 'k',
+    RENEWAL_NOTIFY_PHONES: '244941713216,244946014060',
+  });
+  const { notifyDonRenewalSummary } = freshNotifyDon();
+  const ok = await notifyDonRenewalSummary({ templateKey: 'AVISO_DIA', sent: 2, failed: 0, failedNames: [] });
+  restoreEnv();
+  global.fetch = prevFetch;
+  global.setTimeout = prevSetTimeout;
+  assert(ok === true, 'ok');
+  assert(bodies.length === 2, `fetch calls ${bodies.length}`);
+  assert(
+    bodies[0].number === '244941713216@s.whatsapp.net' && bodies[1].number === '244946014060@s.whatsapp.net',
+    'JIDs'
+  );
+  assert(bodies[0].text === bodies[1].text && bodies[0].text.includes('[PA RENOVAÇÃO]'), 'mesmo texto');
+  assert(delays.length === 1 && delays[0] === 3000, JSON.stringify(delays));
 }));
 
 Promise.all(tests).then(() => {
