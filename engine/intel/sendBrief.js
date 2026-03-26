@@ -3,7 +3,7 @@
 
 'use strict';
 
-const BRIEF_RECIPIENT = '244941713216';
+const { getInfraAlertRecipientsFromEnv } = require('../lib/infraRecipients');
 const RETRY_DELAY_MS  = 30_000;
 
 function resolveInstance() {
@@ -21,7 +21,13 @@ function buildUrl(instance) {
   return `${base}/message/sendText/${encodeURIComponent(instance)}`;
 }
 
-async function postToEvolution(briefText, instance) {
+function toJid(phone) {
+  const p = String(phone || '').trim();
+  if (p.includes('@')) return p;
+  return `${p.replace(/\D/g, '')}@s.whatsapp.net`;
+}
+
+async function postToEvolution(briefText, instance, recipientJid) {
   const url = buildUrl(instance);
   const res = await fetch(url, {
     method: 'POST',
@@ -30,7 +36,7 @@ async function postToEvolution(briefText, instance) {
       'apikey': process.env.EVOLUTION_API_KEY || '',
     },
     body: JSON.stringify({
-      number: BRIEF_RECIPIENT,
+      number: recipientJid,
       text: briefText,
     }),
   });
@@ -53,6 +59,7 @@ function sleep(ms) {
  */
 async function sendBrief(briefText) {
   const instance = resolveInstance();
+  const recipients = getInfraAlertRecipientsFromEnv().map(toJid);
 
   if (!instance) {
     console.error('[BRIEF] BRIEF_INSTANCE_NAME / EVOLUTION_INSTANCE não definido — envio cancelado');
@@ -60,8 +67,8 @@ async function sendBrief(briefText) {
   }
 
   try {
-    await postToEvolution(briefText, instance);
-    console.log(`[BRIEF] Enviado → ${BRIEF_RECIPIENT} (${instance})`);
+    for (const jid of recipients) await postToEvolution(briefText, instance, jid);
+    console.log(`[BRIEF] Enviado → ${recipients.join(', ')} (${instance})`);
     return true;
   } catch (err) {
     console.warn(`[BRIEF] Falha (1ª tentativa): ${err.message} — retry em ${RETRY_DELAY_MS / 1000}s`);
@@ -70,8 +77,8 @@ async function sendBrief(briefText) {
   await sleep(RETRY_DELAY_MS);
 
   try {
-    await postToEvolution(briefText, instance);
-    console.log(`[BRIEF] Enviado (retry) → ${BRIEF_RECIPIENT}`);
+    for (const jid of recipients) await postToEvolution(briefText, instance, jid);
+    console.log(`[BRIEF] Enviado (retry) → ${recipients.join(', ')}`);
     return true;
   } catch (err) {
     console.error(`[BRIEF] Falha definitiva: ${err.message}`);

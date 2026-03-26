@@ -62,18 +62,22 @@ tests.push(test('sendBrief: envia payload correcto (number + text) para Evolutio
   const prevInst  = process.env.BRIEF_INSTANCE_NAME;
   const prevUrl   = process.env.EVOLUTION_API_URL;
   const prevKey   = process.env.EVOLUTION_API_KEY;
+  const prevBoss  = process.env.BOSS_NUMBER;
+  const prevAlert = process.env.ALERT_PHONE;
 
   process.env.BRIEF_INSTANCE_NAME = 'TestInst';
   process.env.EVOLUTION_API_URL   = 'http://evo.test';
   process.env.EVOLUTION_API_KEY   = 'testkey';
+  process.env.BOSS_NUMBER         = '244941713216';
+  delete process.env.ALERT_PHONE;
 
-  let capturedBody;
+  const capturedBodies = [];
   let capturedUrl;
   let capturedHeaders;
 
   global.fetch = async (url, opts) => {
     capturedUrl     = url;
-    capturedBody    = JSON.parse(opts.body);
+    capturedBodies.push(JSON.parse(opts.body));
     capturedHeaders = opts.headers;
     return { ok: true };
   };
@@ -84,8 +88,9 @@ tests.push(test('sendBrief: envia payload correcto (number + text) para Evolutio
 
     assert(result === true, 'esperado true');
     assert(capturedUrl.includes('/message/sendText/TestInst'), `URL: ${capturedUrl}`);
-    assert(capturedBody.number === '244941713216', `number: ${capturedBody.number}`);
-    assert(capturedBody.text.includes('[PA BRIEF 24h]'), `text: ${capturedBody.text}`);
+    assert(capturedBodies.length === 1, `calls: ${capturedBodies.length}`);
+    assert(capturedBodies[0].number === '244941713216@s.whatsapp.net', `number: ${capturedBodies[0].number}`);
+    assert(capturedBodies[0].text.includes('[PA BRIEF 24h]'), `text: ${capturedBodies[0].text}`);
     assert(capturedHeaders['apikey'] === 'testkey', `apikey: ${capturedHeaders['apikey']}`);
   } finally {
     global.fetch = prevFetch;
@@ -95,6 +100,10 @@ tests.push(test('sendBrief: envia payload correcto (number + text) para Evolutio
     else process.env.EVOLUTION_API_URL = prevUrl;
     if (prevKey === undefined) delete process.env.EVOLUTION_API_KEY;
     else process.env.EVOLUTION_API_KEY = prevKey;
+    if (prevBoss === undefined) delete process.env.BOSS_NUMBER;
+    else process.env.BOSS_NUMBER = prevBoss;
+    if (prevAlert === undefined) delete process.env.ALERT_PHONE;
+    else process.env.ALERT_PHONE = prevAlert;
   }
 }));
 
