@@ -150,7 +150,28 @@ Regex de `suporte_conta` incluía tokens ambíguos (`plano`, `meu plano`, etc.) 
 2. Cada regressão de intent em produção → entrada em `test-intent-regression.js` **antes** de corrigir (TDD de regressão).
 3. `npm test` corre antes de `npm start` (`prestart`).
 4. LID não é garantidamente telefone — resolver via Evolution `findContacts` quando possível; não assumir `08…` como Angola (`normalizePhone` / `extractPhoneNumber`: só `09…` → `244`).
-5. Alertas **INFRA** (watchdog: health, inactividade) → Don (`244941713216`) **e** supervisores do bot. Escalação de **cliente** continua só para o supervisor da instância.
+5. Alertas **INFRA** (watchdog: `[PA INFO]` / `[PA ALERTA]`, health, inactividade) → **só** `BOSS_NUMBER` / `ALERT_PHONE` (Don). **Nunca** `SUPERVISOR_NUMBERS` (supervisor do negócio do cliente). Escalação de **cliente** continua só para o supervisor da instância.
+
+---
+
+## BUG-075 — Watchdog enviava alertas técnicos para o supervisor do cliente
+
+**Data:** 2026-03-26  
+**Ficheiros:** `engine/lib/watchdog.js`, `index.js`, `engine/lib/infraRecipients.js`  
+**Impacto:** Mensagens `ℹ️ [PA INFO] Bot … sem mensagens há …` e `⚠️ [PA ALERTA]` chegavam ao número em `SUPERVISOR_NUMBERS` (ex.: Bráulio — cliente StreamZone), não só ao Don.
+
+### Causa Raiz
+
+O `Watchdog` unia `infraRecipients` com `supervisors` (derivados de `config.supervisors` / `SUPERVISOR_NUMBERS`). Os supervisores são para **escalação de conversas de clientes**, não para monitorização interna.
+
+### Fix
+
+- Destinatários de `alert()` = **apenas** `infraRecipients`, resolvidos por `getInfraAlertRecipientsFromEnv()`: `BOSS_NUMBER` (CSV) → fallback `ALERT_PHONE` → `244941713216`.
+- Tokens com mais de 12 dígitos (LID colado por engano no `.env`) são **ignorados**.
+
+### Regra Geral
+
+> **SUPERVISOR_NUMBERS** = negócio do cliente. **BOSS_NUMBER** = operação Palanca / alertas técnicos.
 
 ---
 

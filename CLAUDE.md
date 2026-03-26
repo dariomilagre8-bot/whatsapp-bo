@@ -87,6 +87,7 @@
 
 1. **Remetente** = `data.key.remoteJid`. NUNCA `req.body.sender`.
 2. **NUNCA** usar LID (`@lid`) em SUPERVISOR_NUMBERS — só JIDs `@s.whatsapp.net`.
+2b. **SUPERVISOR_NUMBERS** = supervisor do negócio do **cliente** (escalações de utilizadores). **BOSS_NUMBER** (fallback `ALERT_PHONE`) = Don / alertas **técnicos** (watchdog `[PA INFO]`/`[PA ALERTA]`, DLQ). Nunca misturar.
 3. O bot **NUNCA** revela comandos `#` ao cliente final.
 4. **npm test** e **npm run eval** DEVEM passar antes de deploy.
 5. **`prestart`:** `npm start` corre `npm test` antes — o bot não arranca com testes a falhar (emergência: `node index.js` sem passar pelo script npm).
@@ -220,6 +221,7 @@ redis-cli LLEN bull:pa-messages:failed        # falhas totais
 | BUG-072 | src/utils/phone.js + `resolveNumber` | LID / `08…` não é telefone real; mismatch Sheets | `extractPhoneNumber`: só `09…`→244; LID resolvido via Evolution `findContacts` e `normalizePhone` no valor final |
 | BUG-073 | src/routes/webhook.js | Intent detection recalculava `promptVariant` em cada mensagem → prompt alternava | `session.promptVariant` inicia em `default`; só `suporte_conta` (alta confiança) força `critical_rules` |
 | BUG-074 | src/engine/intentDetector.js | "Tem plano de 3 ecrãs?" e similares disparavam `suporte_conta` por regex ampla em "plano" | `SUPORTE_HARD_PATTERNS` + `VENDA_OVERRIDE_PATTERNS`; na ambiguidade preferir VENDA; catálogo streaming ("pacotes Disney…") → `INTENT_DESCONHECIDO` (LLM) via `isStreamingCatalogPacoteQuestion` |
+| BUG-075 | engine/lib/watchdog.js + `index.js` | Watchdog `[PA INFO]`/`[PA ALERTA]` ia para `SUPERVISOR_NUMBERS` (cliente) | Só `BOSS_NUMBER`/`ALERT_PHONE` via `getInfraAlertRecipientsFromEnv()`; `engine/lib/infraRecipients.js` filtra LIDs longos no CSV |
 
 ## CRM (pa_clients)
 

@@ -273,13 +273,13 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
-// ── Watchdog autónomo (health + auto-recovery + alertas) ──
+// ── Watchdog autónomo (health + auto-recovery + alertas técnicos → BOSS_NUMBER, nunca SUPERVISOR_NUMBERS) ──
 const { Watchdog } = require('./engine/lib/watchdog');
+const { getInfraAlertRecipientsFromEnv } = require('./engine/lib/infraRecipients');
 const sender = require('./engine/lib/sender');
 
 const watchdog = new Watchdog({
-  infraRecipients: ['244941713216'],
-  supervisors: config.supervisors || [process.env.SUPERVISOR_NUMBERS || '244941713216'],
+  infraRecipients: getInfraAlertRecipientsFromEnv(),
   sender,
   evolutionConfig,
   clientConfig: config,

@@ -1,5 +1,5 @@
-// engine/lib/watchdog.js — Watchdog autónomo: health checks, auto-recovery, alertas supervisores
-// Alertas de INFRA: Don (244941713216) + supervisores do bot.
+// engine/lib/watchdog.js — Watchdog autónomo: health checks, auto-recovery, alertas técnicos
+// Alertas INFRA ([PA INFO] / [PA ALERTA]): só BOSS_NUMBER / ALERT_PHONE — nunca SUPERVISOR_NUMBERS (BUG-075).
 
 const { getHealth } = require('./health');
 
@@ -10,7 +10,6 @@ class Watchdog {
   constructor(options = {}) {
     this.intervalMs = options.intervalMs || 300000; // 5 min
     this.infraRecipients = options.infraRecipients || DEFAULT_INFRA_ALERT_RECIPIENTS;
-    this.supervisors = options.supervisors || ['244941713216'];
     this.sender = options.sender;
     this.evolutionConfig = options.evolutionConfig;
     this.clientConfig = options.clientConfig;
@@ -23,8 +22,8 @@ class Watchdog {
   }
 
   start() {
-    const allAlert = [...new Set([...this.infraRecipients, ...this.supervisors].filter(Boolean))];
-    console.log(`[WATCHDOG] Iniciado — check a cada ${this.intervalMs / 1000}s | alertas: ${allAlert.join(', ')}`);
+    const allAlert = [...new Set(this.infraRecipients.filter(Boolean))];
+    console.log(`[WATCHDOG] Iniciado — check a cada ${this.intervalMs / 1000}s | alertas infra: ${allAlert.join(', ')}`);
     this.timer = setInterval(() => this.check(), this.intervalMs);
     // Primeiro check com delay de 30s para dar tempo ao boot
     setTimeout(() => this.check(), 30000);
@@ -142,7 +141,7 @@ class Watchdog {
     );
   }
 
-  /** INFRA (health degradado, inactividade): Don + supervisores — não confundir com escalação de cliente no webhook. */
+  /** INFRA (health degradado, inactividade): só Don / BOSS_NUMBER — não confundir com escalação de cliente (SUPERVISOR_NUMBERS). */
   async alert(message) {
     if (!this.sender) {
       console.warn('[WATCHDOG] Sem sender — alerta apenas em log:');
@@ -150,7 +149,7 @@ class Watchdog {
       return;
     }
 
-    const recipients = [...new Set([...this.infraRecipients, ...this.supervisors].filter(Boolean))];
+    const recipients = [...new Set(this.infraRecipients.filter(Boolean))];
     for (const phone of recipients) {
       try {
         await this.sender.sendText(phone, message, this.evolutionConfig, this.clientConfig);
