@@ -261,8 +261,15 @@ redis-cli LLEN bull:pa-messages:failed        # falhas totais
 - **CSAT:** `engine/csat/csatFlow.js` — `CSAT_ENABLED=true`; pergunta automática **2 minutos** após `bot_resolved`; resposta 1–5 grava `csat_score` na linha com o mesmo `trace_id`; outras respostas ignoram (sem insistência).
 - **Testes:** `tests/engine/llm/router.test.js`, `tests/engine/csat/csatFlow.test.js`, `tests/engine/instrumentacao.test.js`.
 
-## Watchtower (BI)
+## Watchtower (BI) — Phase 1 activa
 
-- Scaffold em `services/watchtower/` (extract, anonymizer, analyze, deliver).
-- Tabela Supabase: `docs/pa_daily_insights.sql` (legado) + migração KPIs acima.
-- Cron semanal (sexta 18h) comentado em cron-manager; activar quando houver 3+ clientes.
+- **Código:** `services/watchtower/` — `extract.js`, `analyze.js`, `deliver.js`, `index.js` + `engine/lib/messageLogger.js`.
+- **Tabela de logs:** `pa_message_logs` (Supabase pa-engine) — migração `docs/migrations/20260327_pa_message_logs.sql`. Cada mensagem IN/OUT do webhook é registada (client_slug, remote_jid, direction, intent, state, trace_id).
+- **Tabela de insights:** `pa_daily_insights` (já existia) — upsert por `(client_slug, date)`.
+- **Crons** (activos se `WATCHTOWER_ENABLED=true`, timezone Africa/Luanda):
+  - `0 6 * * *` — `extractOnly()`: conta mensagens/vendas do dia anterior → upsert `pa_daily_insights` (sem envio WhatsApp)
+  - `0 18 * * 5` — `run()`: extract + analyze + upsert + deliver WhatsApp (resumo semanal às sextas 18h)
+- **Fase 1:** sentimento hardcoded PT Angola (palavras positivas/negativas), top_products por frequência de tokens, zero chamadas LLM.
+- **Fase 2 (futura):** LLM Map-Reduce para sentimento real + motivos de abandono + `avg_response_time_ms` a partir de `pa_daily_insights.response_time_ms`.
+- **Deliver:** destinatário por slug via `WATCHTOWER_NOTIFY_<SLUG>` → `WATCHTOWER_NOTIFY_PHONES` → `BOSS_NUMBER`. Instância: `WATCHTOWER_INSTANCE_NAME` → `BRIEF_INSTANCE_NAME` → `ALERT_INSTANCE_NAME` → `EVOLUTION_INSTANCE`.
+- **Testes:** `tests/engine/watchtower.test.js` (11 testes: classifySentiment, extractTopProducts, analyze, extractForClient com mock Supabase).
