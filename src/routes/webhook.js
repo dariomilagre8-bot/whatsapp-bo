@@ -54,6 +54,7 @@ const {
   tryConsumeCsatReply,
   scheduleCsatIfResolved,
 } = require('../../engine/csat/csatFlow');
+const { logMessage } = require('../../engine/lib/messageLogger');
 
 const supervisorTestMode = new Set();
 
@@ -131,7 +132,18 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       || process.env.EVOLUTION_INSTANCE_NAME
       || 'Zara-Teste';
     const evolutionConfigForInstance = { ...evolutionConfig, instance: resolvedEvolutionInstance };
-    const sendClient = (phone, text) => sendText(phone, text, evolutionConfigForInstance, tenantConfig);
+    const sendClient = (phone, text) => {
+      // Log OUT (fire-and-forget) — session capturada por closure; só é chamada após session estar inicializada
+      logMessage({
+        clientSlug: tenantConfig.slug || tenantConfig.clientSlug || 'unknown',
+        remoteJid:  phone,
+        direction:  'out',
+        messageText: text,
+        state:      typeof session !== 'undefined' ? (session && session.state) : null,
+        traceId:    req.traceId || null,
+      });
+      return sendText(phone, text, evolutionConfigForInstance, tenantConfig);
+    };
 
     try {
       const handlerStartMs = Date.now();
@@ -282,6 +294,17 @@ function createWebhookHandler(config, stateMachine, getInventoryFn, evolutionCon
       logConversation('in', _msgToLog, {
         intent,
         customer_name: convCustomerName,
+      });
+
+      // Watchtower: log granular IN em pa_message_logs
+      logMessage({
+        clientSlug:  tenantConfig.slug || tenantConfig.clientSlug || 'unknown',
+        remoteJid:   replyJid,
+        direction:   'in',
+        messageText: textMessage || _msgToLog,
+        intent,
+        state:       session.state || null,
+        traceId:     req.traceId || null,
       });
 
       // ── Interceptador global: #sim / #nao incompletos NUNCA chegam à Zara ──

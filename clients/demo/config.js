@@ -7,7 +7,7 @@ module.exports = {
   ...base,
 
   // ═══════ MULTI-TENANT (engine routing) ═══════
-  slug: 'demo',
+  slug: 'demo-moda',
   whatsappBusiness: '244958765478',
   supervisors: ['244941713216'],
   evolutionInstance: 'demo-moda',

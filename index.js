@@ -124,8 +124,9 @@ for (const [, entry] of Object.entries(clientRouter.clientes)) {
 (function registerClientsFromDisk() {
   const clientsRoot = path.join(__dirname, 'clients');
   const registered = [];
+  const activeClientFolder = process.env.ACTIVE_CLIENT || process.env.CLIENT_SLUG || config.slug;
   for (const dirent of fs.readdirSync(clientsRoot, { withFileTypes: true })) {
-    if (!dirent.isDirectory() || dirent.name === 'streamzone' || dirent.name === config.slug) continue;
+    if (!dirent.isDirectory() || dirent.name === 'streamzone' || dirent.name === config.slug || dirent.name === activeClientFolder) continue;
     const cfgPath = path.join(clientsRoot, dirent.name, 'config.js');
     if (!fs.existsSync(cfgPath)) continue;
     const clientCfg = require(cfgPath);
@@ -383,6 +384,24 @@ if (process.env.RENEWAL_CRON_ENABLED === 'true') {
   renewalCron.start();
 }
 
+// ── Watchtower BI — extract diário + deliver semanal ──
+if (process.env.WATCHTOWER_ENABLED === 'true') {
+  const cron = require('node-cron');
+  const watchtower = require('./services/watchtower/index');
+
+  // Extracção diária às 06h Angola (05h UTC) — sem envio WhatsApp
+  cron.schedule('0 6 * * *', async () => {
+    try { await watchtower.extractOnly(); } catch (e) { console.error('[WATCHTOWER] extractOnly erro:', e.message); }
+  }, { timezone: 'Africa/Luanda' });
+
+  // Entrega semanal às sextas 18h Angola — extract + upsert + deliver WhatsApp
+  cron.schedule('0 18 * * 5', async () => {
+    try { await watchtower.run(); } catch (e) { console.error('[WATCHTOWER] run erro:', e.message); }
+  }, { timezone: 'Africa/Luanda' });
+
+  console.log('✅ Watchtower: extractOnly (06h diário) + deliver (sex 18h) activados');
+}
+
 // ── Start ──
 const PORT = process.env.PORT || 80;
 app.listen(PORT, () => {
@@ -396,6 +415,7 @@ app.listen(PORT, () => {
   console.log(`🔄 Renovação automática: ${process.env.RENEWAL_ENABLED === 'true' ? 'activado' : 'desactivado'}`);
   console.log(`📊 Daily Brief: ${process.env.DAILY_BRIEF_ENABLED === 'true' ? 'activado (07:00 Angola)' : 'desactivado'}`);
   console.log(`🔔 Renovação (pa_clients): ${process.env.RENEWAL_CRON_ENABLED === 'true' ? 'activado (09:00/10:00 Angola)' : 'desactivado'}`);
+  console.log(`📡 Watchtower BI: ${process.env.WATCHTOWER_ENABLED === 'true' ? 'activado (06h extract + sex 18h deliver)' : 'desactivado'}`);
   console.log(`✅ Pronto!\n`);
 });
 // deploy-check Sun Mar 15 15:15:59 GMT 2026

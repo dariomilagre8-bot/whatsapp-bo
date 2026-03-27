@@ -42,7 +42,7 @@ test('luna config carrega (ZapPrincipal)', () => {
 
 test('demo config carrega (demo-moda)', () => {
   const config = require('../../clients/demo/config');
-  assert(config.slug === 'demo', 'slug');
+  assert(config.slug === 'demo-moda', 'slug');
   assert(config.evolutionInstance === 'demo-moda', 'evolutionInstance');
   assert(config.identity.botName === 'Bia', 'botName');
 });
@@ -72,7 +72,8 @@ test('load-client: ACTIVE_CLIENT=demo', () => {
   uncache('../../clients/demo/config.js');
   const loadClientConfig = require('../../config/load-client');
   const cfg = loadClientConfig();
-  assert(cfg.clientSlug === 'demo' || cfg.slug === 'demo', 'slug demo');
+  // Pasta "demo", slug interno "demo-moda" (alinhado com evolutionInstance)
+  assert(cfg.slug === 'demo-moda' || cfg.clientSlug === 'demo-moda', 'slug demo-moda');
 });
 
 test('load-client: ACTIVE_CLIENT=streamzone', () => {

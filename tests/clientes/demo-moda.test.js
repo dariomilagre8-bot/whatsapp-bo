@@ -50,7 +50,7 @@ function expect(actual) {
 console.log('\n📋 Bot Demo — Loja Demo / Bia (clients/demo via config/clientes/demo-moda):');
 
 // ── 1. CONFIGURAÇÃO BÁSICA ────────────────────────────────
-test('slug correcto', () => expect(config.slug).toBe('demo'));
+test('slug correcto', () => expect(config.slug).toBe('demo-moda'));
 test('número correcto', () => expect(config.numero).toBe('244958765478'));
 test('supervisor correcto', () => expect(config.supervisorNumbers).toContain('244941713216'));
 test('está activo', () => expect(config.ativo).toBe(true));
